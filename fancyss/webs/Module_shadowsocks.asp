@@ -15748,17 +15748,22 @@ function toggleKeyMask(o, show){
 																	</div>
 																</label>
 															</div>
-															<div id="update_button" style="display:table-cell;float: left;position: absolute;margin-left:70px;padding: 5.5px 0px;">
+															<div style="display:table-cell;float: left;margin-left:70px;position: absolute;padding: 5.5px 0px;">
+																<a type="button" class="ss_btn" href="javascript:void(0);" onclick="pop_help()">插件帮助</a>
+															</div>
+														</td>
+													</tr>
+													<tr>
+														<th>版本与更新</th>
+														<td colspan="2">
+															<div id="update_button" style="display:table-cell;float: left;position: absolute;padding: 5.5px 0px;">
 																<a id="updateBtn" type="button" class="ss_btn" style="cursor:pointer" onclick="update_ss()">检查并更新</a>
 															</div>
-															<div id="ss_version_show" style="display:table-cell;float: left;position: absolute;margin-left:170px;padding: 5.5px 0px;">
+															<div id="ss_version_show" style="display:table-cell;float: left;position: absolute;margin-left:100px;padding: 5.5px 0px;">
 																<a><i>当前版本：</i></a>
 															</div>
-															<div style="display:table-cell;float: left;margin-left:270px;position: absolute;padding: 5.5px 0px;">
+															<div style="display:table-cell;float: left;margin-left:330px;position: absolute;padding: 5.5px 0px;">
 																<a type="button" class="ss_btn" target="_blank" href="https://github.com/folderdoge/fancyss_doge/blob/3.0/Changelog.txt">更新日志</a>
-															</div>
-															<div style="display:table-cell;float: left;margin-left:350px;position: absolute;padding: 5.5px 0px;">
-																<a type="button" class="ss_btn" href="javascript:void(0);" onclick="pop_help()">插件帮助</a>
 															</div>
 														</td>
 													</tr>

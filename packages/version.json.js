@@ -1,6 +1,6 @@
 {
   "name": "fancyss",
   "version": "3.5.23-doge.1",
-  "md5_hnd_v8_full": "be9f14c6ec81d28bdc3985bd3a88face",
-  "md5_hnd_full": "9f20f155b9651b4d8e4c5972afe14071"
+  "md5_hnd_v8_full": "742f3039fc4b98f70f0e930cf13caa8e",
+  "md5_hnd_full": "817b630e26daf321080d2e8467fca39e"
 }
