@@ -6545,12 +6545,44 @@ function refresh_options() {
 	}
 	option0.val(get_saved_current_node_id() || get_first_node_id());
 	option3.val(get_failover_node_id() || get_first_node_id());
+	// 前置节点（链式代理）：仅列出 xray 内置 outbound 支持的协议（SS 0/Vmess 3/Vless 4/Trojan 5）
+	var optionFront = $("#ssconf_basic_node_front");
+	if (optionFront.length) {
+		optionFront.find('option').remove().end();
+		optionFront.append('<option value="">（不启用 / 直连）</option>');
+		for (var i = 0; i < ss_nodes.length; i++) {
+			var field = ss_nodes[i];
+			var c = confs[field];
+			if (!c) continue;
+			if (c.type != "0" && c.type != "3" && c.type != "4" && c.type != "5") continue;
+			if (c.type == "0" && c.ss_obfs && c.ss_obfs != "0") continue;
+			if (c.type == "3" && c.v2ray_use_json == "1") continue;
+			if (c.type == "4" && c.xray_use_json == "1") continue;
+			var real_group = (c.group || "").split("_")[0];
+			var group_tag = real_group ? real_group + " - " : "";
+			var label = "";
+			if (c.type == "0")      label = "【SS】" + group_tag + c.name;
+			else if (c.type == "3") label = "【Vmess】" + group_tag + c.name;
+			else if (c.type == "4") label = "【" + ((c.xray_prot || "vless") == "vmess" ? "Vmess" : "Vless") + "】" + group_tag + c.name;
+			else if (c.type == "5") label = "【Trojan】" + group_tag + c.name;
+			optionFront.append($("<option>", { value: field, text: label }));
+		}
+		var savedFront = db_ss["ssconf_basic_node_front"] || "";
+		if (savedFront && optionFront.find('option[value="' + savedFront + '"]').length) {
+			optionFront.val(savedFront);
+		} else {
+			optionFront.val("");
+		}
+	}
 	// 节点列表显示行数
 	$("#ss_basic_row").find('option').remove().end();
 	for (var i = 10; i <= 27; i++) {
 		$("#ss_basic_row").append('<option value="' + i + '">' + i + '</option>');
 	}
 	E("ss_basic_row").value = db_ss["ss_basic_row"]||15;
+}
+function ss_node_front_sel() {
+	// 链式代理前置节点切换：只持久化在 save() 时统一写入；这里仅保留扩展点。
 }
 function save() {
 	var dbus = {};
@@ -6589,6 +6621,16 @@ function save() {
 		dbus["fss_node_current_identity"] = get_node_identity(node_sel) || "";
 	} else {
 		dbus["ssconf_basic_node"] = node_sel;
+	}
+	// 链式代理前置节点（空字符串=关闭）
+	if (E("ssconf_basic_node_front")) {
+		var frontVal = String(E("ssconf_basic_node_front").value || "");
+		// 防御：前置节点不可与落地节点相同
+		if (frontVal && frontVal == String(node_sel)) {
+			alert("前置节点不能与落地节点相同。");
+			return false;
+		}
+		dbus["ssconf_basic_node_front"] = frontVal;
 	}
 	set_ss_status_waiting("Waiting....");
 	// key define
@@ -15955,7 +15997,8 @@ function toggleKeyMask(o, show){
 													<script type="text/javascript">
 														$('#table_basic').forms([
 															// commom
-															{ title: '节点选择', id:'ssconf_basic_node', type:'select', func:'onchange="ss_node_sel();"', style:'width:auto;min-width:164px;max-width:450px;', options:[], value: "1"},
+															{ title: '落地节点', id:'ssconf_basic_node', type:'select', func:'onchange="ss_node_sel();"', style:'width:auto;min-width:164px;max-width:450px;', options:[], value: "1"},
+															{ title: '前置节点', id:'ssconf_basic_node_front', type:'select', func:'onchange="ss_node_front_sel();"', style:'width:auto;min-width:164px;max-width:450px;', options:[], value: "", suffix:'<span style="color:#888;font-size:12px;margin-left:6px;">非空启用链式代理（仅支持 SS/VMess/VLess/Trojan）</span>'},
 															{ title: '模式', id:'ss_basic_mode', type:'select', func:'v', hint:'1', options:option_main_modes, value: "1"},
 															{ title: '使用json配置', id:'ss_basic_v2ray_use_json', data:{show:'v2ray_on'}, type:'checkbox', func:'v', hint:'27'},
 															{ title: '使用json配置', id:'ss_basic_xray_use_json', data:{show:'xray_on'}, type:'checkbox', func:'v', hint:'27'},

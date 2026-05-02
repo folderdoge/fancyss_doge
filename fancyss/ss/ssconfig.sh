@@ -7,6 +7,7 @@ export FSS_BASE_SKIP_SHUNT_SOURCE=1
 source /koolshare/scripts/ss_base.sh
 unset FSS_BASE_EAGER_NODE_ENV
 unset FSS_BASE_SKIP_SHUNT_SOURCE
+[ -f /koolshare/scripts/ss_chain_proxy.sh ] && . /koolshare/scripts/ss_chain_proxy.sh
 NEW_PATH=$(echo $PATH|tr ':' '\n'|sed '/opt/d;/mmc/d'|awk '!a[$0]++'|tr '\n' ':'|sed '$ s/:$//')
 export PATH=${NEW_PATH}
 #-----------------------------------------------
@@ -4471,6 +4472,8 @@ start_xray() {
 	if [ "$(get_runtime_proxy_mode)" = "7" ] && type fss_shunt_xray_asset_dir >/dev/null 2>&1; then
 		xray_asset_dir="$(fss_shunt_xray_asset_dir 2>/dev/null || true)"
 	fi
+	# 链式代理（前置节点）注入
+	type fss_chain_apply >/dev/null 2>&1 && fss_chain_apply /koolshare/ss/xray.json
 	if [ -n "${xray_asset_dir}" ]; then
 		run_bg env "xray.location.asset=${xray_asset_dir}" /koolshare/bin/xray run -c /koolshare/ss/xray.json
 	else
@@ -4609,6 +4612,8 @@ start_trojan(){
 
 	echo_date "开启Xray主进程，用以运行trojan协议节点..."
 	cd /koolshare/bin
+	# 链式代理（前置节点）注入
+	type fss_chain_apply >/dev/null 2>&1 && fss_chain_apply "$TROJAN_CONFIG_FILE"
 	run_bg /koolshare/bin/xray run -c $TROJAN_CONFIG_FILE
 	detect_running_status3 xray 23456 0 force
 }
