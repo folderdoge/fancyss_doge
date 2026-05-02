@@ -1,1 +1,3 @@
-fancyss_*debug.tar.gz
+# fork: tarball 走 GitHub Releases，不入仓库历史；只 commit version.json.js
+*.tar.gz
+MD5SUMS.txt

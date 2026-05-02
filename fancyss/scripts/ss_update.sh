@@ -5,7 +5,9 @@
 source /koolshare/scripts/ss_base.sh
 mkdir -p /tmp/upload
 alias echo_date='echo 【$(TZ=UTC-8 date -R +%Y%m%d\ %X)】:'
-main_url="https://raw.githubusercontent.com/hq450/fancyss/3.0/packages"
+# fork: 版本元数据走 fork 仓库 raw URL；tarball 走 GitHub Releases
+main_url="https://raw.githubusercontent.com/folderdoge/fancyss_doge/3.0/packages"
+release_url_base="https://github.com/folderdoge/fancyss_doge/releases/download"
 
 # --------------------------------------
 # 6.x.4708			2.6.36.4		arm
@@ -84,17 +86,20 @@ update_ss(){
 		cd /tmp
 		rm -rf /tmp/${PACKAGE}.tar.gz
 		fancyss_md5_online=$(cat /tmp/version.json.js | run jq -r .$MD5NAME)
+		# fork: tarball 从 GitHub Releases 拉取，URL 含版本 tag
+		release_tarball_url="${release_url_base}/v${fancyss_version_online}/${PACKAGE}.tar.gz"
 		echo_date "开启下载进程，从主服务器上下载更新包..."
-		echo_date "下载链接：${main_url}/${PACKAGE}.tar.gz"
+		echo_date "下载链接：${release_tarball_url}"
 		if [ -z "${SOCKS5_OPEN}" ];then
-			run /tmp/curl-update -4k -L --connect-timeout 5 --max-time 120 --retry 3 --retry-delay 1 -x socks5h://127.0.0.1:23456 ${main_url}/${PACKAGE}.tar.gz --output /tmp/${PACKAGE}.tar.gz
+			run /tmp/curl-update -4k -L --connect-timeout 5 --max-time 120 --retry 3 --retry-delay 1 -x socks5h://127.0.0.1:23456 ${release_tarball_url} --output /tmp/${PACKAGE}.tar.gz
 		else
-			run /tmp/curl-update -4k -L --connect-timeout 5 --max-time 120 --retry 3 --retry-delay 1 ${main_url}/${PACKAGE}.tar.gz --output /tmp/${PACKAGE}.tar.gz
+			run /tmp/curl-update -4k -L --connect-timeout 5 --max-time 120 --retry 3 --retry-delay 1 ${release_tarball_url} --output /tmp/${PACKAGE}.tar.gz
 		fi
-		
+
 		if [ "$?" != "0" ];then
 			rm -rf /tmp/${PACKAGE}.tar.gz
-			wget -t 3 --no-check-certificate --timeout=5 ${main_url}/${PACKAGE}.tar.gz
+			# fork: GitHub Release 会 302 跳转到 objects.githubusercontent.com，显式指定输出文件名避免 wget 误用查询串
+			wget -t 3 --no-check-certificate --timeout=5 -O ${PACKAGE}.tar.gz ${release_tarball_url}
 		fi
 		
 		if [ "$?" != "0" ];then
