@@ -15756,7 +15756,7 @@ function toggleKeyMask(o, show){
 													<tr>
 														<th>版本与更新</th>
 														<td colspan="2">
-															<div id="update_button" style="display:table-cell;float: left;position: absolute;padding: 5.5px 0px;">
+															<div id="update_button" style="display:table-cell;float: left;padding: 5.5px 0px;">
 																<a id="updateBtn" type="button" class="ss_btn" style="cursor:pointer" onclick="update_ss()">检查并更新</a>
 															</div>
 															<div id="ss_version_show" style="display:table-cell;float: left;position: absolute;margin-left:100px;padding: 5.5px 0px;">
