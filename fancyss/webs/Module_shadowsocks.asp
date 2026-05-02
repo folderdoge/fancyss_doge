@@ -5171,7 +5171,7 @@ function get_subscription_schedule_label(itemOrDay, hour) {
 }
 function render_subscription_profiles_cards() {
 	if (!subscribeProfilesState.length) {
-		return '<div class="submgr-empty">当前还没有订阅配置。<br />点击下方“新增订阅”开始创建机场级配置。<a class="submgr-empty-ad" target="_blank" href="https://123s.co/#/register?code=yf6ozeEO">🚀没有订阅地址？试试 <strong>ssLinks</strong> 机场，全中转 / 多国线路 / 流媒体解锁，优惠码: fancyss</a></div>';
+		return '<div class="submgr-empty">当前还没有订阅配置。<br />点击下方“新增订阅”开始创建机场级配置。</div>';
 	}
 	var html = '<div class="submgr-card-list">';
 	for (var i = 0; i < subscribeProfilesState.length; i++) {
@@ -6580,9 +6580,38 @@ function refresh_options() {
 		$("#ss_basic_row").append('<option value="' + i + '">' + i + '</option>');
 	}
 	E("ss_basic_row").value = db_ss["ss_basic_row"]||15;
+	render_chain_status();
 }
 function ss_node_front_sel() {
 	// 链式代理前置节点切换：只持久化在 save() 时统一写入；这里仅保留扩展点。
+}
+// 渲染链式代理状态行：读 dbus key fss_chain_status / fss_chain_path
+function render_chain_status() {
+	var $el = $("#ss_state_chain");
+	var $pathEl = $("#ss_state_chain_path");
+	var $break = $("#ss_state_chain_path_break");
+	if (!$el.length) return;
+	var status = db_ss["ss_chain_status"] || "disabled";
+	var path = db_ss["ss_chain_path"] || "";
+	var label = "链式代理状态 - ";
+	if (status == "enabled") {
+		$el.html(label + "<span style='color:#22ab39;'>链式代理已开启</span>");
+		if (path) {
+			$pathEl.text("路径：" + path).show();
+			$break.show();
+		} else {
+			$pathEl.hide();
+			$break.hide();
+		}
+	} else if (status == "fallback") {
+		$el.html(label + "<span style='color:#FFB300;'>回落至直连</span>");
+		$pathEl.hide();
+		$break.hide();
+	} else {
+		$el.html(label + "<span style='color:#888;'>直连中</span>");
+		$pathEl.hide();
+		$break.hide();
+	}
 }
 function save() {
 	var dbus = {};
@@ -13035,7 +13064,7 @@ function version_show() {
 	if(!db_ss["ss_basic_version_local"]) db_ss["ss_basic_version_local"] = "0.0.0"
 	$("#ss_version_show").html("<a class='hintstyle' href='javascript:void(0);'><i>当前版本：" + db_ss['ss_basic_version_local'] + "</i></a>");
 	$.ajax({
-		url: 'https://raw.githubusercontent.com/hq450/fancyss/3.0/packages/version.json.js',
+		url: 'https://raw.githubusercontent.com/folderdoge/fancyss_doge/3.0/packages/version.json.js',
 		type: 'GET',
 		dataType: 'json',
 		success: function(res) {
@@ -13048,85 +13077,8 @@ function version_show() {
 	});
 }
 function message_show() {
-	if (db_ss["ss_close_mesg"] == "0") return
-	$.ajax({
-		url: 'https://gist.githubusercontent.com/hq450/001dd0617a64e11a9492dcf9205a0e03/raw/fancyss_msg.json?_=' + new Date().getTime(),
-		type: 'GET',
-		dataType: 'json',
-		cache: false,
-		success: function(res) {
-			// 处理内置推荐
-			if (res["ads_url_1"] && res["ads_des_1"]){
-				ads_url_1 = res["ads_url_1"];
-				ads_des_1 = res["ads_des_1"];
-				if (node_nu == 0 && poped == 0) pop_node_add_ads();
-				if(!E("ss_online_links").value){
-					sub_ads_html = '<a target="_blank" href="' + ads_url_1 + '"><em>' + ads_des_1 + '</em></a>';
-					$('#ss_sub_ads').html(sub_ads_html)
-				}
-			}else{
-				if (node_nu == 0 && poped == 0) pop_node_add();
-			}
-			
-			var rand_1 = parseInt(Math.random() * 100)
-			// 通知1，一般通知下更新日志，如果已经升级到最新版本，则不再显示更新日志
-			if (res["msg_1"] && res["switch_1"]){
-				if (rand_1 < res["switch_1"]){
-					if (versionCompare(res["version"], db_ss["ss_basic_version_local"])) {
-						$("#fixed_msg").append('<li id="msg_1" style="list-style: none;height:23px">' + res["msg_1"] + '</li>');
-					}
-				}
-			}
-			// 通知2，其它重要通知的时候使用
-			if (res["msg_2"] && res["switch_2"]){
-				if (rand_1 < res["switch_2"]){
-					$("#fixed_msg").append('<li id="msg_2" style="list-style: none;height:23px">' + res["msg_2"] + '</li>');
-				}
-			}
-			// 广告位，广告不能放太多，要优质，稍多的话限制显示数量，以滚动形式显示，免得太碍人眼
-			var ads_count = 0;
-			var rand_2 = parseInt(Math.random() * 100)
-			for(var i = 3; i < 10; i++){
-				if (res["msg_" + i] && res["switch_" + i]){
-					if (rand_2 < res["switch_" + i]){
-						$("#scroll_msg").append('<li id="msg_' + i + '" style="list-style: none;height:23px">' + res["msg_" + i] + '</li>');
-						ads_count++;
-					}
-				}
-			}
-			// 如果只有两个广告，就全部显示，且不进行滚动
-			//console.log(ads_count + "个广告！")
-			if (ads_count == 0) return;
-			if (ads_count <= 2){
-				$("#scroll_msg").css("height", (ads_count * 23) + "px");
-				return;
-			}
-			//超过两个广告，则广告显示高度为推送的高度
-			if (res["scroll_line"]){
-				$("#scroll_msg").css("height", (res["scroll_line"] * 23) + "px");
-			}else{
-				$("#scroll_msg").css("height", "23px");
-			}
-			//鼠标放上广告停止滚动
-			$("#scroll_msg").on("mouseover", function() {
-				stop_scroll = 1;
-			});
-			//鼠标移开恢复滚动
-			$("#scroll_msg").on("mouseleave", function() {
-				stop_scroll = 0;
-			});
-			//开始滚动，每个广告停留5s
-			if (res["ads_time"]){
-				setInterval(scroll_msg, res["ads_time"]);
-			}else{
-				setInterval(scroll_msg, 5000);
-			}
-		},
-		error: function(XmlHttpRequest, textStatus, errorThrown){
-			console.log(XmlHttpRequest.responseText);
-			if (node_nu == 0 && poped == 0) pop_node_add();
-		}
-	});
+	// fork: 移除上游基于 gist 的广告/通知拉取，仅保留无节点时的引导弹窗
+	if (node_nu == 0 && poped == 0) pop_node_add();
 }
 function scroll_msg() {
 	if(stop_scroll == 0) {
@@ -15693,6 +15645,9 @@ function toggleKeyMask(o, show){
 											<div style="margin:10px 0 0 5px;" class="splitLine"></div>
 											<div class="SimpleNote" id="head_illustrate">
 												<ul id="fixed_msg" style="padding:0;margin:0;line-height:1.8;">
+													<li id="msg_doge" style="list-style: none;height:23px">
+														🐕 这是<a href="https://github.com/folderdoge/fancyss_doge" target="_blank"><em><u>小狗的链式代理 fork 版</u></em></a>，新增「前置节点」实现 <em>路由器 → 前置 → 落地 → 目标</em> 链式代理。
+													</li>
 													<li id="msg_0" style="list-style: none;height:23px">
 														📌 本插件是支持<a href="https://github.com/shadowsocks/shadowsocks-libev" target="_blank"><em><u>SS</u></em></a>
 														、<a href="https://github.com/shadowsocksrr/shadowsocksr-libev" target="_blank"><em><u>SSR</u></em></a>
@@ -15800,7 +15755,7 @@ function toggleKeyMask(o, show){
 																<a><i>当前版本：</i></a>
 															</div>
 															<div style="display:table-cell;float: left;margin-left:270px;position: absolute;padding: 5.5px 0px;">
-																<a type="button" class="ss_btn" target="_blank" href="https://github.com/hq450/fancyss/blob/3.0/Changelog.txt">更新日志</a>
+																<a type="button" class="ss_btn" target="_blank" href="https://github.com/folderdoge/fancyss_doge/blob/3.0/Changelog.txt">更新日志</a>
 															</div>
 															<div style="display:table-cell;float: left;margin-left:350px;position: absolute;padding: 5.5px 0px;">
 																<a type="button" class="ss_btn" href="javascript:void(0);" onclick="pop_help()">插件帮助</a>
@@ -15818,6 +15773,10 @@ function toggleKeyMask(o, show){
 																	<br id="ss_state4_break" style="display:none;"/>
 																	<span id="ss_state3">国内连接 - Waiting</span>
 																	<span id="ss_state_tip" style="display:none;color:#FFB300;font-size:11px;padding-top:2px;"></span>
+																	<br/>
+																	<span id="ss_state_chain">链式代理状态 - <span style='color:#888;'>直连中</span></span>
+																	<br id="ss_state_chain_path_break" style="display:none;"/>
+																	<span id="ss_state_chain_path" style="display:none;color:#80b3ff;font-size:11px;padding-left:12px;"></span>
 																</a>
 															</div>
 															<div style="display:table-cell;float: left;margin-left:270px;position: absolute;padding: 10.5px 0px;">
@@ -15998,7 +15957,7 @@ function toggleKeyMask(o, show){
 														$('#table_basic').forms([
 															// commom
 															{ title: '落地节点', id:'ssconf_basic_node', type:'select', func:'onchange="ss_node_sel();"', style:'width:auto;min-width:164px;max-width:450px;', options:[], value: "1"},
-															{ title: '前置节点', id:'ssconf_basic_node_front', type:'select', func:'onchange="ss_node_front_sel();"', style:'width:auto;min-width:164px;max-width:450px;', options:[], value: "", suffix:'<span style="color:#888;font-size:12px;margin-left:6px;">非空启用链式代理（仅支持 SS/VMess/VLess/Trojan）</span>'},
+															{ title: '前置节点', id:'ssconf_basic_node_front', type:'select', func:'onchange="ss_node_front_sel();"', hint:'200', style:'width:auto;min-width:164px;max-width:450px;', options:[], value: ""},
 															{ title: '模式', id:'ss_basic_mode', type:'select', func:'v', hint:'1', options:option_main_modes, value: "1"},
 															{ title: '使用json配置', id:'ss_basic_v2ray_use_json', data:{show:'v2ray_on'}, type:'checkbox', func:'v', hint:'27'},
 															{ title: '使用json配置', id:'ss_basic_xray_use_json', data:{show:'xray_on'}, type:'checkbox', func:'v', hint:'27'},

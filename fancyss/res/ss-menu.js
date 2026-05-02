@@ -1061,6 +1061,17 @@ function openssHint(itemNum, flag) {
 		statusmenu += "2. 在设定分钟内再次访问节点列表，会直接复用现有测速结果；超过设定分钟后访问，页面会自动触发一次批量测速刷新。<br /><br />";
 		statusmenu += "3. 自动触发时会显示 waiting / loading / booting 等中间状态，不会再静默刷新。";
 		_caption = "说明：";
+	} else if (itemNum == 200) {
+		width = "560px";
+		statusmenu = "<b>非空时启用链式代理：</b><font color='#669900'>路由器 → 前置节点 → 落地节点 → 目标</font><br /><br />";
+		statusmenu += "<b><font color='#CC0066'>支持的协议：</font></b>SS / VMess / VLess / Trojan，前置和落地都必须在此范围内。<br /><br />";
+		statusmenu += "<b><font color='#CC0066'>限制：</font></b>";
+		statusmenu += "<br />&nbsp;&nbsp;&nbsp;&nbsp;1. 传输协议仅支持 tcp / ws / grpc，安全层仅 none / tls；";
+		statusmenu += "<br />&nbsp;&nbsp;&nbsp;&nbsp;2. 不支持 SS obfs、json 自定义节点、Trojan obfs-local 插件；";
+		statusmenu += "<br />&nbsp;&nbsp;&nbsp;&nbsp;3. 不支持 xray 分流模式；";
+		statusmenu += "<br />&nbsp;&nbsp;&nbsp;&nbsp;4. 前置节点不能与落地节点相同。<br /><br />";
+		statusmenu += "<b><font color='#669900'>失败处理：</font></b>构建或 xray 自检失败时，自动回滚为非链式（仅落地节点直连），插件依然可用。";
+		_caption = "前置节点 (链式代理)";
 	}
 	return overlib(statusmenu, OFFSETX, 30, OFFSETY, 10, RIGHT, STICKY, WIDTH, 'width', CAPTION, _caption, CLOSETITLE, '');
 

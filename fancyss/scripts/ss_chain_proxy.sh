@@ -23,6 +23,14 @@ fss_chain_log() {
 	echo "【$(TZ=UTC-8 date -R +%Y%m%d\ %X)】: [chain-proxy] $*"
 }
 
+# 状态写入：state ∈ {disabled, enabled, fallback}；path 仅 enabled 时填，其它清空
+fss_chain_set_status() {
+	local state="$1" path="$2"
+	# 注意：键前缀必须用 ss_ 而非 fss_，因为前端通过 /_api/ss 读取，只匹配 ss/ssconf/ssr 这种 "ss" 开头的键
+	dbus set ss_chain_status="${state}" >/dev/null 2>&1
+	dbus set ss_chain_path="${path}" >/dev/null 2>&1
+}
+
 fss_chain_get_front_id() {
 	dbus get ssconf_basic_node_front 2>/dev/null
 }
@@ -321,6 +329,8 @@ fss_chain_build_front_outbound_json() {
 # 返回 0 即使没启用（无操作），返回非 0 表示出现错误。
 fss_chain_apply() {
 	local xray_json="${1:-/koolshare/ss/xray.json}"
+	# 默认置为直连状态；后续按情况覆盖
+	fss_chain_set_status "disabled" ""
 	[ -f "${xray_json}" ] || return 0
 
 	local front_id
@@ -332,6 +342,7 @@ fss_chain_apply() {
 	main_mode=$(dbus get ss_basic_mode 2>/dev/null)
 	if [ "${main_mode}" = "7" ]; then
 		fss_chain_log "当前为 xray 分流模式，链式代理本版本暂不支持，已跳过"
+		fss_chain_set_status "fallback" ""
 		return 0
 	fi
 
@@ -343,6 +354,7 @@ fss_chain_apply() {
 	[ -n "${landing_id}" ] || landing_id=$(dbus get ssconf_basic_node 2>/dev/null)
 	if [ -n "${landing_id}" ] && [ "${landing_id}" = "${front_id}" ]; then
 		fss_chain_log "前置节点与落地节点相同，已跳过链式代理"
+		fss_chain_set_status "fallback" ""
 		return 0
 	fi
 
@@ -353,11 +365,13 @@ fss_chain_apply() {
 	0|3|4|5) ;;
 	*)
 		fss_chain_log "落地节点协议(type=${landing_type})不在 SS/VMess/VLess/Trojan 范围，已跳过链式代理"
+		fss_chain_set_status "fallback" ""
 		return 0
 		;;
 	esac
 	if ! fss_chain_type_supported "${landing_type}" "${landing_id}"; then
 		fss_chain_log "落地节点不满足链式代理约束（如使用了 obfs / json 自定义 / 复杂插件），已跳过"
+		fss_chain_set_status "fallback" ""
 		return 0
 	fi
 
@@ -368,11 +382,13 @@ fss_chain_apply() {
 	0|3|4|5) ;;
 	*)
 		fss_chain_log "前置节点协议(type=${front_type})不在 SS/VMess/VLess/Trojan 范围，已跳过链式代理"
+		fss_chain_set_status "fallback" ""
 		return 0
 		;;
 	esac
 	if ! fss_chain_type_supported "${front_type}" "${front_id}"; then
 		fss_chain_log "前置节点不满足链式代理约束（如使用了 obfs / json 自定义 / 复杂插件），已跳过"
+		fss_chain_set_status "fallback" ""
 		return 0
 	fi
 
@@ -380,9 +396,10 @@ fss_chain_apply() {
 	local front_ob
 	front_ob=$(fss_chain_build_front_outbound_json "${front_id}") || {
 		fss_chain_log "前置节点 outbound 构建失败，已跳过链式代理"
+		fss_chain_set_status "fallback" ""
 		return 0
 	}
-	[ -n "${front_ob}" ] || return 0
+	[ -n "${front_ob}" ] || { fss_chain_set_status "fallback" ""; return 0; }
 
 	fss_chain_log "启用链式代理：前置节点=${front_id}(type=${front_type}) 落地节点=${landing_id}(type=${landing_type})"
 
@@ -399,6 +416,7 @@ fss_chain_apply() {
 	if [ ! -s "${tmp}" ]; then
 		fss_chain_log "jq 注入链式 outbound 失败，跳过链式代理"
 		rm -f "${tmp}"
+		fss_chain_set_status "fallback" ""
 		return 0
 	fi
 	mv -f "${tmp}" "${xray_json}"
@@ -421,9 +439,18 @@ fss_chain_apply() {
 			else
 				rm -f "${tmp}"
 			fi
+			fss_chain_set_status "fallback" ""
 			return 1
 		fi
 	fi
 
+	# 全部成功，写入 enabled 状态和路径
+	local front_name landing_name path
+	front_name=$(fss_get_node_field_plain "${front_id}" "name" 2>/dev/null)
+	landing_name=$(fss_get_node_field_plain "${landing_id}" "name" 2>/dev/null)
+	[ -n "${front_name}" ] || front_name="节点${front_id}"
+	[ -n "${landing_name}" ] || landing_name="节点${landing_id}"
+	path="${front_name} → ${landing_name} → 目标"
+	fss_chain_set_status "enabled" "${path}"
 	return 0
 }
