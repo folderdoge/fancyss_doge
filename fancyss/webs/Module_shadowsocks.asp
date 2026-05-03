@@ -286,6 +286,12 @@ body .shunt-editor-layer .layui-layer-btn a{border-radius:5px !important;}
 .node-card-section-count{display:inline-flex;align-items:center;justify-content:center;padding:3px 8px;border-radius:999px;background:rgba(70,160,255,0.12);color:#9fc7ff;font-size:10px;font-weight:700;}
 .node-card-section-arrow{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:999px;background:rgba(255,255,255,0.06);color:#d7e4f2;font-size:11px;font-weight:700;transition:transform .18s ease,background .18s ease;}
 .node-card-section.is-collapsed .node-card-section-arrow{transform:rotate(-90deg);}
+.props-section-head{cursor:pointer;user-select:none;background:#4F5867;}
+.props-section-head th{padding:8px 10px;color:#fff;font-weight:bold;text-align:left;}
+.props-section-head:hover{background:#5a6373;}
+.props-section-arrow{display:inline-block;transition:transform 0.2s;margin-left:6px;font-size:12px;}
+.props-section.is-collapsed .props-section-arrow{transform:rotate(-90deg);}
+.props-section.is-collapsed > tr:not(.props-section-head){display:none;}
 .node-card-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;align-content:start;padding:0;box-sizing:border-box;}
 .node-card-grid::-webkit-scrollbar{width:8px;height:8px;}
 .node-card-grid::-webkit-scrollbar-thumb{border-radius:999px;background:linear-gradient(180deg,rgba(48,140,255,0.95),rgba(78,199,255,0.95));}
@@ -771,6 +777,7 @@ var singleLatencyWsOpenTimer = null;
 var singleLatencyWsLastMessageAt = 0;
 var singleLatencyWsWatchdogTimer = null;
 var batch_test_running = false;
+var cache_rebuild_notice_shown = false;
 var batch_stop_pending = false;
 var batch_ws_fallback_started = false;
 var batch_ws_completed = false;
@@ -6530,6 +6537,9 @@ function ss_node_sel() {
 		show_shunt_node_block_layer(node_sel);
 		rollback_shunt_node_selection(prevNodeId);
 	}
+	if (typeof propsCollapseState !== 'undefined' && propsCollapseState && propsCollapseState.landing === 0) {
+		render_landing_placeholder();
+	}
 }
 function refresh_options() {
 	if (node_max == 0) return false;
@@ -6640,6 +6650,17 @@ function refresh_options() {
 		var savedFront = db_ss["ssconf_basic_node_front"] || "";
 		if (savedFront && optionFront.find('option[value="' + savedFront + '"]').length) {
 			optionFront.val(savedFront);
+		} else if (savedFront) {
+			// dbus 里有 savedFront 但下拉选项里找不到（节点被删 / 协议改了被链式约束过滤 /
+			// 订阅更新后节点重建 ID 漂移）。不能静默置空，否则 save() 会把空值写回 dbus 把
+			// 用户的链式配置永久丢掉。插入一个 disabled 占位 option 保留 ID，并让 save()
+			// 通过 data-stale 属性识别后保留原值。
+			optionFront.append($('<option>', {
+				value: savedFront,
+				text: '⚠️ 节点缺失或不兼容（ID ' + savedFront + '）',
+				'data-stale': '1'
+			}));
+			optionFront.val(savedFront);
 		} else {
 			optionFront.val("");
 		}
@@ -6652,9 +6673,14 @@ function refresh_options() {
 	E("ss_basic_row").value = db_ss["ss_basic_row"]||15;
 	render_chain_status();
 	render_failover_combo_panel();
+	if (typeof apply_props_collapse === 'function') { apply_props_collapse(); }
+	if (typeof start_chain_status_polling === 'function') { start_chain_status_polling(); }
 }
 function ss_node_front_sel() {
 	// 链式代理前置节点切换：只持久化在 save() 时统一写入；这里仅保留扩展点。
+	if (typeof propsCollapseState !== 'undefined' && propsCollapseState && propsCollapseState.front === 0) {
+		render_front_props();
+	}
 }
 // 渲染代理状态行：4 状态 - 未启动 / 链式开启 / 链式回落 / 直连开启
 function render_chain_status() {
@@ -6688,6 +6714,170 @@ function render_chain_status() {
 		$pathEl.hide();
 		$break.hide();
 	}
+}
+// 链式状态轮询：拉取最新的 ss_chain_status / ss_chain_path 并重渲染状态行。
+// 解决：ssconfig.sh restart 后 dbus 已更新但前端 db_ss 还是页面打开时的旧值，导致
+// "实际跑链式 / UI 显示直连" 的滞后现象。15 秒一次足够，且只更新两个 key 不影响别的。
+var _chainStatusPollTimer = null;
+function refresh_chain_status_only() {
+	$.ajax({
+		type: "GET",
+		url: "/_api/ss",
+		dataType: "json",
+		cache: false,
+		success: function(data) {
+			if (!data || !data.result || !data.result[0]) return;
+			var fresh = data.result[0];
+			var changed = false;
+			if (db_ss["ss_chain_status"] !== fresh["ss_chain_status"]) {
+				db_ss["ss_chain_status"] = fresh["ss_chain_status"];
+				changed = true;
+			}
+			if (db_ss["ss_chain_path"] !== fresh["ss_chain_path"]) {
+				db_ss["ss_chain_path"] = fresh["ss_chain_path"];
+				changed = true;
+			}
+			// ss_basic_enable 变化也要重渲染（影响"插件未启动"显示）
+			if (db_ss["ss_basic_enable"] !== fresh["ss_basic_enable"]) {
+				db_ss["ss_basic_enable"] = fresh["ss_basic_enable"];
+				changed = true;
+			}
+			if (changed) {
+				render_chain_status();
+			}
+		}
+	});
+}
+function start_chain_status_polling() {
+	if (_chainStatusPollTimer) return;
+	_chainStatusPollTimer = setInterval(refresh_chain_status_only, 15000);
+}
+function stop_chain_status_polling() {
+	if (_chainStatusPollTimer) {
+		clearInterval(_chainStatusPollTimer);
+		_chainStatusPollTimer = null;
+	}
+}
+// ============ 折叠区块：落地节点 / 前置节点 配置展示 ============
+var propsCollapseState = { landing: 1, front: 1 };
+function toggle_props_section(key) {
+	if (key !== 'landing' && key !== 'front') return false;
+	propsCollapseState[key] = propsCollapseState[key] ? 0 : 1;
+	apply_props_collapse();
+	if (key === 'landing' && propsCollapseState.landing === 0) {
+		render_landing_placeholder();
+	}
+	if (key === 'front' && propsCollapseState.front === 0) {
+		render_front_props();
+	}
+	return false;
+}
+function apply_props_collapse() {
+	$('#tb_landing_section').toggleClass('is-collapsed', propsCollapseState.landing === 1);
+	$('#tb_front_section').toggleClass('is-collapsed', propsCollapseState.front === 1);
+}
+function render_landing_placeholder() {
+	var landingEl = E("ssconf_basic_node");
+	var landingId = landingEl ? landingEl.value : "";
+	var $ph = $('#tb_landing_section .landing-placeholder-row');
+	if (!landingId || typeof confs === 'undefined' || !confs[landingId]) {
+		if (!$ph.length) {
+			$('#tb_landing_section').append('<tr class="landing-placeholder-row"><td colspan="2" style="text-align:center;color:#888;padding:14px;">当前未配置落地节点，快配置一个吧</td></tr>');
+		}
+		$('#tb_landing_section > tr').each(function(){
+			var $tr = $(this);
+			if ($tr.hasClass('props-section-head') || $tr.hasClass('landing-placeholder-row')) return;
+			$tr.hide();
+		});
+	} else {
+		$ph.remove();
+		$('#tb_landing_section > tr').each(function(){
+			var $tr = $(this);
+			if ($tr.hasClass('props-section-head')) return;
+			$tr.css('display', '');
+		});
+		if (typeof verifyFields === 'function') { try { verifyFields(); } catch (e) {} }
+	}
+}
+function render_front_props() {
+	var frontEl = E("ssconf_basic_node_front");
+	var frontId = frontEl ? frontEl.value : "";
+	$('#tb_front_section > tr').each(function(){
+		if (!$(this).hasClass('props-section-head')) $(this).remove();
+	});
+	if (!frontId || typeof confs === 'undefined' || !confs[frontId]) {
+		$('#tb_front_section').append('<tr><td colspan="2" style="text-align:center;color:#888;padding:14px;">当前未配置前置节点，快配置一个吧</td></tr>');
+		return;
+	}
+	var c = confs[frontId];
+	var rows = build_front_node_rows(c);
+	var html = '';
+	for (var i = 0; i < rows.length; i++) {
+		html += '<tr><th style="width:30%;text-align:left;padding-left:10px;">' + props_html_escape(rows[i].label) + '</th><td>' + rows[i].value + '</td></tr>';
+	}
+	$('#tb_front_section').append(html);
+}
+function props_html_escape(s) {
+	return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+function props_mask(v) {
+	if (v == null || v === '') return '';
+	var s = String(v);
+	if (s.length <= 4) return '****';
+	return props_html_escape(s.substr(0, 2)) + '****' + props_html_escape(s.substr(s.length - 2));
+}
+function build_front_node_rows(c) {
+	var rows = [];
+	var t = String(c.type || '');
+	var protoLabel = '';
+	if (t === '0') protoLabel = 'Shadowsocks';
+	else if (t === '3') protoLabel = (c.v2ray_use_json === '1') ? 'Vmess (JSON)' : 'Vmess';
+	else if (t === '4') {
+		var xp = (c.xray_prot || 'vless') === 'vmess' ? 'Vmess (xray)' : 'Vless';
+		protoLabel = (c.xray_use_json === '1') ? (xp + ' (JSON)') : xp;
+	}
+	else if (t === '5') protoLabel = 'Trojan';
+	else protoLabel = '协议 ' + t;
+	rows.push({ label: '节点名', value: '<span>' + props_html_escape(c.name || '') + '</span>' });
+	rows.push({ label: '协议', value: '<span>' + props_html_escape(protoLabel) + '</span>' });
+	rows.push({ label: '服务器地址', value: '<span>' + props_html_escape(c.server || '') + '</span>' });
+	rows.push({ label: '服务器端口', value: '<span>' + props_html_escape(c.port || '') + '</span>' });
+	if (t === '0') {
+		rows.push({ label: '加密方式', value: '<span>' + props_html_escape(c.method || '') + '</span>' });
+		rows.push({ label: '密码', value: '<span>' + props_mask(c.password) + '</span>' });
+		if (c.ss_obfs && c.ss_obfs !== '0') {
+			rows.push({ label: '混淆 (obfs)', value: '<span>' + props_html_escape(c.ss_obfs) + '</span>' });
+			if (c.ss_obfs_host) rows.push({ label: '混淆主机名', value: '<span>' + props_html_escape(c.ss_obfs_host) + '</span>' });
+		}
+	} else if (t === '3' && c.v2ray_use_json !== '1') {
+		rows.push({ label: '用户id', value: '<span>' + props_mask(c.v2ray_uuid) + '</span>' });
+		if (c.v2ray_security) rows.push({ label: '加密方式', value: '<span>' + props_html_escape(c.v2ray_security) + '</span>' });
+		if (c.v2ray_network) rows.push({ label: '传输协议', value: '<span>' + props_html_escape(c.v2ray_network) + '</span>' });
+		if (c.v2ray_network_security) rows.push({ label: '底层传输安全', value: '<span>' + props_html_escape(c.v2ray_network_security) + '</span>' });
+		if (c.v2ray_network_security === 'tls' && c.v2ray_network_security_sni) {
+			rows.push({ label: 'SNI', value: '<span>' + props_html_escape(c.v2ray_network_security_sni) + '</span>' });
+		}
+		var vNeedPath = ['ws','h2','grpc','httpupgrade'].indexOf(c.v2ray_network) >= 0;
+		if (vNeedPath && c.v2ray_network_path) rows.push({ label: '路径', value: '<span>' + props_html_escape(c.v2ray_network_path) + '</span>' });
+		if (vNeedPath && c.v2ray_network_host) rows.push({ label: '伪装域名', value: '<span>' + props_html_escape(c.v2ray_network_host) + '</span>' });
+	} else if (t === '4' && c.xray_use_json !== '1') {
+		rows.push({ label: '用户id', value: '<span>' + props_mask(c.xray_uuid) + '</span>' });
+		if (c.xray_encryption) rows.push({ label: '加密 (encryption)', value: '<span>' + props_html_escape(c.xray_encryption) + '</span>' });
+		if (c.xray_flow) rows.push({ label: 'flow', value: '<span>' + props_html_escape(c.xray_flow) + '</span>' });
+		if (c.xray_network) rows.push({ label: '传输协议', value: '<span>' + props_html_escape(c.xray_network) + '</span>' });
+		if (c.xray_network_security) rows.push({ label: '底层传输安全', value: '<span>' + props_html_escape(c.xray_network_security) + '</span>' });
+		if ((c.xray_network_security === 'tls' || c.xray_network_security === 'reality') && c.xray_network_security_sni) {
+			rows.push({ label: 'SNI', value: '<span>' + props_html_escape(c.xray_network_security_sni) + '</span>' });
+		}
+		var xNeedPath = ['ws','h2','grpc','httpupgrade','xhttp'].indexOf(c.xray_network) >= 0;
+		if (xNeedPath && c.xray_network_path) rows.push({ label: '路径', value: '<span>' + props_html_escape(c.xray_network_path) + '</span>' });
+		if (xNeedPath && c.xray_network_host) rows.push({ label: '伪装域名', value: '<span>' + props_html_escape(c.xray_network_host) + '</span>' });
+	} else if (t === '5') {
+		rows.push({ label: 'trojan 密码', value: '<span>' + props_mask(c.trojan_uuid) + '</span>' });
+		if (c.trojan_sni) rows.push({ label: 'SNI', value: '<span>' + props_html_escape(c.trojan_sni) + '</span>' });
+		rows.push({ label: '跳过证书验证', value: '<span>' + (c.trojan_ai === '1' ? '是' : '否') + '</span>' });
+	}
+	return rows;
 }
 function build_direct_path() {
 	var landingId = String(db_ss["ssconf_basic_node"] || "");
@@ -7088,13 +7278,22 @@ function save() {
 	}
 	// 链式代理前置节点（空字符串=关闭）
 	if (E("ssconf_basic_node_front")) {
-		var frontVal = String(E("ssconf_basic_node_front").value || "");
-		// 防御：前置节点不可与落地节点相同
-		if (frontVal && frontVal == String(node_sel)) {
-			alert("前置节点不能与落地节点相同。");
-			return false;
+		var $frontEl = $("#ssconf_basic_node_front");
+		var frontVal = String($frontEl.val() || "");
+		// 防御：当前选中的是 refresh_options 插入的"节点缺失"占位 option（data-stale=1），
+		// 说明用户没有主动改前置——不能把"占位 ID"再写回 dbus，更不能写空把数据丢了。
+		// 这种情况下完全跳过 dbus["ssconf_basic_node_front"] 的覆盖，让 dbus 保持现状。
+		var $sel = $frontEl.find('option:selected');
+		if ($sel.length && $sel.attr('data-stale') === '1') {
+			// 跳过，保留 dbus 原值
+		} else {
+			// 防御：前置节点不可与落地节点相同
+			if (frontVal && frontVal == String(node_sel)) {
+				alert("前置节点不能与落地节点相同。");
+				return false;
+			}
+			dbus["ssconf_basic_node_front"] = frontVal;
 		}
-		dbus["ssconf_basic_node_front"] = frontVal;
 	}
 	set_ss_status_waiting("Waiting....");
 	// key define
@@ -12601,6 +12800,7 @@ function update_latency_finish_time() {
 function finish_latency_batch() {
 	batch_test_running = false;
 	batch_stop_pending = false;
+	cache_rebuild_notice_shown = false;
 	update_latency_action_links();
 	update_latency_finish_time();
 }
@@ -13192,10 +13392,14 @@ function latency_test(action) {
 					if(result.indexOf("ok5") === 0){
 						$("#ss_wts_show").html("<em>【节点配置缓存重建中...】</em>");
 						$("#dropdown").width(320);
-						layer.msg("节点配置缓存正在重建，请稍候，请勿重复点击。", {time: 2500});
+						if(!cache_rebuild_notice_shown){
+							layer.msg("节点配置缓存正在重建，请稍候。", {time: 2500});
+							cache_rebuild_notice_shown = true;
+						}
 					}else{
 						$("#ss_wts_show").html("<em>【测速中...】</em>");
 						$("#dropdown").width(240);
+						cache_rebuild_notice_shown = false;
 					}
 					update_latency_action_links();
 					// 保留已有测速结果，避免刷新页面时单节点测速结果被 "waiting..." 覆盖。
@@ -16683,12 +16887,25 @@ function toggleKeyMask(o, show){
 											</div>
 											<div id="tablet_0" style="display: none;">
 												<table id="table_basic" width="100%" border="0" align="center" cellpadding="4" cellspacing="0" bordercolor="#6b8fa3" class="FormTable">
+													<tbody id="tb_main"></tbody>
+													<tbody id="tb_landing_section" class="props-section is-collapsed">
+														<tr class="props-section-head" onclick="return toggle_props_section('landing');">
+															<th colspan="2">落地节点配置 <span class="props-section-arrow">&#9662;</span></th>
+														</tr>
+													</tbody>
+													<tbody id="tb_front_section" class="props-section is-collapsed">
+														<tr class="props-section-head" onclick="return toggle_props_section('front');">
+															<th colspan="2">前置节点配置 <span class="props-section-arrow">&#9662;</span></th>
+														</tr>
+													</tbody>
 													<script type="text/javascript">
-														$('#table_basic').forms([
+														$('#tb_main').forms([
 															// commom
 															{ title: '落地节点', id:'ssconf_basic_node', type:'select', func:'onchange="ss_node_sel();"', style:'width:auto;min-width:164px;max-width:450px;', options:[], value: "1"},
 															{ title: '前置节点', id:'ssconf_basic_node_front', type:'select', func:'onchange="ss_node_front_sel();"', hint:'200', style:'width:auto;min-width:164px;max-width:450px;', options:[], value: ""},
 															{ title: '模式', id:'ss_basic_mode', type:'select', func:'v', hint:'1', options:option_main_modes, value: "1"},
+														]);
+														$('#tb_landing_section').forms([
 															{ title: '使用json配置', id:'ss_basic_v2ray_use_json', data:{show:'v2ray_on'}, type:'checkbox', func:'v', hint:'27'},
 															{ title: '使用json配置', id:'ss_basic_xray_use_json', data:{show:'xray_on'}, type:'checkbox', func:'v', hint:'27'},
 															{ title: '服务器地址', id:'ss_basic_server', data:{show:'basic_server_on'}, type:'text', maxlen:'100'},

@@ -5188,11 +5188,15 @@ clear_nodes(){
 	if [ "${SEQ_NU}" == "0" ];then
 		return
 	fi
+	# 备份链式代理前置节点 ID（fork 新增），避免被下面的 dbus list ssconf_basic_ 全删抹掉
+	local SAVED_NODE_FRONT=$(dbus get ssconf_basic_node_front 2>/dev/null)
 	dbus list ssconf_basic_|awk -F "=" '{print "dbus remove "$1}' >$DIR/ss_nodes_remove.sh
 	chmod +x $DIR/ss_nodes_remove.sh
 	sh $DIR/ss_nodes_remove.sh
 	sync
 	[ -n "${CURR_NODE}" ] && dbus set ssconf_basic_node=$CURR_NODE
+	# 还原前置节点（保持与 ssconf_basic_node 同步处理逻辑一致）
+	[ -n "${SAVED_NODE_FRONT}" ] && dbus set ssconf_basic_node_front="${SAVED_NODE_FRONT}"
 	echo_date "😀准备完成！"
 }
 
@@ -5241,6 +5245,8 @@ remove_all_node(){
 			dbus set fss_node_next_id=1
 		fi
 		fss_mark_native_schema2_storage >/dev/null 2>&1 || true
+		# 链式代理前置节点也要清（fork 新增）：节点都删光了，前置 ID 已是悬空指针
+		dbus remove ssconf_basic_node_front >/dev/null 2>&1
 	else
 	confs=$(dbus list ssconf_basic_ | cut -d "=" -f1 | awk '{print $NF}')
 	for conf in ${confs}
@@ -5248,6 +5254,8 @@ remove_all_node(){
 		#echo_date "移除配置：${conf}"
 		dbus remove ${conf}
 	done
+	# ssconf_basic_node_front 已经被上面的 for 循环删掉了，这里幂等再 remove 一次确保
+	dbus remove ssconf_basic_node_front >/dev/null 2>&1
 	fi
 	# remove group name
 	for conf1 in $(dbus list ss_online_group|awk -F"=" '{print $1}')

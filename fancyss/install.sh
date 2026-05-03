@@ -2117,6 +2117,18 @@ install_now(){
 		normalize_schema2_anytls_pass_after_install "旧版 AnyTLS 数据纠偏"
 	fi
 
+	# 链式代理前置节点健康检查（fork 新增，仅日志）
+	if [ "$(fss_detect_storage_schema 2>/dev/null)" = "2" ];then
+		local _front_id="$(dbus get ssconf_basic_node_front 2>/dev/null)"
+		if [ -n "${_front_id}" ];then
+			if fss_get_node_field_plain "${_front_id}" "type" >/dev/null 2>&1;then
+				echo_date "链式代理前置节点 ID ${_front_id} 在 schema 2 节点存储中存在，前置代理配置完好。"
+			else
+				echo_date "⚠️ 链式代理前置节点 ID ${_front_id} 在 schema 2 节点存储中已不存在（节点可能被删除或订阅更新）。dbus 值已保留，前端会显示节点缺失提示，请重新选择前置节点。"
+			fi
+		fi
+	fi
+
 	if [ -n "${MIGRATED_SUB_PROFILES}" ]; then
 		echo_date "旧版订阅地址已迁移为 ${MIGRATED_SUB_PROFILES} 个独立订阅配置。"
 	fi

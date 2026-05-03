@@ -13,6 +13,12 @@ TMP_BUILD="$(mktemp /tmp/fss_build_funcs.XXXXXX.sh)"
 trap "rm -f $TMP_BUILD" EXIT
 sed -e 's/\r$//' -e '/^make$/d' build.sh > "$TMP_BUILD"
 
+# fancyss/ss/version 也要先剥 CR：build.sh line 4 在 source 时会
+# `VERSION=$(cat ./fancyss/ss/version|sed -n 1p)`，CRLF 会让 VERSION 带 CR，
+# 后续 papare 写出的 version_tmp.json.js 里嵌入裸 CR，jq 解析炸；同时 install.sh
+# 也用 VERSION 写 dbus key ss_basic_version_local，CR 会让 About 弹窗显示异常版本号。
+sed -i 's/\r$//' fancyss/ss/version
+
 # 重新定义 papare 让它跳过 prepare_geodata_assets
 source "$TMP_BUILD"
 
