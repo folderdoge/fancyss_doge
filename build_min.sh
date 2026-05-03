@@ -39,6 +39,13 @@ mkdir -p packages
 # 跳过 do_backup（它要写到外部 ../fancyss_history_package/ 目录）
 do_backup(){ :; }
 
+# Windows git autocrlf=true 会把 fancyss/**/*.sh 签出成 CRLF。
+# tar 进 tarball 后路由器（busybox start-stop-daemon）读 shebang `#!/bin/sh\r`
+# 找不到 `/bin/sh\r` 就报 "No such file or directory"。在 pack 之前把 .sh 全部剥 CR。
+# 注意：webs/Module_shadowsocks.asp 必须保持 BOM+CRLF（CLAUDE.md 硬规则 #2），不动它。
+echo "=== 规整 fancyss/**/*.sh 行尾为 LF ==="
+find "${CURR_PATH}/fancyss" -type f -name '*.sh' -print0 | xargs -0 sed -i 's/\r$//'
+
 papare
 pack hnd_v8 full release
 pack hnd    full release
