@@ -402,6 +402,8 @@ run_bg /koolshare/bin/xray run -c $TROJAN_CONFIG_FILE
 | xray 起不来 | `xray run -test -c /koolshare/ss/xray.json` 看具体报错；`fss_chain_apply` 应该会自动回滚，但如果没回滚成，把 `/koolshare/ss/xray.json.before_chain` 之类的备份还原（注意：ssconfig.sh 每次都会重写 xray.json，所以重新点保存即可恢复无链式） |
 | 链式启用但访问不通 | 1) xray.json 里 `outbounds` 顺序对吗？2) `dialerProxy` 在落地 outbound 上吗？3) 前置 outbound 的 tag 是 `proxy_front` 吗？4) 单独测试前置节点能不能直连？|
 | 状态行一直显示「直连中」但 chain-proxy 日志正常 | dbus 写到了但前端读不到 → 检查键名前缀是不是 `ss_chain_*`（不能是 `fss_chain_*` 等其它前缀），见 §10.2 |
+| 状态行显示「直连」但实测网速是链式速度 | 前端 db_ss 快照滞后；v3.5.24-doge.4 已加 15s 轮询，等一会自然刷新；如还没刷新，强制 Ctrl+F5。见 §10.6 |
+| 前置节点下拉框莫名"被清空" | 节点被删/订阅刷新后 ID 漂移 / 协议改了导致被链式约束过滤；v3.5.24-doge.4 后会显示「⚠️ 节点缺失或不兼容（ID X）」占位，且 save() 会保留原 dbus 值不覆盖。见 §10.5 |
 | 重装包后 chain 没生效 | install.sh 装完会调 `ssconfig.sh restart`，但**只在 `ENABLE=1` 时**；如果跳过了，手动到帐号设置点一次「保存&应用」强制重启 |
 
 ### 10.2 关键陷阱：前端 dbus key 前缀必须是 `ss`
@@ -420,11 +422,70 @@ ss-menu.js 里的 `openssHint()` 是个长 if/else 链，目前已用号段：0,
 
 ### 10.4 文件行尾 / 编码
 
-`Module_shadowsocks.asp` 是 **UTF-8 with BOM、LF 行尾**。任何用 PowerShell `[System.IO.File]::WriteAllText()` 重写都会丢 BOM 默认变 CRLF——必须显式：
+`Module_shadowsocks.asp` 是 **UTF-8 with BOM、CRLF 行尾、tab 缩进**（实测字节验证：`[System.IO.File]::ReadAllBytes` 数 CR/LF 字节数应相等）。任何用 PowerShell `[System.IO.File]::WriteAllText()` 重写都会丢 BOM——必须显式：
 ```powershell
 [System.IO.File]::WriteAllText($f, $newContent, (New-Object System.Text.UTF8Encoding $true))
 ```
-PowerShell here-string `"`r`n"` 也要换成 `"`n"` 才能匹配现有的 LF 内容。建议改这文件优先走 Edit/sed，PowerShell 兜底。
+行尾要用 `` `r`n ``（保持 CRLF），old/new 字符串里的 tab 要写 `` `t ``。建议改这文件优先走 Edit/sed，PowerShell 兜底。Edit 工具对带前导 tab 的多行替换经常匹配失败（前导 tab 在传输层会被吃掉），单行无前导空格的字符串 Edit 一般 OK。
+
+### 10.5 关键陷阱：前端 select 控件不能静默 `val("")`（v3.5.24-doge.4 修复）
+
+**症状**：用户配了前置节点，更新插件后发现前置"被清掉了"，但实测网速仍然是链式速度。
+
+**根因**：[Module_shadowsocks.asp `refresh_options()`](../../fancyss/webs/Module_shadowsocks.asp) 旧版逻辑：
+```js
+var savedFront = db_ss["ssconf_basic_node_front"] || "";
+if (savedFront && optionFront.find('option[value="' + savedFront + '"]').length) {
+    optionFront.val(savedFront);
+} else {
+    optionFront.val("");   // ❌ 静默置空
+}
+```
+当 `savedFront` 在选项列表里找不到（节点被删 / 协议被链式约束过滤掉 / 订阅刷新后 ID 漂移），**下拉框被静默置空**。然后用户点"保存&应用"，`save()` 读到空字符串写回 dbus → 真实数据丢失。
+
+**修复方案**：`else` 分支不再 `val("")`，而是**插入一个标记 `data-stale="1"` 的占位 option**保留 ID：
+```js
+} else if (savedFront) {
+    optionFront.append($('<option>', {
+        value: savedFront,
+        text: '⚠️ 节点缺失或不兼容（ID ' + savedFront + '）',
+        'data-stale': '1'
+    }));
+    optionFront.val(savedFront);
+} else {
+    optionFront.val("");
+}
+```
+配套修改 `save()`：检测当前选中的 option 若有 `data-stale="1"`，**完全跳过** `dbus["ssconf_basic_node_front"]` 覆盖，让 dbus 保持原值。这样用户没主动改的话不会误清。
+
+**通用启示（写新代码要避免）**：任何"读 dbus 值 → 反向定位 select option → 如果找不到就 val('')"的模式都有这种丢数据风险。**新加 select 时**，遇到 saved value 找不到选项时要么插占位 option 保留原值，要么在 save() 那边做"没显式选过就不写 dbus"判断。这条规则也写进了项目根 CLAUDE.md。
+
+### 10.6 关键陷阱：`ss_chain_status` 显示会滞后于实际 xray 状态
+
+**症状**：UI 状态行显示"直连代理已开启"，但实测网速跟链式代理时一样。
+
+**根因**：前端 `db_ss` 是页面打开时一次性 `/_api/ss` 拉的快照，之后不会自动刷新。`render_chain_status()` 读的是 `db_ss[]`。`ssconfig.sh restart` 后 `fss_chain_apply` 写新的 `ss_chain_status` / `ss_chain_path` 到 dbus，但前端不知道，UI 一直显示打开瞬间的旧值。**实际 xray 跑链式 vs UI 显示直连**就这么对不上。
+
+**修复方案**：v3.5.24-doge.4 加了一个 15 秒一次的轮询 `refresh_chain_status_only()`，只拉 `ss_chain_status` / `ss_chain_path` / `ss_basic_enable` 三个 key 重渲染状态行。`start_chain_status_polling()` 在 `refresh_options()` 末尾调一次，幂等（用 `_chainStatusPollTimer` 变量挡）。
+
+**通用启示**：所有由 ssconfig.sh / 后端脚本运行时写的"运行状态" dbus key（`ss_chain_status` / 类似的将来要加的 key），都不能假设前端 db_ss 是新鲜的。要么走轮询、要么 hook 到现有的 `refresh_dbss(cb)` 全量刷新里。
+
+### 10.7 落地/前置节点配置可折叠区块（v3.5.24-doge.4 实现）
+
+**做法**：把 `<table id="table_basic">` 的内容拆成 3 个 `<tbody>`：
+- `tb_main` — 落地节点 / 前置节点 / 模式（始终显示）
+- `tb_landing_section` — 折叠表头 + 现有所有协议字段
+- `tb_front_section` — 折叠表头 + 动态渲染的前置节点只读信息
+
+`forms()` 调用拆成两次：`$('#tb_main').forms([头 3 项])` 和 `$('#tb_landing_section').forms([协议字段])`。前置区块由 `render_front_props()` 按 `confs[frontId]` 的协议（type 0/3/4/5）动态生成只读行（密码/UUID 自动 `props_mask` 脱敏）。
+
+**关键 CSS**：
+```css
+.props-section.is-collapsed > tr:not(.props-section-head) { display: none; }
+```
+折叠态隐藏整个 tbody 内的非头部行；`applyVisibility` 用 `querySelectorAll("[data-show]...")` 还能正常工作（多套一层 tbody 不影响后代查找）。展开后 `verifyFields` / `applyVisibility` 自然接管，协议联动逻辑零改动。
+
+**完整性检查**：拆 `forms()` 数组时，用 `[regex]::Matches($content, '(?m)^\s*\{ title:').Count` 数总条目数，改前改后必须相等（当前是 260 条）。这是改大块 forms 数组时最快的回归验证。
 
 ---
 

@@ -110,7 +110,7 @@ $env:Path += ';C:\Program Files\GitHub CLI'
 
 ### 5.4 Edit 工具对 asp 文件的多行 + 前导 tab 匹配不可靠
 
-[fancyss/webs/Module_shadowsocks.asp](../../fancyss/webs/Module_shadowsocks.asp) 是 UTF-8 BOM + LF + tab 缩进。Edit 工具理论支持，但实测**前导 tab 在传输层会丢失**（同一字面量在 Read 显示正常、Edit 报 not found）。
+[fancyss/webs/Module_shadowsocks.asp](../../fancyss/webs/Module_shadowsocks.asp) 是 UTF-8 BOM + **CRLF** 行尾 + tab 缩进（用 `[System.IO.File]::ReadAllBytes` 数 CR/LF 字节验证过）。Edit 工具理论支持，但实测**前导 tab 在传输层会丢失**（同一字面量在 Read 显示正常、Edit 报 not found）。
 
 **规则**：单行无前导空格的字符串可以 Edit；任何**带前导 tab 的多行替换**直接走 PowerShell：
 
@@ -125,6 +125,39 @@ $s2 = $s.Replace($old, $new)
 
 改完用 `git diff -U0` 确认只动了目标行。
 
+### 5.5a `fancyss/ss/version` 文件 CR 污染整条版本号链路（v3.5.24-doge.4 修复）
+
+**症状**：`bash build_min.sh` 跑到 `finish()` 步报 `jq: parse error: Invalid string: control characters from U+0000 through U+001F must be escaped at line 3, column 27`，`packages/version.json.js` 是空文件（0 字节）。装出来的包 About 弹窗版本号显示异常（末尾被截或显示乱码）。
+
+**根因链**：
+1. Windows git `core.autocrlf=true` 把 `fancyss/ss/version` 签出成 CRLF（实测 15 字节，结尾 `0D 0A`）
+2. [build.sh:4](../../build.sh) 的 `VERSION=$(cat ./fancyss/ss/version|sed -n 1p)` 把 CR 一起读进 `VERSION` 变量 → `VERSION="3.5.24-doge.3\r"`
+3. `papare()` 用 heredoc 写 `"version":"${VERSION}"` 进 `version_tmp.json.js`，里面嵌入了裸 CR（U+000D），违反 JSON 规范
+4. `finish()` 用 `jq '.'` 解析时炸 → `version.json.js` 写不出来
+5. **同样的 `VERSION="...\r"` 也被 [install.sh:1969](../../fancyss/install.sh) 写进 `dbus set ss_basic_version_local="${PLVER}"`** → About 弹窗显示带尾部 CR 的版本号，根据浏览器渲染可能截断或显示控制字符
+
+**修复**：[build_min.sh](../../build_min.sh) 在 `source build.sh`（line 4 那个 cat 会跑）**之前**插一行：
+```bash
+sed -i 's/\r$//' fancyss/ss/version
+```
+这一步把工作树的 version 文件就地剥 CR（git autocrlf 在下次 checkout 时会再 CR 化，但 build_min.sh 每次构建都会再剥一次，幂等）。
+
+**通用启示**：所有"被 cat / read 进 shell 变量然后再嵌入 JSON / dbus / 二进制配置"的文本文件，在 Windows + autocrlf=true 环境下都有这种风险。可以一次性给整个 `fancyss/` 目录加 `.gitattributes` `* text eol=lf` 永久规范化，但目前选择"build_min.sh 兜底"够用且不影响其他工作流。
+
+### 5.5b WSL 跑 build_min.sh 必须先剥 CR
+
+**症状**：直接 `wsl bash build_min.sh` 报 `build_min.sh: line 4: $'\r': command not found` 之类，构建炸在第一步。
+
+**根因**：`build_min.sh` 自己也是 CRLF（同 5.5a 的 autocrlf 问题），bash 不能直接执行带 CR 的脚本。
+
+**调用方式**：
+```powershell
+wsl -d Ubuntu-24.04 -- bash -c "cd /mnt/e/日本梯子/fancyss_doge && tr -d '\r' < build_min.sh > .build_min_lf.sh && bash .build_min_lf.sh 2>&1 | tail -30; rm -f .build_min_lf.sh"
+```
+关键点：临时文件**必须放在仓库根目录**（不能 `/tmp/`），因为 build_min.sh 内部用 `cd "$(dirname "$0")"` + 相对路径调用 `build.sh`，临时脚本不在仓库目录的话 sed 找不到 `build.sh`。
+
+WSL 实例名要用全名 `Ubuntu-24.04`（不是 `Ubuntu`），可以用 `wsl --list --verbose` 确认。
+
 ### 5.5 顶部布局：行内 div 全部 `position: absolute` 会导致行高坍缩
 
 [fancyss/webs/Module_shadowsocks.asp ~15765](../../fancyss/webs/Module_shadowsocks.asp) 「版本与更新」行最初让 [检查并更新 / 当前版本 / 更新日志] 三个 div 都用 `display:table-cell;float:left;position:absolute`。结果：absolute 把它们脱出文档流，行的自然高度变 0，下一行（插件运行状态）盖到上面。
@@ -136,3 +169,4 @@ $s2 = $s.Replace($old, $new)
 ## 6. 修订历史
 
 - **2026-05-03**：初版。引入 `3.5.23-doge.N` 命名 + raw URL 探测 + Releases 下载。Commits `2b46e67`（核心切换）、`a7ed4c4`（顶部布局拆行）、`286e548`（修复行高坍缩）。Release: [v3.5.23-doge.1](https://github.com/folderdoge/fancyss_doge/releases/tag/v3.5.23-doge.1)。
+- **2026-05-04**：修复 `fancyss/ss/version` 的 CR 污染整条版本号链路（§5.5a），新增 WSL 调用方式说明（§5.5b）。Release: [v3.5.24-doge.4](https://github.com/folderdoge/fancyss_doge/releases/tag/v3.5.24-doge.4)。
