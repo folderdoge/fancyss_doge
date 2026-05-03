@@ -20,6 +20,7 @@ trojan_ai
 trojan_tfo
 hy2_ai
 hy2_tfo
+anytls_ai
 "
 
 FSS_NODE_B64_FIELDS="
@@ -225,6 +226,8 @@ fss_clear_webtest_cache_node() {
 		"${FSS_WEBTEST_CACHE_NODE_DIR}/${node_id}_outbounds.json" \
 		"${FSS_WEBTEST_CACHE_NODE_DIR}/${node_id}_start.sh" \
 		"${FSS_WEBTEST_CACHE_NODE_DIR}/${node_id}_stop.sh" \
+		"${FSS_WEBTEST_CACHE_NODE_DIR}/${node_id}_anytls.pass" \
+		"${FSS_WEBTEST_CACHE_NODE_DIR}/${node_id}_anytls.pid" \
 		"${FSS_WEBTEST_CACHE_AGG_OUTBOUNDS_FILE}" \
 		"${FSS_WEBTEST_CACHE_INDEX_FILE}" \
 		"${FSS_WEBTEST_CACHE_GLOBAL_META_FILE}" >/dev/null 2>&1
@@ -337,7 +340,7 @@ fss_touch_node_config_ts() {
 
 fss_node_field_affects_direct_domains() {
 	case "$1" in
-	type|server|naive_server|hy2_server|v2ray_use_json|v2ray_json|xray_use_json|xray_json|tuic_json)
+	type|server|naive_server|hy2_server|anytls_server|v2ray_use_json|v2ray_json|xray_use_json|xray_json|tuic_json)
 		return 0
 		;;
 	esac
@@ -1413,6 +1416,12 @@ fss_prune_node_json() {
 				or $k == "hy2_ai"
 				or $k == "hy2_tfo"
 				or $k == "hy2_cg"
+			elif $type == "9" then
+				$k == "anytls_server"
+				or $k == "anytls_port"
+				or $k == "anytls_pass"
+				or $k == "anytls_sni"
+				or $k == "anytls_ai"
 			else
 				false
 			end;
@@ -2156,6 +2165,8 @@ fss_legacy_node_dump_to_v2_tsv() {
 				$k == "tuic_json"
 			elif $type == "8" then
 				$k == "hy2_server" or $k == "hy2_port" or $k == "hy2_pass" or $k == "hy2_up" or $k == "hy2_dl" or $k == "hy2_obfs" or $k == "hy2_obfs_pass" or $k == "hy2_sni" or $k == "hy2_pcs" or $k == "hy2_vcn" or $k == "hy2_ai" or $k == "hy2_tfo" or $k == "hy2_cg"
+			elif $type == "9" then
+				$k == "anytls_server" or $k == "anytls_port" or $k == "anytls_pass" or $k == "anytls_sni" or $k == "anytls_ai"
 			else
 				false
 			end;
@@ -2241,6 +2252,7 @@ fss_legacy_node_dump_to_v2_tsv() {
 			| .trojan_tfo = bool_value(.trojan_tfo // "")
 			| .hy2_ai = bool_value(.hy2_ai // "")
 			| .hy2_tfo = bool_value(.hy2_tfo // "")
+			| .anytls_ai = bool_value(.anytls_ai // "")
 			| with_entries(select(.value != "" and .value != null))
 			| del(.server_ip, .latency, .ping)
 			| default_empty_fields
@@ -2331,6 +2343,7 @@ fss_node_legacy_to_v2_json() {
 			| .trojan_tfo = (if .trojan_tfo == "1" then "1" else "0" end)
 			| .hy2_ai = (if .hy2_ai == "1" then "1" else "0" end)
 			| .hy2_tfo = (if .hy2_tfo == "1" then "1" else "0" end)
+			| .anytls_ai = (if .anytls_ai == "1" then "1" else "0" end)
 		')
 	fi
 
@@ -2486,7 +2499,7 @@ fss_node_v2_to_legacy_script_lines() {
 
 	printf '%s' "${node_json}" | jq -r --arg idx "${node_index}" '
 		def is_runtime: . == "server_ip" or . == "latency" or . == "ping";
-		def is_bool: . == "v2ray_use_json" or . == "v2ray_mux_enable" or . == "v2ray_network_security_ai" or . == "v2ray_network_security_alpn_h2" or . == "v2ray_network_security_alpn_http" or . == "xray_use_json" or . == "xray_network_security_ai" or . == "xray_network_security_alpn_h2" or . == "xray_network_security_alpn_http" or . == "xray_show" or . == "trojan_ai" or . == "trojan_tfo" or . == "hy2_ai" or . == "hy2_tfo";
+		def is_bool: . == "v2ray_use_json" or . == "v2ray_mux_enable" or . == "v2ray_network_security_ai" or . == "v2ray_network_security_alpn_h2" or . == "v2ray_network_security_alpn_http" or . == "xray_use_json" or . == "xray_network_security_ai" or . == "xray_network_security_alpn_h2" or . == "xray_network_security_alpn_http" or . == "xray_show" or . == "trojan_ai" or . == "trojan_tfo" or . == "hy2_ai" or . == "hy2_tfo" or . == "anytls_ai";
 		def is_b64: . == "password" or . == "naive_pass" or . == "v2ray_json" or . == "xray_json" or . == "tuic_json";
 		def need_compact_json: . == "v2ray_json" or . == "xray_json" or . == "tuic_json";
 		def compact_json_string: try (fromjson | tojson) catch .;
@@ -3369,6 +3382,8 @@ fss_list_node_server_domains_v2_fast() {
 			(.naive_server // "")
 		elif $type == "8" then
 			(.hy2_server // "")
+		elif $type == "9" then
+			(.anytls_server // "")
 		elif $type == "3" then
 			if (.v2ray_use_json // "0") == "1" then
 				(.v2ray_json | parse_embedded_json | xray_like_host(.))
@@ -3680,7 +3695,8 @@ $(printf '%s' "${node_json}" | jq -r --rawfile meta "${meta_file}" '
 		or $f == "trojan_ai"
 		or $f == "trojan_tfo"
 		or $f == "hy2_ai"
-		or $f == "hy2_tfo";
+		or $f == "hy2_tfo"
+		or $f == "anytls_ai";
 	def is_b64($f):
 		$f == "password"
 		or $f == "naive_pass"
@@ -4459,6 +4475,8 @@ fss_restore_native_backup_v2() {
 					$k == "tuic_json"
 				elif $type == "8" then
 					$k == "hy2_server" or $k == "hy2_port" or $k == "hy2_pass" or $k == "hy2_up" or $k == "hy2_dl" or $k == "hy2_obfs" or $k == "hy2_obfs_pass" or $k == "hy2_sni" or $k == "hy2_pcs" or $k == "hy2_vcn" or $k == "hy2_ai" or $k == "hy2_tfo" or $k == "hy2_cg"
+				elif $type == "9" then
+					$k == "anytls_server" or $k == "anytls_port" or $k == "anytls_pass" or $k == "anytls_sni" or $k == "anytls_ai"
 				else
 					false
 				end;

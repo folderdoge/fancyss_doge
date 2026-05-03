@@ -373,7 +373,7 @@ restart_status_runtime_async() {
 				waited=$((waited + 1))
 			done
 			waited=0
-			while ! netstat -nlp 2>/dev/null | grep -w "23456" | grep -Eq "xray|v2ray|naive|tuic|rss-local"
+			while ! netstat -nlp 2>/dev/null | grep -w "23456" | grep -Eq "xray|v2ray|naive|tuic|anytls-zig|rss-local"
 			do
 				[ "${waited}" -ge 15 ] && break
 				sleep 1
@@ -604,6 +604,15 @@ schema2_secret_decode_candidate() {
 	printf '%s' "${decoded}"
 }
 
+schema2_anytls_pass_decode_candidate() {
+	local value="$1"
+	local decoded=""
+
+	decoded="$(schema2_secret_decode_candidate "${value}")" || return 1
+	printf '%s' "${decoded}" | grep -Eq '^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' || return 1
+	printf '%s' "${decoded}"
+}
+
 normalize_schema2_secret_fields_after_install() {
 	local reason="$1"
 	local force_scan="$2"
@@ -683,6 +692,54 @@ normalize_schema2_secret_fields_after_install() {
 		echo_date "已完成 schema2 密码字段校正：节点 ${changed_nodes} 个，字段 ${changed_fields} 项。"
 	else
 		echo_date "schema2 密码字段校正完成：未发现需要修正的节点。"
+	fi
+}
+
+normalize_schema2_anytls_pass_after_install() {
+	local reason="$1"
+	local node_id=""
+	local raw_value=""
+	local decoded=""
+	local node_json=""
+	local updated_json=""
+	local updated_at=""
+	local changed_nodes=0
+	local scanned_nodes=0
+	local total_nodes=0
+
+	[ "$(fss_detect_storage_schema 2>/dev/null)" = "2" ] || return 0
+	total_nodes="$(fss_list_node_ids | awk 'NF{c++} END{print c+0}')"
+	[ -n "${total_nodes}" ] || total_nodes=0
+
+	for node_id in $(fss_list_node_ids)
+	do
+		[ -n "${node_id}" ] || continue
+		scanned_nodes=$((scanned_nodes + 1))
+		node_json="$(fss_v2_get_node_json_by_id "${node_id}" 2>/dev/null)" || continue
+		[ "$(printf '%s' "${node_json}" | jq -r '.type // empty' 2>/dev/null)" = "9" ] || continue
+		raw_value="$(printf '%s' "${node_json}" | jq -r '.anytls_pass // empty' 2>/dev/null)"
+		[ -n "${raw_value}" ] || continue
+		decoded="$(schema2_anytls_pass_decode_candidate "${raw_value}")" || decoded=""
+		[ -n "${decoded}" ] || continue
+		[ "${decoded}" != "${raw_value}" ] || continue
+
+		updated_at="$(fss_now_ts_ms)"
+		updated_json="$(printf '%s' "${node_json}" | jq -c \
+			--arg v "${decoded}" \
+			--argjson updated_at "${updated_at}" \
+			'.anytls_pass = $v
+			| ._b64_mode = "raw"
+			| ._rev = (((._rev // 0) | tonumber? // 0) + 1)
+			| ._updated_at = $updated_at' 2>/dev/null)" || continue
+		dbus set fss_node_${node_id}="$(fss_b64_encode "${updated_json}")"
+		changed_nodes=$((changed_nodes + 1))
+		echo_date "校正 AnyTLS 节点 ${node_id} 的认证密码：旧版 base64 -> raw（${reason}）"
+	done
+
+	if [ "${changed_nodes}" -gt 0 ]; then
+		fss_touch_node_catalog_ts >/dev/null 2>&1 || true
+		fss_touch_node_config_ts >/dev/null 2>&1 || true
+		echo_date "已完成 AnyTLS 认证密码校正：节点 ${changed_nodes} 个。"
 	fi
 }
 
@@ -1212,6 +1269,9 @@ __get_name_by_type() {
 	8)
 		echo "hysteria2"
 		;;
+	9)
+		echo "AnyTLS"
+		;;
 	esac
 }
 
@@ -1284,7 +1344,7 @@ append_backup_nodes_schema2(){
 }
 
 full2lite(){
-	# 当从full版本切换到lite版本的时候，需要将naive、tuic节点进行备份后，从节点列表里删除相应节点
+	# 当从full版本切换到lite版本的时候，需要将full-only节点进行备份后，从节点列表里删除相应节点
 	# 1. 将所有不支持的节点数据储存到备份文件
 	local tmp_kv="/tmp/fancyss_kv.txt"
 	local backup_dir="/koolshare/configs/fanyss"
@@ -1331,7 +1391,7 @@ full2lite(){
 				NAME="$(fss_get_node_field_plain "${NU}" name)"
 			fi
 			case "${TY}" in
-			6|7)
+			6|7|9)
 				echo_date "备份并从节点列表里移除第$NU个$(__get_name_by_type ${TY})节点：【${NAME}】"
 				if [ -f "${json_file}" ]; then
 					jq -c '
@@ -1394,7 +1454,7 @@ full2lite(){
 		return
 	fi
 	dbus list ssconf_basic_ | grep -E "_[0-9]+=" | sed '/^ssconf_basic_.\+_[0-9]\+=$/d' | sed 's/^ssconf_basic_//' >"${tmp_kv}"
-	NODES_INFO=$(sed -n 's/type_\([0-9]\+=[67]\)/\1/p' "${tmp_kv}" | sort -n)
+	NODES_INFO=$(sed -n 's/type_\([0-9]\+=[679]\)/\1/p' "${tmp_kv}" | sort -n)
 	if [ -z "${NODES_INFO}" ];then
 		rm -rf "${tmp_kv}" "${backup_file}"
 		return
@@ -1461,7 +1521,7 @@ lite2full(){
 }
 
 check_empty_node(){
-	# 从full版本切换为lite版本后，部分不支持节点将会被删除，比如naive，tuic，hysteria2节点
+	# 从full版本切换为lite版本后，full-only节点将会被删除，比如naive、tuic、AnyTLS节点
 	# 如果安装lite版本的时候，full版本使用的是以上节点，则这些节点可能是空的，此时应该切换为下一个不为空的节点，或者关闭插件（没有可用节点的情况）
 	if [ "$(fss_detect_storage_schema 2>/dev/null)" = "2" ];then
 		local NODES_SEQ=$(fss_list_node_ids)
@@ -1673,6 +1733,7 @@ install_now(){
 	rm -rf /koolshare/bin/hysteria2
 	rm -rf /koolshare/bin/haveged
 	rm -rf /koolshare/bin/naive
+	rm -rf /koolshare/bin/anytls-zig
 	rm -rf /koolshare/bin/ipt2socks
 	rm -rf /koolshare/bin/dnsclient
 	rm -rf /koolshare/bin/smartdns
@@ -1702,6 +1763,7 @@ install_now(){
 		rm -rf /data/v2ray >/dev/null 2>&1
 		rm -rf /data/hysteria2 >/dev/null 2>&1
 		rm -rf /data/naive >/dev/null 2>&1
+		rm -rf /data/anytls-zig >/dev/null 2>&1
 		rm -rf /data/sslocal >/dev/null 2>&1
 		rm -rf /data/rss-local >/dev/null 2>&1
 		rm -rf /data/rss-redir >/dev/null 2>&1
@@ -1804,7 +1866,7 @@ install_now(){
 		echo_date "检测/data分区剩余空间..."
 		local SPACE_DATA_AVAL1=$(df | grep -w "/data" | awk '{print $4}')
 		echo_date "/data分区剩余空间为：${SPACE_DATA_AVAL1}KB"
-		local _BINS="xray v2ray hysteria2 naive sslocal rss-local rss-tunnel rss-redir"
+		local _BINS="xray v2ray hysteria2 naive anytls-zig sslocal rss-local rss-tunnel rss-redir"
 		for _BIN in ${_BINS}
 		do
 			if [ -f "/tmp/shadowsocks/bin/${_BIN}" ];then
@@ -2052,6 +2114,7 @@ install_now(){
 		elif [ "${FORCE_SCHEMA2_SECRET_NORMALIZE}" = "1" ]; then
 			normalize_schema2_secret_fields_after_install "旧版 schema2 数据纠偏" "1"
 		fi
+		normalize_schema2_anytls_pass_after_install "旧版 AnyTLS 数据纠偏"
 	fi
 
 	if [ -n "${MIGRATED_SUB_PROFILES}" ]; then

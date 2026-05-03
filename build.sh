@@ -47,6 +47,18 @@ zig_tool_version(){
 	tr -d '\r\n' < "${CURR_PATH}/tool/${tool_dir}/VERSION"
 }
 
+set_pkg_web_meta(){
+	local file_path="$1"
+	local pkg_name="$2"
+	local pkg_arch="$3"
+	local pkg_type="$4"
+	local pkg_exta="$5"
+	sed -i "s/^var PKG_NAME=.*/var PKG_NAME=\"${pkg_name}\"/" "${file_path}"
+	sed -i "s/^var PKG_ARCH=.*/var PKG_ARCH=\"${pkg_arch}\"/" "${file_path}"
+	sed -i "s/^var PKG_TYPE=.*/var PKG_TYPE=\"${pkg_type}\"/" "${file_path}"
+	sed -i "s/^var PKG_EXTA=.*/var PKG_EXTA=\"${pkg_exta}\"/" "${file_path}"
+}
+
 sync_binary(){
 	# BINS_REMOVE="naive"
 	# for BIN_REMOVE in $BINS_REMOVE;
@@ -133,6 +145,15 @@ sync_binary(){
 	cp -rf ${CURR_PATH}/binaries/node-tool/node-tool-${NODETOOL_VER}-linux-armv7hf ${CURR_PATH}/fancyss/bin-hnd/node-tool
 	cp -rf ${CURR_PATH}/binaries/node-tool/node-tool-${NODETOOL_VER}-linux-armv7a ${CURR_PATH}/fancyss/bin-qca/node-tool
 	cp -rf ${CURR_PATH}/binaries/node-tool/node-tool-${NODETOOL_VER}-linux-armv5te ${CURR_PATH}/fancyss/bin-arm/node-tool
+
+	local ANYTLS_ZIG_VER="v$(zig_tool_version anytls-zig)"
+	cp -rf ${CURR_PATH}/binaries/anytls-zig/anytls-zig-${ANYTLS_ZIG_VER}-linux-aarch64 ${CURR_PATH}/fancyss/bin-mtk/anytls-zig
+	cp -rf ${CURR_PATH}/binaries/anytls-zig/anytls-zig-${ANYTLS_ZIG_VER}-linux-aarch64 ${CURR_PATH}/fancyss/bin-hnd_v8/anytls-zig
+	cp -rf ${CURR_PATH}/binaries/anytls-zig/anytls-zig-${ANYTLS_ZIG_VER}-linux-aarch64 ${CURR_PATH}/fancyss/bin-ipq64/anytls-zig
+	cp -rf ${CURR_PATH}/binaries/anytls-zig/anytls-zig-${ANYTLS_ZIG_VER}-linux-armv7a ${CURR_PATH}/fancyss/bin-ipq32/anytls-zig
+	cp -rf ${CURR_PATH}/binaries/anytls-zig/anytls-zig-${ANYTLS_ZIG_VER}-linux-armv7hf ${CURR_PATH}/fancyss/bin-hnd/anytls-zig
+	cp -rf ${CURR_PATH}/binaries/anytls-zig/anytls-zig-${ANYTLS_ZIG_VER}-linux-armv7a ${CURR_PATH}/fancyss/bin-qca/anytls-zig
+	cp -rf ${CURR_PATH}/binaries/anytls-zig/anytls-zig-${ANYTLS_ZIG_VER}-linux-armv5te ${CURR_PATH}/fancyss/bin-arm/anytls-zig
 
 	local WEBSOCKETD_VER="v$(zig_tool_version ws-tool)"
 	cp -rf ${CURR_PATH}/binaries/websocketd/websocketd-${WEBSOCKETD_VER}-linux-aarch64 ${CURR_PATH}/fancyss/bin-mtk/websocketd
@@ -234,6 +255,15 @@ verify_zig_tool_binaries(){
 	verify_zig_copy "${CURR_PATH}/binaries/node-tool/node-tool-${NODETOOL_VER}-linux-armv7a" qca node-tool
 	verify_zig_copy "${CURR_PATH}/binaries/node-tool/node-tool-${NODETOOL_VER}-linux-armv5te" arm node-tool
 
+	local ANYTLS_ZIG_VER="v$(zig_tool_version anytls-zig)"
+	verify_zig_copy "${CURR_PATH}/binaries/anytls-zig/anytls-zig-${ANYTLS_ZIG_VER}-linux-aarch64" mtk anytls-zig
+	verify_zig_copy "${CURR_PATH}/binaries/anytls-zig/anytls-zig-${ANYTLS_ZIG_VER}-linux-aarch64" hnd_v8 anytls-zig
+	verify_zig_copy "${CURR_PATH}/binaries/anytls-zig/anytls-zig-${ANYTLS_ZIG_VER}-linux-aarch64" ipq64 anytls-zig
+	verify_zig_copy "${CURR_PATH}/binaries/anytls-zig/anytls-zig-${ANYTLS_ZIG_VER}-linux-armv7a" ipq32 anytls-zig
+	verify_zig_copy "${CURR_PATH}/binaries/anytls-zig/anytls-zig-${ANYTLS_ZIG_VER}-linux-armv7hf" hnd anytls-zig
+	verify_zig_copy "${CURR_PATH}/binaries/anytls-zig/anytls-zig-${ANYTLS_ZIG_VER}-linux-armv7a" qca anytls-zig
+	verify_zig_copy "${CURR_PATH}/binaries/anytls-zig/anytls-zig-${ANYTLS_ZIG_VER}-linux-armv5te" arm anytls-zig
+
 	local WEBSOCKETD_VER="v$(zig_tool_version ws-tool)"
 	verify_zig_copy "${CURR_PATH}/binaries/websocketd/websocketd-${WEBSOCKETD_VER}-linux-aarch64" mtk websocketd
 	verify_zig_copy "${CURR_PATH}/binaries/websocketd/websocketd-${WEBSOCKETD_VER}-linux-aarch64" hnd_v8 websocketd
@@ -282,6 +312,7 @@ gen_folder(){
 	local platform=$1
 	local pkgtype=$2
 	local release_type=$3
+	local pkg_exta="_debug"
 	cd ${CURR_PATH}
 	rm -rf shadowsocks
 	cp -rf fancyss shadowsocks
@@ -297,7 +328,6 @@ gen_folder(){
 		mv ./shadowsocks/bin-hnd ./shadowsocks/bin
 		rm -rf ./shadowsocks/bin/uredir
 		echo hnd > ./shadowsocks/.valid
-		sed -i 's/PKG_ARCH=\"unknown\"/PKG_ARCH=\"hnd\"/g' ./shadowsocks/webs/Module_shadowsocks.asp
 	fi
 	if [ "${platform}" == "hnd_v8" ];then
 		rm -rf ./shadowsocks/bin-arm
@@ -309,7 +339,6 @@ gen_folder(){
 		mv ./shadowsocks/bin-hnd_v8 ./shadowsocks/bin
 		rm -rf ./shadowsocks/bin/uredir
 		echo hnd_v8 > ./shadowsocks/.valid
-		sed -i 's/PKG_ARCH=\"unknown\"/PKG_ARCH=\"hnd_v8\"/g' ./shadowsocks/webs/Module_shadowsocks.asp
 	fi
 	if [ "${platform}" == "qca" ];then
 		rm -rf ./shadowsocks/bin-arm
@@ -321,7 +350,6 @@ gen_folder(){
 		mv ./shadowsocks/bin-qca ./shadowsocks/bin
 		rm -rf ./shadowsocks/bin/uredir
 		echo qca > ./shadowsocks/.valid
-		sed -i 's/PKG_ARCH=\"unknown\"/PKG_ARCH=\"qca\"/g' ./shadowsocks/webs/Module_shadowsocks.asp
 	fi
 	if [ "${platform}" == "arm" ];then
 		rm -rf ./shadowsocks/bin-hnd
@@ -335,7 +363,6 @@ gen_folder(){
 		sed -i '/fancyss-hnd/d' ./shadowsocks/webs/Module_shadowsocks.asp
 		sed -i '/ss_basic_mcore/d' ./shadowsocks/webs/Module_shadowsocks.asp
 		sed -i '/ss_basic_tfo/d' ./shadowsocks/webs/Module_shadowsocks.asp
-		sed -i 's/PKG_ARCH=\"unknown\"/PKG_ARCH=\"arm\"/g' ./shadowsocks/webs/Module_shadowsocks.asp
 	fi
 	if [ "${platform}" == "mtk" ];then
 		rm -rf ./shadowsocks/bin-arm
@@ -348,7 +375,6 @@ gen_folder(){
 		rm -rf ./shadowsocks/bin/uredir
 		rm -rf ./shadowsocks/bin/README.md
 		echo mtk > ./shadowsocks/.valid
-		sed -i 's/PKG_ARCH=\"unknown\"/PKG_ARCH=\"mtk\"/g' ./shadowsocks/webs/Module_shadowsocks.asp
 	fi
 	if [ "${platform}" == "ipq32" ];then
 		rm -rf ./shadowsocks/bin-arm
@@ -365,7 +391,6 @@ gen_folder(){
 		rm -rf ./shadowsocks/bin/curl-fancyss
 		# bd4 jffs2 space to small, use xray run ss
 		echo ipq32 > ./shadowsocks/.valid
-		sed -i 's/PKG_ARCH=\"unknown\"/PKG_ARCH=\"ipq32\"/g' ./shadowsocks/webs/Module_shadowsocks.asp
 	fi
 	if [ "${platform}" == "ipq64" ];then
 		rm -rf ./shadowsocks/bin-arm
@@ -381,7 +406,6 @@ gen_folder(){
 		rm -rf ./shadowsocks/bin/jq
 		rm -rf ./shadowsocks/bin/curl-fancyss
 		echo ipq64 > ./shadowsocks/.valid
-		sed -i 's/PKG_ARCH=\"unknown\"/PKG_ARCH=\"ipq64\"/g' ./shadowsocks/webs/Module_shadowsocks.asp
 	fi
 	
 	# remove some binary because it's not default provide by install packages
@@ -397,12 +421,9 @@ gen_folder(){
 	
 	# wirte type string
 	if [ "${release_type}" != "debug" ];then
-		sed -i 's/PKG_EXTA=\"_debug\"/PKG_EXTA=\"\"/g' ./shadowsocks/webs/Module_shadowsocks.asp
+		pkg_exta=""
 	fi
-	
-	if [ "${pkgtype}" == "lite" ];then
-		sed -i 's/var PKG_TYPE=\"full\"/var PKG_TYPE=\"lite\"/g' ./shadowsocks/webs/Module_shadowsocks.asp
-	fi
+	set_pkg_web_meta ./shadowsocks/webs/Module_shadowsocks.asp "fancyss" "${platform}" "${pkgtype}" "${pkg_exta}"
 	
 	if [ "${pkgtype}" == "full" ];then
 		# remove marked comment
@@ -412,6 +433,7 @@ gen_folder(){
 		# remove binaries
 		rm -rf ./shadowsocks/bin/naive
 		rm -rf ./shadowsocks/bin/tuic-client
+		rm -rf ./shadowsocks/bin/anytls-zig
 		rm -rf ./shadowsocks/bin/ipt2socks
 		rm -rf ./shadowsocks/bin/haveged
 
@@ -426,12 +448,16 @@ gen_folder(){
 		sed -i '/fancyss-dns/d' ./shadowsocks/webs/Module_shadowsocks.asp
 		sed -i '/naiveproxy/d' ./shadowsocks/res/ss-menu.js
 		sed -i '/naiveproxy/d' ./shadowsocks/webs/Module_shadowsocks.asp
+		sed -i 's/，比如NaïveProxy\/AnyTLS节点//g' ./shadowsocks/res/ss-menu.js
+		sed -i '/NaïveProxy\/AnyTLS由于自身特性/d' ./shadowsocks/res/ss-menu.js
 		sed -i '/tuic/d' ./shadowsocks/res/ss-menu.js
 		# remove lines bewteen matchs
 		sed -i '/fancyss_full_1/,/fancyss_full_2/d' ./shadowsocks/webs/Module_shadowsocks.asp
 		sed -i '/fancyss_naive_1/,/fancyss_naive_2/d' ./shadowsocks/webs/Module_shadowsocks.asp
 		sed -i '/fancyss_tuic_1/,/fancyss_tuic_2/d' ./shadowsocks/webs/Module_shadowsocks.asp
+		sed -i '/fancyss_anytls_1/,/fancyss_anytls_2/d' ./shadowsocks/webs/Module_shadowsocks.asp
 		# remove strings from page
+		sed -i '/proto-anytls/d' ./shadowsocks/webs/Module_shadowsocks.asp
 		sed -i 's/,[[:space:]]*"naive_prot"[[:space:]]*:[[:space:]]*"[^"]*"//g' ./shadowsocks/webs/Module_shadowsocks.asp
 		sed -i 's/,[[:space:]]*"naive_server"[[:space:]]*:[[:space:]]*"[^"]*"//g' ./shadowsocks/webs/Module_shadowsocks.asp
 		sed -i 's/,[[:space:]]*"naive_port"[[:space:]]*:[[:space:]]*"[^"]*"//g' ./shadowsocks/webs/Module_shadowsocks.asp
@@ -439,6 +465,8 @@ gen_folder(){
 		sed -i 's/,[[:space:]]*"naive_pass"[[:space:]]*:[[:space:]]*"[^"]*"//g' ./shadowsocks/webs/Module_shadowsocks.asp
 		sed -i 's/,[[:space:]]*"naive_json"[[:space:]]*:[[:space:]]*"[^"]*"//g' ./shadowsocks/webs/Module_shadowsocks.asp
 		sed -i 's/,[[:space:]]*"tuic_json"[[:space:]]*:[[:space:]]*"[^"]*"//g' ./shadowsocks/webs/Module_shadowsocks.asp
+		sed -i 's/,[[:space:]]*"anytls_ai"[[:space:]]*:[[:space:]]*"[^"]*"//g' ./shadowsocks/webs/Module_shadowsocks.asp
+		sed -i '/^[[:space:]]*"9"[[:space:]]*:[[:space:]]*.*anytls_/d' ./shadowsocks/webs/Module_shadowsocks.asp
 		sed -i 's/,[[:space:]]*"naive_prot"//g' ./shadowsocks/webs/Module_shadowsocks.asp
 		sed -i 's/,[[:space:]]*"naive_server"//g' ./shadowsocks/webs/Module_shadowsocks.asp
 		sed -i 's/,[[:space:]]*"naive_port"//g' ./shadowsocks/webs/Module_shadowsocks.asp
@@ -446,13 +474,21 @@ gen_folder(){
 		sed -i 's/,[[:space:]]*"naive_pass"//g' ./shadowsocks/webs/Module_shadowsocks.asp
 		sed -i 's/,[[:space:]]*"naive_json"//g' ./shadowsocks/webs/Module_shadowsocks.asp
 		sed -i 's/,[[:space:]]*"tuic_json"//g' ./shadowsocks/webs/Module_shadowsocks.asp
+		sed -i 's/,[[:space:]]*"anytls_server"//g' ./shadowsocks/webs/Module_shadowsocks.asp
+		sed -i 's/,[[:space:]]*"anytls_port"//g' ./shadowsocks/webs/Module_shadowsocks.asp
+		sed -i 's/,[[:space:]]*"anytls_pass"//g' ./shadowsocks/webs/Module_shadowsocks.asp
+		sed -i 's/,[[:space:]]*"anytls_sni"//g' ./shadowsocks/webs/Module_shadowsocks.asp
+		sed -i 's/,[[:space:]]*"anytls_ai"//g' ./shadowsocks/webs/Module_shadowsocks.asp
+		sed -i '/^[[:space:]]*"anytls_server"[[:space:]]*:/d' ./shadowsocks/webs/Module_shadowsocks.asp
+		sed -i 's/、anytls:\/\/ 等链接/ 等链接/g' ./shadowsocks/webs/Module_shadowsocks.asp
 		sed -i 's/\,\s\"ss_basic_vcore\"//g' ./shadowsocks/webs/Module_shadowsocks.asp
 		# modify words
 		# trojan 用xray运行，所以trojan多核心功能删除
 		sed -i 's/ss\/ssr\/trojan/ss\/ssr/g' ./shadowsocks/webs/Module_shadowsocks.asp
-		sed -i 's/八种协议/六种协议/g' ./shadowsocks/webs/Module_shadowsocks.asp
+		sed -i 's/的科学上网工具。/九种协议的科学上网工具。/g' ./shadowsocks/webs/Module_shadowsocks.asp
+		sed -i 's/九种协议/六种协议/g' ./shadowsocks/webs/Module_shadowsocks.asp
 		sed -i 's/科学上网工具/科学上网、游戏加速工具/g' ./shadowsocks/webs/Module_shadowsocks.asp
-		sed -i 's/14\.286/20/g' ./shadowsocks/webs/Module_shadowsocks.asp
+		sed -i 's/11\.111/16.667/g' ./shadowsocks/webs/Module_shadowsocks.asp
 		sed -i 's/\s\&\&\s\!\snaive_on//g' ./shadowsocks/webs/Module_shadowsocks.asp
 		sed -i 's/shadowsocks_2/shadowsocks_lite_2/g' ./shadowsocks/res/ss-menu.js
 		sed -i 's/config\.json\.js/config_lite\.json\.js/g' ./shadowsocks/res/ss-menu.js

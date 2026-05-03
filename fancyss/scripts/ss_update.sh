@@ -59,7 +59,7 @@ update_ss(){
 		ln -sf /koolshare/bin/curl-fancyss /tmp/curl-update
 	fi
 
-	SOCKS5_OPEN=$(netstat -nlp 2>/dev/null|grep -w "23456"|grep -Eo "v2ray|xray|naive|tuic")
+	SOCKS5_OPEN=$(netstat -nlp 2>/dev/null|grep -w "23456"|grep -Eo "v2ray|xray|naive|tuic|anytls-zig")
 	if [ -n "${SOCKS5_OPEN}" ];then
 		run /tmp/curl-update -4sk -L --connect-timeout 5 --max-time 120 --retry 3 --retry-delay 1 -x socks5h://127.0.0.1:23456 ${main_url}/${VERSION} >/tmp/version.json.js
 	else
@@ -90,7 +90,7 @@ update_ss(){
 		release_tarball_url="${release_url_base}/v${fancyss_version_online}/${PACKAGE}.tar.gz"
 		echo_date "开启下载进程，从主服务器上下载更新包..."
 		echo_date "下载链接：${release_tarball_url}"
-		if [ -z "${SOCKS5_OPEN}" ];then
+		if [ -n "${SOCKS5_OPEN}" ];then
 			run /tmp/curl-update -4k -L --connect-timeout 5 --max-time 120 --retry 3 --retry-delay 1 -x socks5h://127.0.0.1:23456 ${release_tarball_url} --output /tmp/${PACKAGE}.tar.gz
 		else
 			run /tmp/curl-update -4k -L --connect-timeout 5 --max-time 120 --retry 3 --retry-delay 1 ${release_tarball_url} --output /tmp/${PACKAGE}.tar.gz
