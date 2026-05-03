@@ -2171,9 +2171,9 @@ function collect_node_reference_delete_impact(nodeId) {
 	nodeId = String(nodeId || "");
 	var impact = {
 		current: get_saved_current_node_id() == nodeId,
-		failover: get_failover_node_id() == nodeId,
 		shuntDefault: false,
-		shuntRuleCount: 0
+		shuntRuleCount: 0,
+		combos: []
 	};
 	if (!nodeId) {
 		return impact;
@@ -2186,6 +2186,19 @@ function collect_node_reference_delete_impact(nodeId) {
 		}
 		if (String(rule.target_node_id || "") == nodeId) {
 			impact.shuntRuleCount += 1;
+		}
+	}
+	// fork 新增：扫描备用组合，记录引用此节点的位置
+	if (typeof failover_combo_count === "function" && typeof failover_combo_get === "function") {
+		var n = failover_combo_count();
+		for (var ci = 1; ci <= n; ci++) {
+			var c = failover_combo_get(ci);
+			if (c.front_id !== "" && String(c.front_id) === nodeId) {
+				impact.combos.push({i: ci, role: "front"});
+			}
+			if (String(c.landing_id) === nodeId) {
+				impact.combos.push({i: ci, role: "landing"});
+			}
 		}
 	}
 	return impact;
@@ -2201,14 +2214,19 @@ function show_deleted_node_reference_notice(nodeName, impact, nextCurrentId) {
 			lines.push("原运行节点【" + nodeName + "】已被删除，当前节点已被清空。");
 		}
 	}
-	if (impact.failover) {
-		lines.push("原故障转移节点【" + nodeName + "】已被删除，故障转移目标已自动清空，请重新选择。");
-	}
 	if (impact.shuntDefault) {
 		lines.push("节点分流的兜底目标原本指向【" + nodeName + "】，请进入节点分流页面重新确认兜底节点。");
 	}
 	if (impact.shuntRuleCount > 0) {
 		lines.push("节点分流中有 " + impact.shuntRuleCount + " 条规则仍引用【" + nodeName + "】，请进入节点分流页面检查并重新选择目标节点。");
+	}
+	if (impact.combos && impact.combos.length > 0) {
+		var roleNames = [];
+		for (var ci = 0; ci < impact.combos.length; ci++) {
+			var c = impact.combos[ci];
+			roleNames.push("#" + c.i + "（" + (c.role === "front" ? "前置" : "落地") + "）");
+		}
+		lines.push("节点【" + nodeName + "】被引用于备用组合 " + roleNames.join("、") + "，已自动清理（落地被删的组合整体移除，前置被删的仅清空前置变为直连）。");
 	}
 	if (!lines.length) {
 		return;
@@ -4000,17 +4018,6 @@ function should_save_main_panel_node(nodeId) {
 		return false;
 	}
 	return String(mainPanelNodeId) == String(nodeId);
-}
-function get_failover_node_id() {
-	if (get_node_storage_schema() == 2) {
-		var resolvedFailover = resolve_node_id_with_identity(db_fss["fss_node_failover_backup"] || "", db_fss["fss_node_failover_identity"] || db_fss["fss_failover_node_identity"] || "", true);
-		db_fss["fss_node_failover_backup"] = resolvedFailover;
-		if (resolvedFailover && !db_fss["fss_node_failover_identity"]) {
-			db_fss["fss_node_failover_identity"] = get_node_identity(resolvedFailover) || "";
-		}
-		return resolvedFailover;
-	}
-	return resolve_node_id(db_ss["ss_failover_s4_3"] || "", true);
 }
 function get_node_type(nodeId) {
 	if (!nodeId) {
@@ -6469,15 +6476,12 @@ function ss_node_sel() {
 function refresh_options() {
 	if (node_max == 0) return false;
 	var option0 = $("#ssconf_basic_node");
-	var option3 = $("#ss_failover_s4_3");
 	
 	option0.find('option').remove().end();
-	option3.find('option').remove().end();
 
 	for (var i = 0; i < ss_nodes.length; i++) {
 		var field = ss_nodes[i];
 		var c = confs[field];
-		option3.append('<option value="' + field + '">' + c["name"] + '</option>');
 		if (c.group) {
 			var real_group = c.group.split("_")[0];
 			var group_tag = real_group + " - ";
@@ -6544,7 +6548,6 @@ function refresh_options() {
 		}
 	}
 	option0.val(get_saved_current_node_id() || get_first_node_id());
-	option3.val(get_failover_node_id() || get_first_node_id());
 	// 前置节点（链式代理）：仅列出 xray 内置 outbound 支持的协议（SS 0/Vmess 3/Vless 4/Trojan 5）
 	var optionFront = $("#ssconf_basic_node_front");
 	if (optionFront.length) {
@@ -6581,36 +6584,401 @@ function refresh_options() {
 	}
 	E("ss_basic_row").value = db_ss["ss_basic_row"]||15;
 	render_chain_status();
+	render_failover_combo_panel();
 }
 function ss_node_front_sel() {
 	// 链式代理前置节点切换：只持久化在 save() 时统一写入；这里仅保留扩展点。
 }
-// 渲染链式代理状态行：读 dbus key fss_chain_status / fss_chain_path
+// 渲染代理状态行：4 状态 - 未启动 / 链式开启 / 链式回落 / 直连开启
 function render_chain_status() {
 	var $el = $("#ss_state_chain");
 	var $pathEl = $("#ss_state_chain_path");
 	var $break = $("#ss_state_chain_path_break");
 	if (!$el.length) return;
+	var enabled = db_ss["ss_basic_enable"] == "1";
 	var status = db_ss["ss_chain_status"] || "disabled";
-	var path = db_ss["ss_chain_path"] || "";
-	var label = "链式代理状态 - ";
-	if (status == "enabled") {
+	var chainPath = db_ss["ss_chain_path"] || "";
+	var label = "代理状态 - ";
+	var showPath = true;
+	var pathText = "";
+	if (!enabled) {
+		$el.html(label + "<span style='color:#888;'>插件未启动</span>");
+		showPath = false;
+	} else if (status == "enabled") {
 		$el.html(label + "<span style='color:#22ab39;'>链式代理已开启</span>");
-		if (path) {
-			$pathEl.text("路径：" + path).show();
-			$break.show();
-		} else {
-			$pathEl.hide();
-			$break.hide();
-		}
+		pathText = chainPath ? ("路径：路由器 → " + chainPath) : "";
 	} else if (status == "fallback") {
-		$el.html(label + "<span style='color:#FFB300;'>回落至直连</span>");
-		$pathEl.hide();
-		$break.hide();
+		$el.html(label + "<span style='color:#FFB300;'>链式失败回落至直连</span>");
+		pathText = "路径：" + build_direct_path();
 	} else {
-		$el.html(label + "<span style='color:#888;'>直连中</span>");
+		$el.html(label + "<span style='color:#1f7fbd;'>直连代理已开启</span>");
+		pathText = "路径：" + build_direct_path();
+	}
+	if (showPath && pathText) {
+		$pathEl.text(pathText).show();
+		$break.show();
+	} else {
 		$pathEl.hide();
 		$break.hide();
+	}
+}
+function build_direct_path() {
+	var landingId = String(db_ss["ssconf_basic_node"] || "");
+	var landingName = "";
+	if (landingId && typeof confs !== "undefined" && confs[landingId] && confs[landingId].name) {
+		landingName = confs[landingId].name;
+	}
+	if (!landingName) landingName = landingId ? ("节点" + landingId) : "(未选)";
+	return "路由器 → " + landingName + " → 目标";
+}
+// =================== 备用节点组合（故障转移备选列表） ===================
+function failover_combo_count() {
+	var n = parseInt(db_ss["ss_failover_combo_count"] || "0", 10);
+	if (isNaN(n) || n < 0) return 0;
+	return n;
+}
+function failover_combo_get(i) {
+	var prefix = "ss_failover_combo_" + i + "_";
+	return {
+		front_id: db_ss[prefix + "front_id"] || "",
+		front_identity: db_ss[prefix + "front_identity"] || "",
+		landing_id: db_ss[prefix + "landing_id"] || "",
+		landing_identity: db_ss[prefix + "landing_identity"] || "",
+		failed: db_ss[prefix + "failed"] || "0"
+	};
+}
+function failover_combo_status(combo) {
+	if (combo.failed == "1") return "failed";
+	var curFront = String(db_ss["ssconf_basic_node_front"] || "");
+	var curLanding = String(db_ss["ssconf_basic_node"] || db_fss["fss_node_current"] || "");
+	if (String(combo.front_id) == curFront && String(combo.landing_id) == curLanding) {
+		return "running";
+	}
+	return "available";
+}
+function failover_combo_node_label(id) {
+	if (!id) return "";
+	var c = confs[id];
+	if (!c) return "(节点已删除: " + id + ")";
+	var real_group = (c.group || "").split("_")[0];
+	var group_tag = real_group ? real_group + " - " : "";
+	var label = "";
+	if (c.type == "0")      label = "【SS】" + group_tag + c.name;
+	else if (c.type == "1") label = "【SSR】" + group_tag + c.name;
+	else if (c.type == "3") label = (c["v2ray_use_json"] == "1" ? "【json】" : "【Vmess】") + group_tag + c.name;
+	else if (c.type == "4") {
+		var xrayLabel = (c["xray_prot"] || "vless") == "vmess" ? "Vmess" : "Vless";
+		label = (c["xray_use_json"] == "1" ? "【json】" : "【" + xrayLabel + "】") + group_tag + c.name;
+	}
+	else if (c.type == "5") label = "【Trojan】" + group_tag + c.name;
+	else if (c.type == "6") label = "【Naïve】" + group_tag + c.name;
+	else if (c.type == "7") label = "【Tuic】" + group_tag + c.name;
+	else if (c.type == "8") label = "【hysteria2】" + group_tag + c.name;
+	else                    label = group_tag + (c.name || id);
+	return label;
+}
+function failover_combo_html_escape(s) {
+	return String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+function render_failover_combo_panel() {
+	var $panel = $("#failover_combo_panel");
+	if (!$panel.length) return;
+	// 首次进入：自动种子主组合（异步，完成后会重渲染一次）
+	ensure_main_combo_seeded(function(seeded) {
+		if (seeded) { render_failover_combo_panel(); }
+	});
+	var n = failover_combo_count();
+	var html = '';
+	html += '<table width="100%" border="1" align="center" cellpadding="4" cellspacing="0" bordercolor="#6b8fa3" class="FormTable" style="margin-top:4px;">';
+	html += '<tr><th style="width:36px;text-align:center;">#</th><th>前置节点</th><th>落地节点</th><th style="width:80px;text-align:center;">状态</th><th style="width:80px;text-align:center;">操作</th></tr>';
+	if (n == 0) {
+		html += '<tr><td colspan="5" style="text-align:center;color:#888;padding:8px;">还没有备用组合，添加一个吧 ↓</td></tr>';
+	}
+	for (var i = 1; i <= n; i++) {
+		var combo = failover_combo_get(i);
+		var st = failover_combo_status(combo);
+		var stHtml = "";
+		if (st == "running")      stHtml = '<span style="color:#22ab39;font-weight:bold;">启用中</span>';
+		else if (st == "failed")  stHtml = '<span style="color:#cc3333;">已失效</span>';
+		else                      stHtml = '<span style="color:#1f7fbd;">可用</span>';
+		var frontLabel = combo.front_id ? failover_combo_html_escape(failover_combo_node_label(combo.front_id)) : '<span style="color:#888;">(无前置/直连)</span>';
+		var landingLabel = failover_combo_html_escape(failover_combo_node_label(combo.landing_id));
+		var btnDisabled = (st == "running") ? ' disabled style="opacity:0.4;cursor:not-allowed;" title="当前运行中的组合不能删除"' : '';
+		html += '<tr>';
+		html += '<td style="text-align:center;">' + i + '</td>';
+		html += '<td>' + frontLabel + '</td>';
+		html += '<td>' + landingLabel + '</td>';
+		html += '<td style="text-align:center;">' + stHtml + '</td>';
+		html += '<td style="text-align:center;"><a class="ss_btn" style="cursor:pointer;"' + btnDisabled + ' onclick="failover_combo_remove(' + i + ')">删除</a></td>';
+		html += '</tr>';
+	}
+	// 添加行
+	html += '<tr><td colspan="5"><label style="display:inline-block;min-width:80px;">前置节点</label><select id="failover_combo_add_front" style="width:280px;"></select></td></tr>';
+	html += '<tr><td colspan="5"><label style="display:inline-block;min-width:80px;">落地节点</label><select id="failover_combo_add_landing" style="width:280px;"></select></td></tr>';
+	html += '<tr><td colspan="5"><label style="display:inline-block;min-width:80px;">&nbsp;</label><a class="ss_btn" style="cursor:pointer;" onclick="failover_combo_add()">+ 添加</a></td></tr>';
+	html += '</table>';
+	$panel.html(html);
+	// 填充 select 选项
+	var $front = $("#failover_combo_add_front");
+	var $landing = $("#failover_combo_add_landing");
+	$front.append('<option value="">(无前置/直连)</option>');
+	for (var i = 0; i < ss_nodes.length; i++) {
+		var field = ss_nodes[i];
+		var c = confs[field];
+		if (!c) continue;
+		// 前置兼容性过滤（同 refresh_options 链式前置规则）
+		var frontOk = (c.type == "0" || c.type == "3" || c.type == "4" || c.type == "5");
+		if (frontOk) {
+			if (c.type == "0" && c.ss_obfs && c.ss_obfs != "0") frontOk = false;
+			if (c.type == "3" && c.v2ray_use_json == "1") frontOk = false;
+			if (c.type == "4" && c.xray_use_json == "1") frontOk = false;
+		}
+		var label = failover_combo_node_label(field);
+		if (frontOk) {
+			$front.append($("<option>", { value: field, text: label }));
+		}
+		// 落地：所有节点
+		$landing.append($("<option>", { value: field, text: label }));
+	}
+}
+function ensure_main_combo_seeded(cb) {
+	// 标志位检查必须在最前：避免 render -> ensure -> render 无限递归
+	if (String(db_ss["ss_failover_main_combo_seeded"] || "") === "1") {
+		if (typeof cb === "function") cb(false);
+		return;
+	}
+	var mainFront = String(db_ss["ssconf_basic_node_front"] || "");
+	var mainLanding = String(db_ss["ssconf_basic_node"] || db_fss["fss_node_current"] || "");
+	// 主面板没有有效落地 → 不种子但落标志（避免后续每次都试）
+	if (!mainLanding) {
+		var fields0 = { "ss_failover_main_combo_seeded": "1" };
+		failover_combo_persist(fields0, function() {
+			if (typeof cb === "function") cb(false);
+		});
+		return;
+	}
+	// 检查是否已有 combo 与主面板组合匹配
+	var n = failover_combo_count();
+	for (var i = 1; i <= n; i++) {
+		var c = failover_combo_get(i);
+		if (String(c.front_id) === mainFront && String(c.landing_id) === mainLanding) {
+			var fields1 = { "ss_failover_main_combo_seeded": "1" };
+			failover_combo_persist(fields1, function() {
+				if (typeof cb === "function") cb(false);
+			});
+			return;
+		}
+	}
+	// 不存在 → 把现有 combo_1..n 全部 shift 到 combo_2..n+1，再把主面板放到 combo_1
+	var fields = {};
+	// shift（从大到小，避免覆盖）
+	for (var j = n; j >= 1; j--) {
+		var src = failover_combo_get(j);
+		var dstPrefix = "ss_failover_combo_" + (j + 1) + "_";
+		fields[dstPrefix + "front_id"] = src.front_id;
+		fields[dstPrefix + "front_identity"] = src.front_identity;
+		fields[dstPrefix + "landing_id"] = src.landing_id;
+		fields[dstPrefix + "landing_identity"] = src.landing_identity;
+		fields[dstPrefix + "failed"] = src.failed;
+	}
+	// combo_1 = 主面板
+	fields["ss_failover_combo_1_front_id"] = mainFront;
+	fields["ss_failover_combo_1_front_identity"] = mainFront ? (get_node_identity(mainFront) || "") : "";
+	fields["ss_failover_combo_1_landing_id"] = mainLanding;
+	fields["ss_failover_combo_1_landing_identity"] = get_node_identity(mainLanding) || "";
+	fields["ss_failover_combo_1_failed"] = "0";
+	fields["ss_failover_combo_count"] = String(n + 1);
+	fields["ss_failover_main_combo_seeded"] = "1";
+	failover_combo_persist(fields, function(ok) {
+		if (typeof cb === "function") cb(ok === true);
+	});
+}
+function failover_combo_persist(fields, cb) {
+	// 仅持久化 dbus 字段，不重启代理服务（dummy_script.sh 是后端用于"只写 fields"的占位脚本）
+	var id = parseInt(Math.random() * 100000000);
+	var postData = {"id": id, "method": "dummy_script.sh", "params":[], "fields": fields};
+	$.ajax({
+		type: "POST",
+		cache: false,
+		url: "/_api/",
+		data: JSON.stringify(postData),
+		dataType: "json",
+		success: function(response) {
+			// 同步本地缓存，避免重新 fetch
+			for (var k in fields) {
+				if (Object.prototype.hasOwnProperty.call(fields, k)) {
+					db_ss[k] = fields[k];
+				}
+			}
+			if (typeof cb === "function") cb(true);
+		},
+		error: function() {
+			if (typeof cb === "function") cb(false);
+		}
+	});
+}
+function failover_combo_add() {
+	var $front = $("#failover_combo_add_front");
+	var $landing = $("#failover_combo_add_landing");
+	if (!$front.length || !$landing.length) return;
+	var front = String($front.val() || "");
+	var landing = String($landing.val() || "");
+	if (!landing) {
+		alert("请选择落地节点。");
+		return;
+	}
+	if (front && front == landing) {
+		alert("前置节点不能与落地节点相同。");
+		return;
+	}
+	// 重复检查
+	var n = failover_combo_count();
+	for (var i = 1; i <= n; i++) {
+		var existing = failover_combo_get(i);
+		if (String(existing.front_id) == front && String(existing.landing_id) == landing) {
+			alert("该组合已存在（#" + i + "）。");
+			return;
+		}
+	}
+	var newIdx = n + 1;
+	var prefix = "ss_failover_combo_" + newIdx + "_";
+	var fields = {};
+	fields["ss_failover_combo_count"] = String(newIdx);
+	fields[prefix + "front_id"] = front;
+	fields[prefix + "front_identity"] = front ? (get_node_identity(front) || "") : "";
+	fields[prefix + "landing_id"] = landing;
+	fields[prefix + "landing_identity"] = get_node_identity(landing) || "";
+	fields[prefix + "failed"] = "0";
+	failover_combo_persist(fields, function(ok) {
+		if (!ok) {
+			alert("保存失败，请稍后重试。");
+			return;
+		}
+		render_failover_combo_panel();
+	});
+}
+function failover_combo_remove(i) {
+	i = parseInt(i, 10);
+	if (isNaN(i) || i < 1) return;
+	var n = failover_combo_count();
+	if (i > n) return;
+	var combo = failover_combo_get(i);
+	if (failover_combo_status(combo) == "running") {
+		alert("当前运行中的组合不能删除，请先切换到其他组合。");
+		return;
+	}
+	if (!confirm("确定删除组合 #" + i + " 吗？")) return;
+	var fields = {};
+	// 把 i+1..n 的字段往前挪到 i..n-1
+	for (var j = i; j < n; j++) {
+		var src = failover_combo_get(j + 1);
+		var dstPrefix = "ss_failover_combo_" + j + "_";
+		fields[dstPrefix + "front_id"] = src.front_id;
+		fields[dstPrefix + "front_identity"] = src.front_identity;
+		fields[dstPrefix + "landing_id"] = src.landing_id;
+		fields[dstPrefix + "landing_identity"] = src.landing_identity;
+		fields[dstPrefix + "failed"] = src.failed;
+	}
+	// 清空原最后一项的字段
+	var tailPrefix = "ss_failover_combo_" + n + "_";
+	fields[tailPrefix + "front_id"] = "";
+	fields[tailPrefix + "front_identity"] = "";
+	fields[tailPrefix + "landing_id"] = "";
+	fields[tailPrefix + "landing_identity"] = "";
+	fields[tailPrefix + "failed"] = "";
+	fields["ss_failover_combo_count"] = String(n - 1);
+	failover_combo_persist(fields, function(ok) {
+		if (!ok) {
+			alert("保存失败，请稍后重试。");
+			return;
+		}
+		render_failover_combo_panel();
+	});
+}
+// 节点删除路径用：根据 delete impact 算出"清理 combo"所需的 fields 集合
+// 规则：role=landing 整条 combo 删除并 reindex；role=front 仅清空前置（变直连）
+// 注意：本函数只生成 fields 字典（不动 db_fss），让 compfilter 能正确识别差异。
+//       db_fss 的同步在 ajax 成功后由调用方负责（通过 failover_combo_apply_delete_fields_local）。
+// 必须先按 impact.combos 里 i 倒序处理，避免 reindex 错位。
+function failover_combo_compute_delete_fields(impact) {
+	var fields = {};
+	if (!impact || !impact.combos || !impact.combos.length) return fields;
+	var dropSet = {};
+	var clearFrontSet = {};
+	for (var k = 0; k < impact.combos.length; k++) {
+		var rec = impact.combos[k];
+		if (rec.role === "landing") {
+			dropSet[rec.i] = true;
+		} else if (rec.role === "front") {
+			clearFrontSet[rec.i] = true;
+		}
+	}
+	// 1. 先用一份 combo 列表的本地拷贝，模拟 reindex
+	var n = failover_combo_count();
+	var combos = []; // combos[1..n]，combos[0] 占位
+	combos.push(null);
+	for (var i = 1; i <= n; i++) combos.push(failover_combo_get(i));
+	// 2. clearFront：仅当不在 dropSet 中
+	for (var idxStr in clearFrontSet) {
+		if (!Object.prototype.hasOwnProperty.call(clearFrontSet, idxStr)) continue;
+		var idxI = parseInt(idxStr, 10);
+		if (dropSet[idxI] || isNaN(idxI) || idxI < 1 || idxI > n) continue;
+		combos[idxI].front_id = "";
+		combos[idxI].front_identity = "";
+	}
+	// 3. drop：倒序删除
+	var dropIdxList = [];
+	for (var idxStr2 in dropSet) {
+		if (Object.prototype.hasOwnProperty.call(dropSet, idxStr2)) dropIdxList.push(parseInt(idxStr2, 10));
+	}
+	dropIdxList.sort(function(a, b) { return b - a; });
+	for (var d = 0; d < dropIdxList.length; d++) {
+		var dropI = dropIdxList[d];
+		if (dropI < 1 || dropI > combos.length - 1) continue;
+		combos.splice(dropI, 1);
+	}
+	// 4. 把当前 combos 数组（去掉占位 null）写回 fields，原 1..oldN 全部覆盖
+	var newN = combos.length - 1;
+	for (var ni = 1; ni <= n; ni++) {
+		var prefixOut = "ss_failover_combo_" + ni + "_";
+		if (ni <= newN) {
+			var c = combos[ni];
+			fields[prefixOut + "front_id"] = c.front_id;
+			fields[prefixOut + "front_identity"] = c.front_identity;
+			fields[prefixOut + "landing_id"] = c.landing_id;
+			fields[prefixOut + "landing_identity"] = c.landing_identity;
+			fields[prefixOut + "failed"] = c.failed;
+		} else {
+			// 超出新长度部分全部清空
+			fields[prefixOut + "front_id"] = "";
+			fields[prefixOut + "front_identity"] = "";
+			fields[prefixOut + "landing_id"] = "";
+			fields[prefixOut + "landing_identity"] = "";
+			fields[prefixOut + "failed"] = "";
+		}
+	}
+	if (newN !== n) {
+		fields["ss_failover_combo_count"] = String(newN);
+	}
+	return fields;
+}
+// ajax 成功后调用：把已落 dbus 的 fields 同步到 db_ss 本地缓存，避免 panel 残留旧数据
+function failover_combo_apply_delete_fields_local(fields) {
+	if (!fields) return;
+	for (var k in fields) {
+		if (Object.prototype.hasOwnProperty.call(fields, k)) {
+			db_ss[k] = fields[k];
+		}
+	}
+}
+function refresh_failover_combo_panel_visibility() {
+	var $section = $("#failover_combo_section");
+	if (!$section.length) return;
+	var enabled = E("ss_failover_enable") && E("ss_failover_enable").checked;
+	if (enabled) {
+		$section.show();
+	} else {
+		$section.hide();
 	}
 }
 function save() {
@@ -6671,8 +7039,6 @@ function save() {
 	  "ss_failover_s3_1",
 	  "ss_failover_s3_2",
 	  "ss_failover_s4_1",
-	  "ss_failover_s4_2",
-	  "ss_failover_s4_3",
 	  "ss_failover_s5",
 	  "ss_basic_interval",
 	  "ss_basic_row",
@@ -7143,10 +7509,6 @@ function save() {
 	}
 	//---------------------------------------------------------------
 	if (get_node_storage_schema() == 2) {
-		var failoverNodeId = resolve_node_id(E("ss_failover_s4_3").value, true);
-		dbus["fss_node_failover_backup"] = failoverNodeId || "";
-		dbus["fss_node_failover_identity"] = get_node_identity(failoverNodeId) || "";
-		delete dbus["ss_failover_s4_3"];
 		if (saveMainPanelNode) {
 			dbus = $.extend(dbus, build_schema2_upsert_fields(dbus, node_sel, "manual", true));
 		}
@@ -8190,14 +8552,14 @@ function verifyFields(r) {
 		$("#failover_settings_1").show();
 		$("#failover_settings_2").show();
 		$("#failover_settings_3").show();
+		$("#failover_combo_section").show();
 	}else{
 		$("#interval_settings").hide();
 		$("#failover_settings_1").hide();
 		$("#failover_settings_2").hide();
 		$("#failover_settings_3").hide();
+		$("#failover_combo_section").hide();
 	}
-	showhide("ss_failover_s4_2",  E("ss_failover_enable").checked && E("ss_failover_s4_1").value == "2");
-	showhide("ss_failover_s4_3",  E("ss_failover_enable").checked && E("ss_failover_s4_1").value == "2" && E("ss_failover_s4_2").value == "1");
 	// node sub pannel
 	if(E("ss_adv_sub").checked == false){
 		$("#ssr_subscribe_mode").parent().parent().hide();
@@ -8958,10 +9320,6 @@ function apply_schema2_node_delete_local(nodeId) {
 		db_fss["fss_node_current"] = nextCurrentId;
 		db_fss["fss_node_current_identity"] = nextCurrentId ? (get_node_identity(nextCurrentId) || "") : "";
 	}
-	if (get_failover_node_id() == nodeId) {
-		db_fss["fss_node_failover_backup"] = "";
-		db_fss["fss_node_failover_identity"] = "";
-	}
 	fss_nodes_raw = {};
 	confs = {};
 	suppressLatencyCacheReloadOnce = true;
@@ -9000,9 +9358,15 @@ function process_schema2_node_delete_queue() {
 			fields_v2["fss_node_current"] = nextCurrentId;
 			fields_v2["fss_node_current_identity"] = nextCurrentId ? (get_node_identity(nextCurrentId) || "") : "";
 		}
-		if (get_failover_node_id() == id) {
-			fields_v2["fss_node_failover_backup"] = "";
-			fields_v2["fss_node_failover_identity"] = "";
+		// fork 新增：把备用组合的清理字段合入此次提交，避免多次 ajax
+		var comboFields = null;
+		if (deleteImpact && deleteImpact.combos && deleteImpact.combos.length > 0 && typeof failover_combo_compute_delete_fields === "function") {
+			comboFields = failover_combo_compute_delete_fields(deleteImpact);
+			for (var ck in comboFields) {
+				if (Object.prototype.hasOwnProperty.call(comboFields, ck)) {
+					fields_v2[ck] = comboFields[ck];
+				}
+			}
 		}
 		var post_data_v2 = compfilter(get_compare_store(), fields_v2);
 		apply_schema2_node_delete_local(id);
@@ -9030,6 +9394,13 @@ function process_schema2_node_delete_queue() {
 			},
 			success: function() {
 				schedule_schema2_node_cache_prune(id);
+				// fork 新增：若涉及 combo 清理，把变更同步到本地 db_fss 并刷新面板
+				if (comboFields && typeof failover_combo_apply_delete_fields_local === "function") {
+					failover_combo_apply_delete_fields_local(comboFields);
+					if (typeof render_failover_combo_panel === "function") {
+						try { render_failover_combo_panel(); } catch (e) {}
+					}
+				}
 				show_deleted_node_reference_notice(removedNodeName, deleteImpact, new_nodes_v2.length ? String(new_nodes_v2[0]) : "");
 			},
 			error: function() {
@@ -10922,9 +11293,21 @@ function save_new_order(){
 		if(db_ss["ssconf_basic_node"] == rowid){
 			dbus_tmp["ssconf_basic_node"] = String(i+1);
 		}
-		// 如果移动的节点是备用节点的，需要更改到新的位置
-		if(db_ss["ss_failover_s4_3"] && db_ss["ss_failover_s4_3"] == rowid){
-			dbus_tmp["ss_failover_s4_3"] = String(i+1);
+		// fork 新增：备用组合的 _id 字段同步重排
+		if (typeof failover_combo_count === "function") {
+			var ccn = failover_combo_count();
+			for (var ci = 1; ci <= ccn; ci++) {
+				var cPrefix = "ss_failover_combo_" + ci + "_";
+				var fId = String(db_ss[cPrefix + "front_id"] || "");
+				var lId = String(db_ss[cPrefix + "landing_id"] || "");
+				// 前置可空——只在非空且匹配时改写
+				if (fId !== "" && fId === String(rowid)) {
+					dbus_tmp[cPrefix + "front_id"] = String(i + 1);
+				}
+				if (lId !== "" && lId === String(rowid)) {
+					dbus_tmp[cPrefix + "landing_id"] = String(i + 1);
+				}
+			}
 		}
 		// 生成新的所有节点的信息
 		for (var j = 0; j < temp.length; j++) {
@@ -15496,7 +15879,7 @@ function set_cron(action) {
 function save_failover() {
 	var dbus_post = {};
 		db_ss["ss_basic_action"] = "19";
-	var fov_inp = ["ss_failover_s1", "ss_failover_s2_1", "ss_failover_s2_2", "ss_failover_s3_1", "ss_failover_s3_2", "ss_failover_s4_1", "ss_failover_s4_2", "ss_failover_s4_3", "ss_failover_s5", "ss_basic_interval"];
+	var fov_inp = ["ss_failover_s1", "ss_failover_s2_1", "ss_failover_s2_2", "ss_failover_s3_1", "ss_failover_s3_2", "ss_failover_s4_1", "ss_failover_s5", "ss_basic_interval"];
 	var fov_chk = ["ss_failover_enable", "ss_failover_c1", "ss_failover_c2", "ss_failover_c3"];
 	for (var i = 0; i < fov_inp.length; i++) {
 		dbus_post[fov_inp[i]] = E(fov_inp[i]).value;
@@ -16075,8 +16458,7 @@ function toggleKeyMask(o, show){
 														var fa2_2 = ["2", "3", "4", "5", "6", "7", "8"];
 														var fa3_1 = ["10", "15", "20"];
 														var fa3_2 = ["100", "150", "200", "250", "300", "350", "400", "450", "500", "1000"];
-														var fa4_1 = [["0", "关闭插件"], ["1", "重启插件"], ["2", "切换到"]];
-														var fa4_2 = [["1", "备用节点"], ["2", "下个节点"], ["3", "web延迟最低的节点"]];
+														var fa4_1 = [["0", "关闭插件"], ["1", "重启插件"], ["2", "切换备用组合"]];
 														var fa5 = [["1", "2s - 3s"], ["2", "4s - 7s"], ["3", "8s - 15s"], ["4", "16s - 31s"], ["5", "32s - 63s"]];
 														$('#table_failover').forms([
 															{ title: '故障转移开关', id:'ss_failover_enable',type:'checkbox', func:'v', value:false},
@@ -16109,8 +16491,6 @@ function toggleKeyMask(o, show){
 																{ suffix:'<div style="margin-top: 5px;">' },
 																{ suffix:'<lable>&nbsp;以上有一个条件满足，则&nbsp;</lable>' },
 																{ id:'ss_failover_s4_1', type:'select', style:'width:auto', func:'v', options:fa4_1, value:'2'},
-																{ id:'ss_failover_s4_2', type:'select', style:'width:auto', func:'v', options:fa4_2, value:'2'},
-																{ id:'ss_failover_s4_3', type:'select', style:'width:170px', func:'v', options:[]},
 																{ suffix:'</div>' },
 															]},
 															{ title: '状态检测时间间隔', rid:'interval_settings', multi: [
@@ -16125,6 +16505,9 @@ function toggleKeyMask(o, show){
 															{ title: '查看历史状态', rid:'failover_settings_3', multi: [
 																{ suffix:'<a type="button" id="look_logf" class="ss_btn" style="cursor:pointer" onclick="lookup_status_log(1)">国外状态历史</a>&nbsp;' },
 																{ suffix:'<a type="button" id="look_logc" class="ss_btn" style="cursor:pointer" onclick="lookup_status_log(2)">国内状态历史</a>' },
+															]},
+															{ title: '备用节点组合', rid:'failover_combo_section', hint:'201', multi: [
+																{ suffix:'<div id="failover_combo_panel"></div>' },
 															]},
 														]);
 													</script>

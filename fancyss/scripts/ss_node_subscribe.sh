@@ -4408,6 +4408,8 @@ sub_restore_active_nodes_after_rewrite(){
 		[ -z "${restore_current}" ] && restore_current="$(sub_list_node_ids | sed -n '1p')"
 		fss_set_current_node_id "${restore_current}"
 		fss_set_failover_node_id "${restore_failover}"
+		# fork 新增：通过 identity 把备用组合的 _id 字段重解析回最新值
+		fss_failover_combos_resync_after_subscribe >/dev/null 2>&1
 		return 0
 	fi
 
@@ -4434,6 +4436,8 @@ sub_restore_active_nodes_after_rewrite(){
 
 	fss_set_current_node_id "${restore_current}"
 	fss_set_failover_node_id "${restore_failover}"
+	# fork 新增：通过 identity 把备用组合的 _id 字段重解析回最新值
+	fss_failover_combos_resync_after_subscribe >/dev/null 2>&1
 }
 
 sub_refresh_node_state
@@ -5320,6 +5324,8 @@ remove_sub_node(){
 		fi
 		fss_set_current_node_id "${restore_current}"
 		fss_set_failover_node_id "${restore_failover}"
+		# fork 新增：通过 identity 把备用组合的 _id 字段重解析回最新值
+		fss_failover_combos_resync_after_subscribe >/dev/null 2>&1
 		dbus set fss_node_next_id="$((max_keep + 1))"
 		fss_mark_native_schema2_storage >/dev/null 2>&1 || true
 		fss_clear_webtest_runtime_results

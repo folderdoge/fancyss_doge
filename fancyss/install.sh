@@ -399,6 +399,116 @@ report_install_migration_progress() {
 	echo_date "$1"
 }
 
+# 一次性迁移：把旧版本的故障转移字段（ss_failover_s4_2/s4_3、fss_node_failover_*）
+# 转换为新的备用组合列表（ss_failover_combo_*），然后清理旧字段并打迁移标记。
+# 依赖：fss_node_id_exists、fss_get_node_identity_by_id（来自 ss_node_common.sh，install.sh 顶部已 source）
+# 触发条件：fss_failover_migrated_v1 != "1"。幂等。
+migrate_failover_v1(){
+	local migrated_flag legacy_s4_3 legacy_backup legacy_identity new_count
+	local target_id="" target_identity=""
+
+	migrated_flag="$(dbus get fss_failover_migrated_v1)"
+	if [ "${migrated_flag}" = "1" ]; then
+		return 0
+	fi
+
+	legacy_s4_3="$(dbus get ss_failover_s4_3)"
+	legacy_backup="$(dbus get fss_node_failover_backup)"
+	legacy_identity="$(dbus get fss_node_failover_identity)"
+	# 兼容历史 dbus key：旧 fork 版本曾用 fss_failover_combo_count，已被 v2 迁移到 ss_failover_combo_count；
+	# 这里两个 key 都查一下，取较大值，防止 v1 在 v2 之前/之后跑都能正确判断"已配置过 combo"。
+	new_count="$(dbus get ss_failover_combo_count)"
+	case "${new_count}" in
+		''|*[!0-9]*) new_count=0 ;;
+	esac
+	local legacy_combo_count="$(dbus get fss_failover_combo_count)"
+	case "${legacy_combo_count}" in
+		''|*[!0-9]*) legacy_combo_count=0 ;;
+	esac
+	if [ "${legacy_combo_count}" -gt "${new_count}" ] 2>/dev/null; then
+		new_count="${legacy_combo_count}"
+	fi
+
+	# 已经在新版本配置过 combo → 跳过迁移内容，仅清理旧字段
+	if [ "${new_count}" -ge 1 ] 2>/dev/null; then
+		echo_date "故障转移：检测到已有 ${new_count} 个备用组合，跳过旧字段迁移内容，仅清理废弃 keys。"
+	else
+		# 选定迁移源 id：优先 fss_node_failover_backup（identity 化更稳），再退到 ss_failover_s4_3
+		if [ -n "${legacy_backup}" ] && [ "${legacy_backup}" != "0" ]; then
+			if fss_node_id_exists "${legacy_backup}" >/dev/null 2>&1; then
+				target_id="${legacy_backup}"
+				target_identity="${legacy_identity}"
+			fi
+		fi
+		if [ -z "${target_id}" ] && [ -n "${legacy_s4_3}" ] && [ "${legacy_s4_3}" != "0" ]; then
+			if fss_node_id_exists "${legacy_s4_3}" >/dev/null 2>&1; then
+				target_id="${legacy_s4_3}"
+			fi
+		fi
+
+		if [ -n "${target_id}" ]; then
+			# identity 字段：拿不到就保持空，新版本 resolve 时会回退到 raw id
+			if [ -z "${target_identity}" ]; then
+				target_identity="$(fss_get_node_identity_by_id "${target_id}" 2>/dev/null)"
+			fi
+			# 直接写新前缀（ss_*）；不需要再过 v2 转换。
+			dbus set ss_failover_combo_count="1"
+			dbus set ss_failover_combo_1_front_id=""
+			dbus set ss_failover_combo_1_front_identity=""
+			dbus set ss_failover_combo_1_landing_id="${target_id}"
+			dbus set ss_failover_combo_1_landing_identity="${target_identity}"
+			dbus set ss_failover_combo_1_failed="0"
+			echo_date "故障转移：已把旧备用节点（id=${target_id}）迁移为备用组合 #1（直连模式）。"
+		else
+			echo_date "故障转移：未发现可迁移的旧备用节点，跳过 combo 创建。"
+		fi
+	fi
+
+	# 清理旧字段（无论本次是否创建 combo）
+	dbus remove ss_failover_s4_2 >/dev/null 2>&1
+	dbus remove ss_failover_s4_3 >/dev/null 2>&1
+	dbus remove fss_node_failover_backup >/dev/null 2>&1
+	dbus remove fss_node_failover_identity >/dev/null 2>&1
+	dbus set fss_failover_migrated_v1="1"
+	echo_date "故障转移：旧字段迁移完成（fss_failover_migrated_v1=1）。"
+}
+
+# 一次性迁移 v2：把 fork 旧版本的 fss_failover_combo_* / fss_failover_main_combo_seeded
+# 重命名为 ss_failover_combo_* / ss_failover_main_combo_seeded（前缀必须 ss_*
+# 才能被 koolshare /_api/ss 暴露给前端 db_ss，详见 CLAUDE.md 硬规则 #1）。
+# 触发条件：ss_failover_combo_migrated_v2 != "1"。幂等。
+# 顺序：在 install_now 中紧跟 migrate_failover_v1 之后调用——v1 现在直接写 ss_*，
+# v2 仅处理"用户已经在旧 fork 版本上手动配过 combo"留下的 fss_* 残留。
+migrate_failover_v2(){
+	local migrated_flag key value newkey
+	migrated_flag="$(dbus get ss_failover_combo_migrated_v2)"
+	if [ "${migrated_flag}" = "1" ]; then
+		return 0
+	fi
+
+	# 1. fss_failover_combo_*  →  ss_failover_combo_*
+	dbus list fss_failover_combo_ 2>/dev/null | while IFS= read -r line
+	do
+		[ -z "${line}" ] && continue
+		key="${line%%=*}"
+		value="${line#*=}"
+		newkey="ss_${key#fss_}"
+		dbus set "${newkey}"="${value}"
+		dbus remove "${key}" >/dev/null 2>&1
+	done
+
+	# 2. fss_failover_main_combo_seeded → ss_failover_main_combo_seeded
+	local legacy_seeded
+	legacy_seeded="$(dbus get fss_failover_main_combo_seeded)"
+	if [ -n "${legacy_seeded}" ]; then
+		dbus set ss_failover_main_combo_seeded="${legacy_seeded}"
+		dbus remove fss_failover_main_combo_seeded >/dev/null 2>&1
+	fi
+
+	dbus set ss_failover_combo_migrated_v2="1"
+	echo_date "故障转移：combo 前缀迁移 v2 完成（fss_failover_combo_* → ss_failover_combo_*）。"
+}
+
 get_model(){
 	local ODMPID=$(nvram get odmpid)
 	local PRODUCTID=$(nvram get productid)
@@ -1829,6 +1939,10 @@ install_now(){
 	
 	# others
 	fss_cleanup_acl_default_port_keys >/dev/null 2>&1
+	# 旧故障转移字段一次性迁移到新备用组合列表（幂等，详见 doc/design/failover-combo-list-design.md §3.2）
+	migrate_failover_v1
+	# combo 前缀重命名 v2：fss_failover_combo_* → ss_failover_combo_*（CLAUDE.md 硬规则 #1）
+	migrate_failover_v2
 	[ -z "$(dbus get ss_acl_default_mode)" ] && dbus set ss_acl_default_mode=follow
 	[ -z "$(dbus get ss_acl_default_mode_format)" ] && dbus set ss_acl_default_mode_format=2
 	[ -z "$(dbus get ss_acl_default_udp)" ] && dbus set ss_acl_default_udp=0

@@ -241,74 +241,91 @@ failover_action(){
 		# 重启
 		run start-stop-daemon -S -q -b -x /koolshare/ss/ssconfig.sh -- restart
 	elif [ "$ss_failover_s4_1" == "2" ];then
-		if [ "$ss_failover_s4_2" == "3" ];then
-			if [ ! -f "/tmp/upload/webtest_bakcup.txt" ];then
-				LOGM "$LOGTIME1 fancyss：没有找到web延迟测试结果，采取切换到下个节点的策略..."
-				ss_failover_s4_2="2"
-			fi
-			local CURR_NODE=${current_id}
-			local FAST_NODE=$(pick_fastest_webtest_node "${CURR_NODE}" "/tmp/upload/webtest_bakcup.txt")
-			if [ -z "${FAST_NODE}" ];then
-				LOGM "$LOGTIME1 fancyss：没有找到web延迟测试最低的节点，采取切换到下个节点的策略..."
-				ss_failover_s4_2="2"
-			fi
+		# 备用组合列表模式（fork 新增，详见 doc/design/failover-combo-list-design.md §4.1）
+		local cur_front=$(dbus get ssconf_basic_node_front)
+		local cur_landing="${current_id}"
+
+		# 1. 在列表里找匹配项 → 标记 failed=1（找不到说明 runtime 不在列表里，跳过）
+		local match_idx=$(fss_failover_find_combo "${cur_front}" "${cur_landing}")
+		if [ -n "${match_idx}" ]; then
+			dbus set "ss_failover_combo_${match_idx}_failed"="1"
+			[ "$FLAG" == "1" ] && LOGM "$LOGTIME1 fancyss：检测到连续$ss_failover_s1个状态故障，标记当前组合 #${match_idx} 失效..."
+			[ "$FLAG" == "2" ] && LOGM "$LOGTIME1 fancyss：检测到最近$ss_failover_s2_1个状态中，故障次数超过$ss_failover_s2_2个，标记当前组合 #${match_idx} 失效..."
+			[ "$FLAG" == "3" ] && LOGM "$LOGTIME1 fancyss：检测到最近$ss_failover_s3_1个状态平均延迟:$PING超过$ss_failover_s3_2 ms，标记当前组合 #${match_idx} 失效..."
+		else
+			[ "$FLAG" == "1" ] && LOGM "$LOGTIME1 fancyss：检测到连续$ss_failover_s1个状态故障，但当前 runtime 不在备用组合列表中..."
+			[ "$FLAG" == "2" ] && LOGM "$LOGTIME1 fancyss：检测到最近$ss_failover_s2_1个状态中，故障次数超过$ss_failover_s2_2个，但当前 runtime 不在备用组合列表中..."
+			[ "$FLAG" == "3" ] && LOGM "$LOGTIME1 fancyss：检测到最近$ss_failover_s3_1个状态平均延迟:$PING超过$ss_failover_s3_2 ms，但当前 runtime 不在备用组合列表中..."
 		fi
-	
-		if [ "$ss_failover_s4_2" == "1" ];then
-			local backup_id=$(fss_get_failover_node_id)
-			local backup_name=$(get_node_name_by_id "${backup_id}")
-			[ "$FLAG" == "1" ] && LOGM "$LOGTIME1 fancyss：检测到连续$ss_failover_s1个状态故障，切换到备用节点：[${backup_name}]！同时把主节点降级为备用节点！"
-			[ "$FLAG" == "2" ] && LOGM "$LOGTIME1 fancyss：检测到最近$ss_failover_s2_1个状态中，故障次数超过$ss_failover_s2_2个，切换到备用节点：[${backup_name}]！同时把主节点降级为备用节点！"
-			[ "$FLAG" == "3" ] && LOGM "$LOGTIME1 fancyss：检测到最近$ss_failover_s3_1个状态平均延迟:$PING超过$ss_failover_s3_2 ms，切换到备用节点：[${backup_name}]！同时把主节点降级为备用节点！"
-			# 切换
-			fss_set_current_node_id "${backup_id}"
-			# 降级
-			fss_set_failover_node_id "${current_id}"
-			# 重启
-			run start-stop-daemon -S -q -b -x /koolshare/ss/ssconfig.sh -- restart
-			dbus set ss_heart_beat="1"
-		elif [ "$ss_failover_s4_2" == "2" ];then
-			NEXT_NODE=$(fss_get_next_node_id_in_order "${current_id}")
-			local NEXT_NAME=$(get_node_name_by_id "${NEXT_NODE}")
-			local NODE_COUNT=$(fss_get_node_count)
-			[ "$FLAG" == "1" ] && LOGM "$LOGTIME1 fancyss：检测到连续$ss_failover_s1个状态故障，切换到节点列表的下个节点：[${NEXT_NAME}]！"
-			[ "$FLAG" == "2" ] && LOGM "$LOGTIME1 fancyss：检测到最近$ss_failover_s2_1个状态中，故障次数超过$ss_failover_s2_2个，切换到节点列表的下个节点：[${NEXT_NAME}]！"
-			[ "$FLAG" == "3" ] && LOGM "$LOGTIME1 fancyss：检测到最近$ss_failover_s3_1个状态平均延迟:$PING超过$ss_failover_s3_2 ms，切换到节点列表的下个节点：[${NEXT_NAME}]！"
-			if [ "${NODE_COUNT}" -le "1" ];then
-				LOGM "$LOGTIME1 fancyss：检测到你只有一个节点！无法切换到下一个节点！只好关闭插件了！"
-				dbus set ss_basic_enable="0"
-				run start-stop-daemon -S -q -b -x /koolshare/ss/ssconfig.sh -- stop
-				return
-			fi
-			# 切换
-			fss_set_current_node_id "${NEXT_NODE}"
-			# 重启
-			#start-stop-daemon -S -q -b -x /koolshare/ss/ssconfig.sh -- restart
-			echo_date "========================================================================" >/tmp/upload/ss_log.txt
-			echo_date "" >>/tmp/upload/ss_log.txt
-			echo_date "故障转移：重启fancyss！" >>/tmp/upload/ss_log.txt
-			echo_date "" >>/tmp/upload/ss_log.txt
-			echo_date "========================================================================" >>/tmp/upload/ss_log.txt
-			run start-stop-daemon -S -q -x /koolshare/ss/ssconfig.sh -- restart >>/tmp/upload/ss_log.txt
-			
-			dbus set ss_heart_beat="1"
-		elif [ "$ss_failover_s4_2" == "3" ];then
-			LOGM "$LOGTIME1 fancyss：切换到web延迟最低节点：[$(get_node_name_by_id "${FAST_NODE}")]..."
-			fss_set_current_node_id "${FAST_NODE}"
-			run start-stop-daemon -S -q -b -x /koolshare/ss/ssconfig.sh -- restart
-			dbus set ss_heart_beat="1"
+
+		# 2. 顺序扫描，找第一个 failed=0 且与当前 runtime 不同的
+		local next_idx=$(fss_failover_pick_next_available "${cur_front}" "${cur_landing}")
+		if [ -z "${next_idx}" ]; then
+			LOGM "$LOGTIME1 fancyss：所有备用组合已失效，保持当前状态以便用户察觉..."
+			return
 		fi
-	fi	
+
+		# 3. 切换 runtime
+		local new_front=$(dbus get "ss_failover_combo_${next_idx}_front_id")
+		local new_landing=$(dbus get "ss_failover_combo_${next_idx}_landing_id")
+		local new_landing_name=$(get_node_name_by_id "${new_landing}")
+		local mode_label="链式"
+		[ -z "${new_front}" ] && mode_label="直连"
+		LOGM "$LOGTIME1 fancyss：切换到备用组合 #${next_idx}（${mode_label}）→ 落地：[${new_landing_name}]"
+
+		fss_set_current_node_id "${new_landing}"
+		if [ -n "${new_front}" ]; then
+			dbus set ssconf_basic_node_front="${new_front}"
+		else
+			dbus remove ssconf_basic_node_front
+		fi
+
+		# 4. 写切换时间戳（用于抖动防护，§4.5）
+		dbus set fss_failover_last_switch_ts="$(date +%s)"
+
+		# 5. 标记内部 restart（避免被 ssconfig.sh 入口误清失效标志）
+		dbus set fss_failover_internal_restart="1"
+
+		# 6. 重启
+		echo_date "========================================================================" >/tmp/upload/ss_log.txt
+		echo_date "" >>/tmp/upload/ss_log.txt
+		echo_date "故障转移：切换到备用组合 #${next_idx}，重启fancyss！" >>/tmp/upload/ss_log.txt
+		echo_date "" >>/tmp/upload/ss_log.txt
+		echo_date "========================================================================" >>/tmp/upload/ss_log.txt
+		run start-stop-daemon -S -q -x /koolshare/ss/ssconfig.sh -- restart >>/tmp/upload/ss_log.txt
+
+		dbus set ss_heart_beat="1"
+	fi
+}
+
+# 故障转移切换冷却判定（fork 新增，详见 doc/design/failover-combo-list-design.md §4.5）
+# 上次切换组合后未到冷却时长 → 返回 0（在冷却期内，应跳过本轮判定）
+# 否则返回 1（可以判定）
+failover_cool_down_active(){
+	local last_switch_ts=$(dbus get fss_failover_last_switch_ts)
+	local cool_down=$(dbus get fss_failover_cool_down_sec)
+	[ -n "$cool_down" ] || cool_down=30
+	if [ -n "$last_switch_ts" ] && [ "$last_switch_ts" != "0" ]; then
+		local now_ts=$(date +%s)
+		local elapsed=$((now_ts - last_switch_ts))
+		if [ "$elapsed" -lt "$cool_down" ]; then
+			return 0
+		fi
+	fi
+	return 1
 }
 
 failover_check_1(){
+	# 切换冷却期内不做判定
+	failover_cool_down_active && return
+
 	local LINES=$(($ss_failover_s1 + 3))
 	local START_MARK=$(cat "$LOGFILE_F" | sed '/fancyss/d' | tail -n "$LINES" | grep "===")
 	if [ -n "$START_MARK" ];then
 		#echo "$LOGTIME1 fancyss：1-检测到前$LINES行刚提交，先不检测！"
 		return
 	fi
-	
+
 	local OK_MARK=$(cat "$LOGFILE_F" | sed '/fancyss/d' | tail -n "$ss_failover_s1" | grep -Ec "200 OK|204 OK")
 	if [ "$OK_MARK" == "0" ];then
 		failover_action 1
@@ -316,6 +333,9 @@ failover_check_1(){
 }
 
 failover_check_2(){
+	# 切换冷却期内不做判定
+	failover_cool_down_active && return
+
 	local LINES=$(($ss_failover_s2_1 + 3))
 	local START_MARK=$(cat "$LOGFILE_F" | sed '/fancyss/d' | tail -n "$LINES" | grep "===")
 	if [ -n "$START_MARK" ];then
@@ -330,6 +350,9 @@ failover_check_2(){
 }
 
 failover_check_3(){
+	# 切换冷却期内不做判定
+	failover_cool_down_active && return
+
 	local LINES=$(($ss_failover_s3_1 + 3))
 	local START_MARK=$(cat "$LOGFILE_F" | sed '/fancyss/d' | tail -n "$LINES" | grep "===")
 	if [ -n "$START_MARK" ];then

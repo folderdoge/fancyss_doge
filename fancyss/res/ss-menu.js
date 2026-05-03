@@ -1072,6 +1072,17 @@ function openssHint(itemNum, flag) {
 		statusmenu += "<br />&nbsp;&nbsp;&nbsp;&nbsp;4. 前置节点不能与落地节点相同。<br /><br />";
 		statusmenu += "<b><font color='#669900'>失败处理：</font></b>构建或 xray 自检失败时，自动回滚为非链式（仅落地节点直连），插件依然可用。";
 		_caption = "前置节点 (链式代理)";
+	} else if (itemNum == 201) {
+		width = "560px";
+		statusmenu = "<b>备用节点组合列表</b>用于故障转移时按列表顺序切换备选 (前置, 落地) 组合。<br /><br />";
+		statusmenu += "<b><font color='#CC0066'>切换规则：</font></b>故障触发时按列表顺序选择第一个【可用】的组合并切换。<br /><br />";
+		statusmenu += "<b><font color='#CC0066'>状态说明：</font></b>";
+		statusmenu += "<br />&nbsp;&nbsp;&nbsp;&nbsp;启用中 = 当前正在运行的组合；";
+		statusmenu += "<br />&nbsp;&nbsp;&nbsp;&nbsp;可用 = 等待被切换；";
+		statusmenu += "<br />&nbsp;&nbsp;&nbsp;&nbsp;已失效 = 本轮已被判定故障，用户主动重启插件时清除。<br /><br />";
+		statusmenu += "<b>前置为空</b>表示直连模式（不启用链式代理）。<br /><br />";
+		statusmenu += "<b><font color='#669900'>所有组合都失效时</font></b>保持当前断网状态，便于用户察觉问题。";
+		_caption = "备用节点组合";
 	}
 	return overlib(statusmenu, OFFSETX, 30, OFFSETY, 10, RIGHT, STICKY, WIDTH, 'width', CAPTION, _caption, CLOSETITLE, '');
 

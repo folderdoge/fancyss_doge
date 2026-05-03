@@ -2509,7 +2509,13 @@ fss_node_v2_to_legacy_script_lines() {
 }
 
 fss_export_global_json() {
-	dbus list ss | grep -v '^ssconf_basic_' | grep -v '^ss_acl_' | grep -v '^ssid_' | grep -v '^ss_failover_s4_3=' | fss_emit_kv_lines | fss_kv_lines_to_json
+	{
+		dbus list ss | grep -v '^ssconf_basic_' | grep -v '^ss_acl_' | grep -v '^ssid_' | grep -v '^ss_failover_s4_3='
+		# fork 新增：故障转移备用组合相关 ss_failover_combo_* / ss_failover_main_combo_seeded 键已落在 ss 前缀里（dbus list ss 已涵盖），
+		# 但是仅靠 grep -v 排除 ssconf_basic_/ss_acl_/ssid_ 后还会漏 fss_failover_main_combo_seeded（前面 list 没拿到）。
+		# 这里追加抓一次 fss_failover_，用于覆盖 internal_restart / last_switch_ts / cool_down_sec / migrated_v* 等后端键，确保备份完整。
+		dbus list fss_failover_
+	} | fss_emit_kv_lines | fss_kv_lines_to_json
 }
 
 fss_export_acl_json() {
@@ -2522,7 +2528,12 @@ fss_export_acl_json() {
 }
 
 fss_clear_global_config_storage() {
-	dbus list ss 2>/dev/null | cut -d "=" -f 1 | grep -v '^ssconf_basic_' | grep -v '^ss_acl_' | grep -v '^ssid_' | grep -v '^ss_failover_s4_3$' | while IFS= read -r key
+	{
+		dbus list ss 2>/dev/null | cut -d "=" -f 1 | grep -v '^ssconf_basic_' | grep -v '^ss_acl_' | grep -v '^ssid_' | grep -v '^ss_failover_s4_3$'
+		# fork 新增：清理 fss_failover_* 后端键（internal_restart / last_switch_ts / migrated_v* 等）；
+		# combo 字段（ss_failover_combo_*）和 ss_failover_main_combo_seeded 已在 dbus list ss 范围内被清理。
+		dbus list fss_failover_ 2>/dev/null | cut -d "=" -f 1
+	} | while IFS= read -r key
 	do
 		[ -n "${key}" ] || continue
 		dbus remove "${key}"
@@ -4036,7 +4047,12 @@ EOF
 		if [ -n "${progress_cb}" ] && type "${progress_cb}" >/dev/null 2>&1; then
 			"${progress_cb}" "阶段2/4：导出全局配置..."
 		fi
-		dbus list ss | grep -v '^ssconf_basic_' | grep -v '^ss_acl_' | grep -v '^ss_basic_enable=' | grep -v '^ssid_' | grep -v '^ss_failover_s4_3=' | while IFS= read -r line
+		{
+			dbus list ss | grep -v '^ssconf_basic_' | grep -v '^ss_acl_' | grep -v '^ss_basic_enable=' | grep -v '^ssid_' | grep -v '^ss_failover_s4_3='
+			# fork 新增：故障转移后端 fss_failover_* 键（internal_restart / last_switch_ts / migrated_v*）；
+			# combo 字段（ss_failover_combo_*）已在上面 dbus list ss 范围内被导出。
+			dbus list fss_failover_
+		} | while IFS= read -r line
 		do
 			[ -z "${line}" ] && continue
 			key=${line%%=*}
@@ -4549,5 +4565,192 @@ fss_restore_native_backup_v2() {
 	echo_date "节点恢复完成：${restored_nodes}个节点。"
 
 	rm -rf "${tmp_dir}"
+	return 0
+}
+
+# =============================================================================
+# 故障转移备用组合 helper（fork 新增）
+# 详见 doc/design/failover-combo-list-design.md §4.2
+# 备用组合存储：ss_failover_combo_count + ss_failover_combo_<i>_{front_id,front_identity,landing_id,landing_identity,failed}
+# 注意：dbus key 用 ss_* 前缀以满足 CLAUDE.md 硬规则 #1（前端 db_ss 才能读到）。
+# 函数名保留 fss_failover_combo_* 作为内部 helper 标识，与 dbus key 命名不一致是有意为之。
+# =============================================================================
+
+# 返回备用组合数量，空 / 非数字时返回 0
+fss_failover_combo_count() {
+	local count
+	count=$(dbus get ss_failover_combo_count)
+	case "${count}" in
+		''|*[!0-9]*) printf '0' ;;
+		*) printf '%s' "${count}" ;;
+	esac
+}
+
+# 在备用组合列表中查找匹配 (front_id, landing_id) 的索引
+# 用法：fss_failover_find_combo <front_id> <landing_id>
+# 输出：匹配的索引 i（1..N）；找不到则输出空。
+# 注意：前置 id 都为空也算匹配（直连组合）。
+fss_failover_find_combo() {
+	local cur_front="$1"
+	local cur_landing="$2"
+	local total i combo_front combo_landing
+	total=$(fss_failover_combo_count)
+	[ "${total}" -gt 0 ] 2>/dev/null || return 0
+	i=1
+	while [ "${i}" -le "${total}" ]
+	do
+		combo_front=$(dbus get "ss_failover_combo_${i}_front_id")
+		combo_landing=$(dbus get "ss_failover_combo_${i}_landing_id")
+		if [ "${combo_front}" = "${cur_front}" ] && [ "${combo_landing}" = "${cur_landing}" ]; then
+			printf '%s' "${i}"
+			return 0
+		fi
+		i=$((i + 1))
+	done
+	return 0
+}
+
+# 顺序扫描，找第一个 failed=0 且与当前 runtime 不完全相同的 combo
+# 用法：fss_failover_pick_next_available <cur_front> <cur_landing>
+# 输出：可用组合的索引 i；全部失效或与当前相同时输出空。
+fss_failover_pick_next_available() {
+	local cur_front="$1"
+	local cur_landing="$2"
+	local total i combo_front combo_landing combo_failed
+	total=$(fss_failover_combo_count)
+	[ "${total}" -gt 0 ] 2>/dev/null || return 0
+	i=1
+	while [ "${i}" -le "${total}" ]
+	do
+		combo_failed=$(dbus get "ss_failover_combo_${i}_failed")
+		if [ "${combo_failed}" != "1" ]; then
+			combo_front=$(dbus get "ss_failover_combo_${i}_front_id")
+			combo_landing=$(dbus get "ss_failover_combo_${i}_landing_id")
+			# 跳过与当前 runtime 完全相同的
+			if [ "${combo_front}" = "${cur_front}" ] && [ "${combo_landing}" = "${cur_landing}" ]; then
+				i=$((i + 1))
+				continue
+			fi
+			# landing 必填，缺失说明组合损坏，跳过
+			if [ -n "${combo_landing}" ]; then
+				printf '%s' "${i}"
+				return 0
+			fi
+		fi
+		i=$((i + 1))
+	done
+	return 0
+}
+
+# 通过 identity 重新解析 combo 的最新节点 id（订阅刷新场景）
+# 用法：fss_failover_resolve_combo <i>
+# 输出：front_id<TAB>landing_id（解析失败的字段为空）
+fss_failover_resolve_combo() {
+	local idx="$1"
+	local front_id front_identity landing_id landing_identity
+	local resolved_front="" resolved_landing=""
+	[ -n "${idx}" ] || return 1
+	front_id=$(dbus get "ss_failover_combo_${idx}_front_id")
+	front_identity=$(dbus get "ss_failover_combo_${idx}_front_identity")
+	landing_id=$(dbus get "ss_failover_combo_${idx}_landing_id")
+	landing_identity=$(dbus get "ss_failover_combo_${idx}_landing_identity")
+
+	# 前置：可以是空（直连组合）。allow_blank=1 避免回落到 first_node
+	if [ -n "${front_id}${front_identity}" ]; then
+		resolved_front=$(fss_resolve_reference_node_id "${front_id}" "${front_identity}" "1" 2>/dev/null)
+	fi
+	# 落地：必填。allow_blank=1 让解析失败时返回空字符串，不要回落
+	if [ -n "${landing_id}${landing_identity}" ]; then
+		resolved_landing=$(fss_resolve_reference_node_id "${landing_id}" "${landing_identity}" "1" 2>/dev/null)
+	fi
+	printf '%s\t%s' "${resolved_front}" "${resolved_landing}"
+}
+
+# 把所有 combo 的 failed 改为 "0"，并清空 fss_failover_last_switch_ts（解除冷却）
+fss_failover_clear_all_failed() {
+	local total i
+	total=$(fss_failover_combo_count)
+	if [ "${total}" -gt 0 ] 2>/dev/null; then
+		i=1
+		while [ "${i}" -le "${total}" ]
+		do
+			dbus set "ss_failover_combo_${i}_failed"="0"
+			i=$((i + 1))
+		done
+	fi
+	dbus set fss_failover_last_switch_ts="0"
+}
+
+# 把 combo[idx] 的全部字段清空（用于已删除/已重排到末尾的占位项）
+# 注意：identity 字段不保留——这个函数仅用于 reindex 过程的尾部清理。
+fss_failover_combo_clear_slot() {
+	local idx="$1"
+	[ -n "${idx}" ] || return 1
+	dbus set "ss_failover_combo_${idx}_front_id"=""
+	dbus set "ss_failover_combo_${idx}_front_identity"=""
+	dbus set "ss_failover_combo_${idx}_landing_id"=""
+	dbus set "ss_failover_combo_${idx}_landing_identity"=""
+	dbus set "ss_failover_combo_${idx}_failed"=""
+}
+
+# 删除 combo[idx]，并把 idx+1..N 的字段往前挪一格，最后清空原末尾占位
+# 不做任何"启用中不能删"的校验。后端订阅刷新 / 节点删除路径用。
+# 用法：fss_failover_combo_drop <idx>
+fss_failover_combo_drop() {
+	local idx="$1"
+	local total i src_prefix dst_prefix field
+	total=$(fss_failover_combo_count)
+	[ "${total}" -gt 0 ] 2>/dev/null || return 1
+	[ -n "${idx}" ] || return 1
+	[ "${idx}" -ge 1 ] 2>/dev/null || return 1
+	[ "${idx}" -le "${total}" ] 2>/dev/null || return 1
+	i="${idx}"
+	while [ "${i}" -lt "${total}" ]
+	do
+		src_prefix="ss_failover_combo_$((i + 1))_"
+		dst_prefix="ss_failover_combo_${i}_"
+		for field in front_id front_identity landing_id landing_identity failed
+		do
+			dbus set "${dst_prefix}${field}"="$(dbus get "${src_prefix}${field}")"
+		done
+		i=$((i + 1))
+	done
+	# 清空原末尾位
+	fss_failover_combo_clear_slot "${total}"
+	dbus set ss_failover_combo_count="$((total - 1))"
+}
+
+# 订阅刷新后，对每个 combo 通过 identity 重解析 _id 字段写回。
+# 仅写 _id；_identity 是稳定锚点，绝不动。
+# landing 解析为空 → 节点已被删除，整个 combo 损坏，从大到小批量删除并 reindex。
+# 用法：fss_failover_combos_resync_after_subscribe
+fss_failover_combos_resync_after_subscribe() {
+	local total i resolved sep front_new landing_new
+	local drop_list=""
+	total=$(fss_failover_combo_count)
+	[ "${total}" -gt 0 ] 2>/dev/null || return 0
+	sep="$(printf '\t')"
+	i=1
+	while [ "${i}" -le "${total}" ]
+	do
+		resolved=$(fss_failover_resolve_combo "${i}")
+		front_new="${resolved%%${sep}*}"
+		landing_new="${resolved#*${sep}}"
+		# landing 解析为空 → 该 combo 损坏，记下 idx 待删除
+		if [ -z "${landing_new}" ]; then
+			drop_list="${i} ${drop_list}"
+		else
+			# 写回新 id（identity 不动）
+			dbus set "ss_failover_combo_${i}_front_id"="${front_new}"
+			dbus set "ss_failover_combo_${i}_landing_id"="${landing_new}"
+		fi
+		i=$((i + 1))
+	done
+	# 从大到小逐一删除受损 combo，避免 reindex 时索引错位
+	for i in ${drop_list}
+	do
+		echo_date "ℹ️备用组合 #${i} 的落地节点已不存在，自动移除。"
+		fss_failover_combo_drop "${i}"
+	done
 	return 0
 }

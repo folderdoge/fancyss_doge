@@ -7132,6 +7132,14 @@ stop_ws(){
 
 case $ACTION in
 start)
+	# 故障转移备用组合：start 入口处理失效标志（fork 新增，详见 doc/design/failover-combo-list-design.md §4.3）
+	if [ "$(dbus get fss_failover_internal_restart)" = "1" ]; then
+		# 故障转移内部触发的 restart，不清失效标志，但要重置 internal_restart 防止遗留
+		dbus set fss_failover_internal_restart="0"
+	else
+		# 用户主动操作，清空所有 combo 的 failed 标志（同时清切换时戳解除冷却）
+		fss_failover_clear_all_failed
+	fi
 	# start on wan-start
 	set_lock
 	if [ "$ss_basic_enable" == "1" ]; then
@@ -7155,6 +7163,14 @@ stop)
 	unset_lock
 	;;
 restart)
+	# 故障转移备用组合：restart 入口处理失效标志（fork 新增，详见 doc/design/failover-combo-list-design.md §4.3）
+	if [ "$(dbus get fss_failover_internal_restart)" = "1" ]; then
+		# 故障转移内部触发的 restart，不清失效标志，但要重置 internal_restart 防止遗留
+		dbus set fss_failover_internal_restart="0"
+	else
+		# 用户主动操作，清空所有 combo 的 failed 标志（同时清切换时戳解除冷却）
+		fss_failover_clear_all_failed
+	fi
 	# start/restart by web or user
 	set_lock
 	start_ws
