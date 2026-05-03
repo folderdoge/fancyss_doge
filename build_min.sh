@@ -8,9 +8,10 @@ REAL_REPO="$(pwd)"
 
 # 直接 source 完整 build.sh 会触发底部的 make() 调用。
 # 所以提取函数：用 sed 截掉最后的 make() 调用，再 source。
+# 同时剥掉 CR：Windows git autocrlf=true 会把 build.sh 签出成 CRLF，bash 会 choke on '\r'。
 TMP_BUILD="$(mktemp /tmp/fss_build_funcs.XXXXXX.sh)"
 trap "rm -f $TMP_BUILD" EXIT
-sed '/^make$/d' build.sh > "$TMP_BUILD"
+sed -e 's/\r$//' -e '/^make$/d' build.sh > "$TMP_BUILD"
 
 # 重新定义 papare 让它跳过 prepare_geodata_assets
 source "$TMP_BUILD"
