@@ -758,6 +758,7 @@ var statusFrontRequestSeq = 0;
 var statusFrontHttpPending = false;
 var statusFrontSocket = null;
 var status_front_ws_direct = false;
+var statusFrontHasValidPayload = false;
 var statusHistorySocket = null;
 var statusHistoryType = 0;
 var statusHistorySnapshotActive = false;
@@ -5945,7 +5946,7 @@ function auto_migrate_node_storage(cb) {
 	});
 }
 function wait_ws_probe_then_start_status(retry){
-	if (!is_page_live_updates_allowed()) {
+	if (!should_run_front_status_live()) {
 		return false;
 	}
 	if (db_ss['ss_basic_enable'] != "1") {
@@ -5973,7 +5974,7 @@ function is_node_tab_active() {
 	return $("#tablet_1").is(":visible");
 }
 function should_run_front_status_live() {
-	return is_page_live_updates_allowed();
+	return true;
 }
 function should_run_node_latency_live() {
 	return is_page_live_updates_allowed() && (is_node_tab_active() || is_shunt_tab_active());
@@ -6061,6 +6062,14 @@ function stop_page_live_runtime() {
 	close_optional_socket("ws");
 	close_proc_status_socket();
 }
+function stop_page_background_runtime() {
+	stop_shunt_stats_runtime();
+	stop_node_latency_live_runtime();
+	close_status_history_ws();
+	close_optional_socket("wsl");
+	close_optional_socket("ws");
+	close_proc_status_socket();
+}
 function maybe_start_node_latency_auto_refresh() {
 	if (!should_run_node_latency_live()) {
 		return false;
@@ -6110,13 +6119,6 @@ function resume_page_live_runtime() {
 	if (!is_page_live_updates_allowed()) {
 		return false;
 	}
-	if (db_ss && db_ss["ss_basic_enable"] == "1") {
-		if (ws_probe_pending) {
-			wait_ws_probe_then_start_status(0);
-		} else {
-			get_ss_status(is_ws_available());
-		}
-	}
 	if (should_run_shunt_stats_live()) {
 		schedule_shunt_stats_refresh(true);
 	}
@@ -6131,7 +6133,7 @@ function handle_page_live_runtime_state() {
 			resume_page_live_runtime();
 		}, 120);
 	} else {
-		stop_page_live_runtime();
+		stop_page_background_runtime();
 	}
 }
 function bind_page_live_runtime() {
@@ -14431,7 +14433,9 @@ function apply_ss_status(res, with_heartbeat, showRefreshPrompt) {
 		var ipv6Mode = with_heartbeat ? (arr.length >= 4) : (arr.length >= 3);
 		var expect = ipv6Mode ? 3 : 2;
 		if (arr.length < expect || arr[0] == "" || arr[expect - 1] == "") {
-			set_ss_status_waiting("Waiting for first refresh...");
+			if (!statusFrontHasValidPayload) {
+				set_ss_status_waiting("Waiting for first refresh...");
+			}
 		} else {
 			set_ss_status_layout(ipv6Mode);
 			E("ss_state2").innerHTML = arr[0];
@@ -14443,13 +14447,16 @@ function apply_ss_status(res, with_heartbeat, showRefreshPrompt) {
 				E("ss_state3").innerHTML = arr[1];
 				update_ss_status_tip("", "", false);
 			}
+			statusFrontHasValidPayload = true;
 		}
 		if (with_heartbeat && arr[expect] == "1") {
 			handle_ss_status_heartbeat(showRefreshPrompt);
 		}
 		return true;
 	}
-	set_ss_status_waiting("Waiting ...");
+	if (!statusFrontHasValidPayload) {
+		set_ss_status_waiting("Waiting ...");
+	}
 	return false;
 }
 
@@ -14639,7 +14646,7 @@ function get_ss_status_front_httpd() {
 		async: true,
 		cache: false,
 		dataType: "json",
-		timeout: Math.max(8000, get_status_refresh_delay_ms() + 2000),
+		timeout: Math.max(12000, get_status_refresh_delay_ms() + 4000),
 		data: JSON.stringify(postData),
 		success: function(apiResponse) {
 			var payload = "";
@@ -14651,7 +14658,9 @@ function get_ss_status_front_httpd() {
 			apply_ss_status(payload, false);
 		},
 		error: function() {
-			set_ss_status_waiting("Waiting ...");
+			if (!statusFrontHasValidPayload) {
+				set_ss_status_waiting("Waiting ...");
+			}
 		},
 		complete: function() {
 			finish_front_status_poll();
@@ -14906,18 +14915,18 @@ function get_dns_log(s) {
 function close_ssf_status() {
 	close_status_history_ws();
 	clear_text_file_poll_state("status_log_1");
+	STATUS_FLAG = 0;
 	E("ssf_status_div").style.visibility = "hidden";
 	$('html, body').css({overflow: 'auto', height: 'auto'});
 	$("body").find(".fullScreen").fadeOut(300, function() { tableApi.removeElement("fullScreen"); });
-	STATUS_FLAG = 0;
 }
 function close_ssc_status() {
 	close_status_history_ws();
 	clear_text_file_poll_state("status_log_2");
+	STATUS_FLAG = 0;
 	E("ssc_status_div").style.visibility = "hidden";
 	$('html, body').css({overflow: 'auto', height: 'auto'});
 	$("body").find(".fullScreen").fadeOut(300, function() { tableApi.removeElement("fullScreen"); });
-	STATUS_FLAG = 0;
 }
 function close_status_history_ws() {
 	if (statusHistorySocket) {
