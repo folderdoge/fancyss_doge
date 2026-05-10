@@ -1,5 +1,12 @@
 fancyss Changelog
 
+3.5.27（20260509）
+   - update	SmartDNS 运行配置生成时，将 BlockList 屏蔽规则改为前置 `address /domain-set:block_list/#` 硬屏蔽，该规则始终拥有最高优先级。
+   - update	补充 Adobe 相关成功解析域名到 `rules_ng/block_list.txt`。
+   - update	`anytls-zig` 升级到 `0.1.6`，改用固定连接 worker 池和固定 relay worker 池处理 SOCKS5 连接，显式限制线程栈大小，并在连接结束时主动 shutdown 远端 TLS socket，降低长时间运行内存占用。
+   - update	已重新编译 `anytls-zig` 全平台产物并同步进入 `binaries/anytls-zig` 分发链路：`x86_64 / aarch64 / armv5te / armv7a / armv7hf`；路由器平台产物已按脚本完成 UPX 压缩，并生成 `SHA256SUMS-v0.1.6` 校验文件。
+   - fix	修复 AnyTLS 节点长时间使用或频繁短连接请求后，`anytls-zig` 因每连接动态创建线程和连接退出不够主动导致内存占用持续增长，极端情况下可能占满路由器可用内存并触发重启的问题。
+
 3.5.26（20260507）
    - note	本次更新针对 HTTPS 访问路由器后台时顶部“插件运行状态”长期 Waiting 或刷新不稳定的问题做补丁收口，并继续优化 `status-tool serve` 在弱性能机型上的按需探测链路。
    - update	HTTPS 访问 `Module_shadowsocks.asp` 时全局禁用 WebSocket 通道，顶部运行状态、webtest、提交日志等前后端交互统一走 HTTP(S) API fallback，避免浏览器阻止不安全 `ws://` 导致状态请求卡住。
