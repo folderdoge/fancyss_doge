@@ -2005,6 +2005,9 @@ install_now(){
 	migrate_failover_v1
 	# combo 前缀重命名 v2：fss_failover_combo_* → ss_failover_combo_*（CLAUDE.md 硬规则 #1）
 	migrate_failover_v2
+	# fork toggle（doge.9）：「直连 AsusGo / koolcenter 生态域名」首次安装默认开启
+	# 详见 doc/implementation/asusgo-whitelist-toggle.md
+	[ -z "$(dbus get ss_basic_direct_asusgo)" ] && dbus set ss_basic_direct_asusgo=1
 	[ -z "$(dbus get ss_acl_default_mode)" ] && dbus set ss_acl_default_mode=follow
 	[ -z "$(dbus get ss_acl_default_mode_format)" ] && dbus set ss_acl_default_mode_format=2
 	[ -z "$(dbus get ss_acl_default_udp)" ] && dbus set ss_acl_default_udp=0

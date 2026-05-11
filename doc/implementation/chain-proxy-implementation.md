@@ -11,6 +11,12 @@
 > - 移除 fancyss 自带的 ssLinks/Nexitally 等机场广告位（包括订阅空状态、首页 gist 拉取的滚动广告）
 > - README + 插件介绍栏加「小狗 fork 版」标识，更新检测/更新日志 URL 指向 `folderdoge/fancyss_doge`
 > - **关键陷阱已修复**：状态 dbus 键名前缀必须用 `ss_chain_*` 而非 `fss_chain_*`，详见 §10.2
+>
+> **后续修订（2026-05-11，v3.5.28-doge.9）**：
+> - 修复链式代理开启时 AsusGo / 梅林软件中心系工具（rogsoft.ddnsto.com / merlin.koolcenter.com 等）30 秒超时卡死
+> - 顺带清理上游 fancyss 长期硬编码但实际失效的 4 个白名单占位符（apple.com / microsoft.com / dns.msftncsi.com / worldtimeapi.org），引入「直连「梅林软件中心」生态域名」UI 开关（hint id `202`，dbus `ss_basic_direct_asusgo`，默认开启）
+> - 调查发现 chinadns-ng tag 优先级为 `chnlist > gfwlist > group white`，详见 [asusgo-whitelist-toggle.md](asusgo-whitelist-toggle.md) §2.1（apple.com 失效根因）
+> - 另一个长期被忽视的设计 bug：仓库自带的 `fancyss/ss/rules/white_list.txt` 在运行时被 [`ssconfig.sh:3297`](../../fancyss/ss/ssconfig.sh#L3297) 直接清空重建，**文件内容形同虚设**——见 CLAUDE.md 硬规则 #12
 
 ---
 

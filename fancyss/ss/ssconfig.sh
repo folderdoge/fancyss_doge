@@ -3307,9 +3307,20 @@ add_white_black() {
 		done
 	fi	
 
-	for wan_white_domain2 in "apple.com" "microsoft.com" "dns.msftncsi.com" "worldtimeapi.org"; do
-		echo "${wan_white_domain2}" >>/tmp/white_list.txt
-	done
+	# fork toggle（doge.9）：「直连梅林软件中心 / koolcenter 生态域名」开关
+	# UI 入口：黑白名单标签页顶部第一行（hint id 202）
+	# 默认开启（install.sh::install_now 在首次安装/升级时幂等置 1）
+	# 上游硬编码的 4 个域名（apple.com / microsoft.com / dns.msftncsi.com / worldtimeapi.org）
+	# 经验证全部失效或鸡肋，已移除。详见 doc/implementation/asusgo-whitelist-toggle.md
+	#   - apple.com / microsoft.com：在 chnlist 里，chinadns-ng 优先级 chnlist > group white，
+	#     IP 进 chnlist ipset 而非 white_list ipset，GLO 模式下 white_list 失效
+	#   - dns.msftncsi.com：NCSI 的 HTTP 测试用 www.msftncsi.com（不同后缀，本规则覆盖不到）
+	#   - worldtimeapi.org：anycast IP，强制直连不快于代理；fancyss 代码无引用
+	if [ "${ss_basic_direct_asusgo:-1}" = "1" ]; then
+		for wan_white_domain2 in "koolcenter.com" "ddnsto.com" "koolddns.com" "ngrok.wang"; do
+			echo "${wan_white_domain2}" >>/tmp/white_list.txt
+		done
+	fi
 
 	# {block_list}
 	cp -rf /koolshare/ss/rules/block_list.txt /tmp
