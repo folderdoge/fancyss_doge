@@ -9086,6 +9086,22 @@ function update_visibility() {
 	showhide("ss_dnsmasq_cus", E("ss_basic_dns_serverx").checked == false);
 }
 
+// FORK doge.10: stub DOM for removed tab IDs (SSR/Naive/Tuic) — see doc/design/protocol-roadmap.md §2
+// HTML <td id="ssrTitle"/"naiveTitle"/"tuicTitle"> are commented out (~lines 16842/16848),
+// but legacy code in tabclickhandler() and the edit-node handler still references them via E().
+// Without these stubs, E('ssrTitle').className = ... throws TypeError and breaks the modal.
+$(function() {
+	var REMOVED_TAB_IDS = ['ssrTitle', 'naiveTitle', 'tuicTitle'];
+	for (var i = 0; i < REMOVED_TAB_IDS.length; i++) {
+		if (!document.getElementById(REMOVED_TAB_IDS[i])) {
+			var stub = document.createElement('span');
+			stub.id = REMOVED_TAB_IDS[i];
+			stub.style.display = 'none';
+			stub.setAttribute('data-fork-stub', '1');
+			document.body.appendChild(stub);
+		}
+	}
+});
 function Add_profile() { //点击节点页面内添加节点动作
 	$('body').prepend(tableApi.genFullScreen());
 	$('.fullScreen').show();

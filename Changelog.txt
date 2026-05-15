@@ -1,5 +1,8 @@
 fancyss Changelog
 
+3.5.28-doge.10.1（20260515）
+   - fix	hotfix：修复 doge.10 升级后「添加节点」/「编辑节点」按钮无响应弹窗的问题。doge.10 砍 SSR/Naïve/Tuic 时把 `<td id="ssrTitle"/"naiveTitle"/"tuicTitle">` 三个 tab 用 HTML 注释包掉，但 [Module_shadowsocks.asp](fancyss/webs/Module_shadowsocks.asp) 中 `tabclickhandler()` 和 `node_edit_btn` 的 click handler 仍有 24 处 `E('ssrTitle').className = ...` / `.style.display = ...` 引用——`E()` 返回 `null`、`null.property = ...` 抛 `TypeError` 中断弹窗逻辑。修补：在 [Module_shadowsocks.asp:9089](fancyss/webs/Module_shadowsocks.asp#L9089) 注入一段 DOM stub，DOM ready 时为 3 个被删 id 创建隐形 `<span>` 占位元素，所有遗留 `E()` 引用静默生效。一处修复 24 个崩点。
+
 3.5.28-doge.10（20260514）
    - note	fork 战略调整：押注链式代理，与上游分离方向迈出第一步。砍掉当前不支持链式代理的 3 个独立进程协议（SSR / Naive / Tuic），同时给链式代理加入 HY2 支持（HY2 本就是 xray 原生 outbound）。已有 SSR/Naive/Tuic 节点会在升级时被主动删除（type ID 1/6/7 永久预留，后续版本按需逐个加回）。
    - update	链式代理 `fss_chain_type_supported` 新增 type 8 (Hysteria2) 分支，前置/落地双端均可选 HY2 节点；不支持 hy2_obfs 启用和端口跳跃配置（fallback 静默回退）。
