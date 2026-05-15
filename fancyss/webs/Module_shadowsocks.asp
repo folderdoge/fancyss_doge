@@ -735,7 +735,7 @@ var option_xhttpmode = ["auto", "packet-up", "stream-up", "stream-one"];
 var option_bol = [["0", "false"], ["1", "true"]];
 var option_xflow = [["", "none"], ["xtls-rprx-vision", "xtls-rprx-vision"], ["xtls-rprx-origin", "xtls-rprx-origin"], ["xtls-rprx-origin-udp443", "xtls-rprx-origin-udp443"], ["xtls-rprx-direct", "xtls-rprx-direct"], ["xtls-rprx-direct-udp443", "xtls-rprx-direct-udp443"], ["xtls-rprx-splice", "xtls-rprx-splice"], ["xtls-rprx-splice-udp443", "xtls-rprx-splice-udp443"]];
 var option_fingerprint = ["chrome", "firefox", "safari", "ios", "android", "edge", "360", "qq", "random", "randomized", ""];
-var option_naive_prot = ["https", "quic"];						//fancyss-full
+/* FORK doge.10: Naive (type 6) protocol removed; kept empty stub so naive form fields still parse — see doc/design/protocol-roadmap.md §2 */ var option_naive_prot = [];
 var option_hy2_obfs = [["0", "停用"], ["1", "salamander"]];
 var option_hy2_cg = ["reno", "bbr", "brutal", "force-brutal"];
 var stop_scroll = 0;
@@ -872,7 +872,7 @@ var smartdnsDnsCatalogMap = {chn: {}, gfw: {}};
 var smartdnsDnsOptionsReady = false;
 var smartdnsIpv6ServiceEnabled = ('<% nvram_get("ipv6_service"); %>' != "disabled");
 var NODE_BOOL_FIELDS = ["v2ray_use_json", "v2ray_mux_enable", "v2ray_network_security_ai", "v2ray_network_security_alpn_h2", "v2ray_network_security_alpn_http", "xray_use_json", "xray_network_security_ai", "xray_network_security_alpn_h2", "xray_network_security_alpn_http", "xray_show", "trojan_ai", "trojan_tfo", "hy2_ai", "hy2_tfo", "anytls_ai"];
-var NODE_B64_FIELDS = ["password", "naive_pass", "v2ray_json", "xray_json", "tuic_json"];
+var NODE_B64_FIELDS = ["password", "v2ray_json", "xray_json"];	/* FORK doge.10: removed naive_pass, tuic_json — see doc/design/protocol-roadmap.md §2 */
 var NODE_RUNTIME_FIELDS = ["latency", "ping"];
 var NODE_EMPTY_DEFAULT_FIELDS_BY_TYPE = {
 	"0": {"mode": "2", "ss_obfs": "0"},
@@ -880,8 +880,9 @@ var NODE_EMPTY_DEFAULT_FIELDS_BY_TYPE = {
 	"3": {"mode": "2", "v2ray_alterid": "0", "v2ray_security": "auto", "v2ray_network": "tcp", "v2ray_headtype_tcp": "none", "v2ray_headtype_kcp": "none", "v2ray_headtype_quic": "none", "v2ray_grpc_mode": "multi", "v2ray_network_security": "none"},
 	"4": {"mode": "2", "xray_alterid": "0", "xray_encryption": "none", "xray_network": "tcp", "xray_headtype_tcp": "none", "xray_headtype_kcp": "none", "xray_headtype_quic": "none", "xray_grpc_mode": "gun", "xray_xhttp_mode": "auto", "xray_network_security": "none"},
 	"5": {"mode": "2"},
-	"6": {"mode": "2", "naive_prot": "https"},
-	"7": {"mode": "2"},
+	/* FORK doge.10: type 6 (Naive) / type 7 (Tuic) removed — see doc/design/protocol-roadmap.md §2 */
+	// "6": {"mode": "2", "naive_prot": "https"},
+	// "7": {"mode": "2"},
 	"8": {"mode": "2", "hy2_obfs": "0"},
 	"9": {"mode": "2", "anytls_ai": "0"}
 };
@@ -892,8 +893,9 @@ var NODE_STORAGE_FIELDS_BY_TYPE = {
 	"3": ["server", "port", "v2ray_uuid", "v2ray_alterid", "v2ray_security", "v2ray_network", "v2ray_headtype_tcp", "v2ray_headtype_kcp", "v2ray_kcp_seed", "v2ray_headtype_quic", "v2ray_grpc_mode", "v2ray_grpc_authority", "v2ray_network_path", "v2ray_network_host", "v2ray_network_security", "v2ray_network_security_ai", "v2ray_network_security_alpn_h2", "v2ray_network_security_alpn_http", "v2ray_network_security_sni", "v2ray_mux_concurrency", "v2ray_json", "v2ray_use_json", "v2ray_mux_enable"],
 	"4": ["server", "port", "xray_uuid", "xray_alterid", "xray_prot", "xray_encryption", "xray_flow", "xray_network", "xray_headtype_tcp", "xray_headtype_kcp", "xray_kcp_seed", "xray_headtype_quic", "xray_grpc_mode", "xray_grpc_authority", "xray_xhttp_mode", "xray_network_path", "xray_network_host", "xray_network_security", "xray_network_security_ai", "xray_network_security_alpn_h2", "xray_network_security_alpn_http", "xray_network_security_sni", "xray_pcs", "xray_vcn", "xray_fingerprint", "xray_publickey", "xray_shortid", "xray_spiderx", "xray_show", "xray_json", "xray_use_json"],
 	"5": ["server", "port", "trojan_ai", "trojan_uuid", "trojan_sni", "trojan_pcs", "trojan_vcn", "trojan_tfo", "trojan_plugin", "trojan_obfs", "trojan_obfshost", "trojan_obfsuri"],
-	"6": ["naive_prot", "naive_server", "naive_port", "naive_user", "naive_pass"],
-	"7": ["tuic_json"],
+	/* FORK doge.10: type 6 (Naive) / type 7 (Tuic) removed — see doc/design/protocol-roadmap.md §2 */
+	// "6": ["naive_prot", "naive_server", "naive_port", "naive_user", "naive_pass"],
+	// "7": ["tuic_json"],
 	"8": ["hy2_server", "hy2_port", "hy2_pass", "hy2_up", "hy2_dl", "hy2_obfs", "hy2_obfs_pass", "hy2_sni", "hy2_pcs", "hy2_vcn", "hy2_ai", "hy2_tfo", "hy2_cg"],
 	"9": ["anytls_server", "anytls_port", "anytls_pass", "anytls_sni", "anytls_ai"]
 };
@@ -1685,6 +1687,7 @@ function schema2_b64_value_for_ui(raw, field, value) {
 	}
 	return value;
 }
+/* FORK doge.10: Tuic (type 7) functions removed — see doc/design/protocol-roadmap.md §2
 function get_tuic_relay_server(value) {
 	var tuicJson = value;
 	if (!tuicJson) {
@@ -1710,6 +1713,10 @@ function get_tuic_relay_host(value) {
 	var split = split_share_host_port(relayServer);
 	return split.host || relayServer;
 }
+*/
+// Stub: keep callers safe after Tuic removal.
+function get_tuic_relay_server(value) { return ""; }
+function get_tuic_relay_host(value) { return ""; }
 function has_vless_seed_encryption(protocol, encryption) {
 	protocol = (protocol || "vless").toLowerCase();
 	encryption = (encryption || "").trim().toLowerCase();
@@ -4245,14 +4252,16 @@ function encode_schema2_node_payload(payload) {
 var SCHEMA2_NODE_DIRECT_FIELDS = {
 	"type": true,
 	"server": true,
-	"naive_server": true,
+	/* FORK doge.10: naive_server removed — see doc/design/protocol-roadmap.md §2 */
+	// "naive_server": true,
 	"hy2_server": true,
 	"anytls_server": true,
 	"v2ray_use_json": true,
 	"v2ray_json": true,
 	"xray_use_json": true,
-	"xray_json": true,
-	"tuic_json": true
+	"xray_json": true
+	/* FORK doge.10: tuic_json removed — see doc/design/protocol-roadmap.md §2 */
+	// , "tuic_json": true
 };
 var SCHEMA2_NODE_COMPARE_IGNORE_FIELDS = {
 	"_rev": true,
@@ -6450,10 +6459,12 @@ function conf2obj(obj, action) {
 			continue;
 		}
 		// base64_decode then fill
-		if (field == "ss_basic_naive_pass") {		//fancyss-full
-			el.value = Base64.decode(obj[field]);	//fancyss-full
-			continue;								//fancyss-full
-		}											//fancyss-full
+		/* FORK doge.10: Naive (type 6) field removed — see doc/design/protocol-roadmap.md §2
+		if (field == "ss_basic_naive_pass") {
+			el.value = Base64.decode(obj[field]);
+			continue;
+		}
+		*/
 		if (field == "ss_basic_anytls_pass") {		//fancyss-full
 			el.value = decode_legacy_anytls_pass_if_needed(obj[field]);	//fancyss-full
 			continue;								//fancyss-full
@@ -6463,10 +6474,12 @@ function conf2obj(obj, action) {
 			el.value = do_js_beautify(Base64.decode(obj[field]));
 			continue;
 		}
-		if (field == "ss_basic_tuic_json") {						//fancyss-full
-			el.value = do_js_beautify(Base64.decode(obj[field]));	//fancyss-full
-			continue;												//fancyss-full
-		}															//fancyss-full
+		/* FORK doge.10: Tuic (type 7) field removed — see doc/design/protocol-roadmap.md §2
+		if (field == "ss_basic_tuic_json") {
+			el.value = do_js_beautify(Base64.decode(obj[field]));
+			continue;
+		}
+		*/
 		if (el != null && el.getAttribute("type") == "checkbox") {
 			el.checked = obj[field] == "1" ? true : false;
 			continue;
@@ -6572,11 +6585,13 @@ function refresh_options() {
 				text: "【SS】" + group_tag + c.name
 			}));
 		}
+		/* FORK doge.10: SSR (1) / Naive (6) / Tuic (7) protocols removed — keep nodes visible with stale marker so data is preserved; see doc/design/protocol-roadmap.md §2 */
 		else if(c.type == "1"){
-			//ssr
+			//ssr (legacy, removed)
 			option0.append($("<option>", {
 				value: field,
-				text: "【SSR】" + group_tag + c.name
+				text: "⚠️ 【SSR】协议已弃用（doge.10） - " + group_tag + c.name,
+				'data-stale': '1'
 			}));
 		}
 		else if(c.type == "3"){
@@ -6601,20 +6616,22 @@ function refresh_options() {
 				text: "【Trojan】" + group_tag + c.name
 			}));
 		}
-		else if(c.type == "6"){																								//fancyss-full							
-			//naive
-			option0.append($("<option>", {																					//fancyss-full
-				value: field,																								//fancyss-full
-				text: "【Naïve】" + group_tag + c.name																		//fancyss-full
-			}));																											//fancyss-full
-		}																													//fancyss-full
-		else if(c.type == "7"){																								//fancyss-full
-			//tuic																											//fancyss-full
-			option0.append($("<option>", {																					//fancyss-full
-				value: field,																								//fancyss-full
-				text: "【Tuic】" + group_tag + c.name																		//fancyss-full
-			}));																											//fancyss-full
-		}																													//fancyss-full
+		else if(c.type == "6"){
+			//naive (legacy, removed by doge.10)
+			option0.append($("<option>", {
+				value: field,
+				text: "⚠️ 【Naïve】协议已弃用（doge.10） - " + group_tag + c.name,
+				'data-stale': '1'
+			}));
+		}
+		else if(c.type == "7"){
+			//tuic (legacy, removed by doge.10)
+			option0.append($("<option>", {
+				value: field,
+				text: "⚠️ 【Tuic】协议已弃用（doge.10） - " + group_tag + c.name,
+				'data-stale': '1'
+			}));
+		}
 		else if(c.type == "8"){
 			//hysteria2
 			option0.append($("<option>", {
@@ -6642,10 +6659,11 @@ function refresh_options() {
 			var field = ss_nodes[i];
 			var c = confs[field];
 			if (!c) continue;
-			if (c.type != "0" && c.type != "3" && c.type != "4" && c.type != "5") continue;
+			if (c.type != "0" && c.type != "3" && c.type != "4" && c.type != "5" && c.type != "8") continue;
 			if (c.type == "0" && c.ss_obfs && c.ss_obfs != "0") continue;
 			if (c.type == "3" && c.v2ray_use_json == "1") continue;
 			if (c.type == "4" && c.xray_use_json == "1") continue;
+			if (c.type == "8" && c.hy2_obfs == "1") continue;
 			var real_group = (c.group || "").split("_")[0];
 			var group_tag = real_group ? real_group + " - " : "";
 			var label = "";
@@ -6653,6 +6671,7 @@ function refresh_options() {
 			else if (c.type == "3") label = "【Vmess】" + group_tag + c.name;
 			else if (c.type == "4") label = "【" + ((c.xray_prot || "vless") == "vmess" ? "Vmess" : "Vless") + "】" + group_tag + c.name;
 			else if (c.type == "5") label = "【Trojan】" + group_tag + c.name;
+			else if (c.type == "8") label = "【HY2】" + group_tag + c.name;
 			optionFront.append($("<option>", { value: field, text: label }));
 		}
 		var savedFront = db_ss["ssconf_basic_node_front"] || "";
@@ -6992,11 +7011,12 @@ function render_failover_combo_panel() {
 		var c = confs[field];
 		if (!c) continue;
 		// 前置兼容性过滤（同 refresh_options 链式前置规则）
-		var frontOk = (c.type == "0" || c.type == "3" || c.type == "4" || c.type == "5");
+		var frontOk = (c.type == "0" || c.type == "3" || c.type == "4" || c.type == "5" || c.type == "8");
 		if (frontOk) {
 			if (c.type == "0" && c.ss_obfs && c.ss_obfs != "0") frontOk = false;
 			if (c.type == "3" && c.v2ray_use_json == "1") frontOk = false;
 			if (c.type == "4" && c.xray_use_json == "1") frontOk = false;
+			if (c.type == "8" && c.hy2_obfs == "1") frontOk = false;
 		}
 		var label = failover_combo_node_label(field);
 		if (frontOk) {
@@ -7724,6 +7744,7 @@ function save() {
 		}
 	}
 	// fancyss_full_1
+	/* FORK doge.10: Naive (type 6) / Tuic (type 7) save paths removed — see doc/design/protocol-roadmap.md §2
 	// naive
 	if (node_type == "6" ){
 		dbus["ssconf_basic_naive_pass_" + node_sel] = Base64.encode(E("ss_basic_naive_pass").value);
@@ -7751,6 +7772,7 @@ function save() {
 			return false;
 		}
 	}
+	*/
 	// fancyss_full_2
 	// hysteria2
 		if (node_type == "8" ){
@@ -9108,9 +9130,11 @@ function tabclickhandler(_type) {
 	if (_type == 0) {
 		save_flag = "shadowsocks";
 		E('ssTitle').className = "vpnClientTitle_td_click";
+	/* FORK doge.10: SSR (type 1) removed — see doc/design/protocol-roadmap.md §2
 	} else if (_type == 1) {
 		save_flag = "shadowsocksR";
 		E('ssrTitle').className = "vpnClientTitle_td_click";
+	*/
 	} else if (_type == 3) {
 		save_flag = "v2ray";
 		E('vmessTitle').className = "vpnClientTitle_td_click";
@@ -9120,12 +9144,14 @@ function tabclickhandler(_type) {
 	} else if (_type == 5) {
 		save_flag = "trojan";
 		E('trojanTitle').className = "vpnClientTitle_td_click";
+	/* FORK doge.10: Naive (type 6) / Tuic (type 7) removed — see doc/design/protocol-roadmap.md §2
 	} else if (_type == 6) {
 		save_flag = "naive";
 		E('naiveTitle').className = "vpnClientTitle_td_click";
 	} else if (_type == 7) {
 		save_flag = "tuic";
 		E('tuicTitle').className = "vpnClientTitle_td_click";
+	*/
 	} else if (_type == 8) {
 		save_flag = "hysteria2";
 		E('hy2Title').className = "vpnClientTitle_td_click";
@@ -9156,6 +9182,7 @@ function add_ss_node_conf(flag) {
 		}
 		ns[p + "_password_" + node_id] = Base64.encode($.trim($("#ss_node_table_password").val()));
 		ns[p + "_type_" + node_id] = "0";
+	/* FORK doge.10: SSR (type 1) save branch removed — see doc/design/protocol-roadmap.md §2
 	} else if (flag == 'shadowsocksR') {
 		var params2 = ["mode", "name", "server", "port", "method", "rss_protocol", "rss_protocol_param", "rss_obfs", "rss_obfs_param"]; //ssr
 		for (var i = 0; i < params2.length; i++) {
@@ -9163,6 +9190,7 @@ function add_ss_node_conf(flag) {
 		}
 		ns[p + "_password_" + node_id] = Base64.encode($.trim($("#ss_node_table_password").val()));
 		ns[p + "_type_" + node_id] = "1";
+	*/
 	} else if (flag == 'v2ray') {
 		var params4_1 = ["mode", "name", "server", "port", "v2ray_uuid", "v2ray_alterid", "v2ray_security", "v2ray_network", "v2ray_headtype_tcp", "v2ray_headtype_kcp", "v2ray_kcp_seed", "v2ray_headtype_quic", "v2ray_grpc_mode", "v2ray_grpc_authority", "v2ray_network_path", "v2ray_network_host", "v2ray_network_security", "v2ray_network_security_sni", "v2ray_mux_concurrency"]; //for v2ray
 		var params4_2 = ["v2ray_use_json", "v2ray_mux_enable", "v2ray_network_security_ai", "v2ray_network_security_alpn_h2", "v2ray_network_security_alpn_http"];
@@ -9241,6 +9269,7 @@ function add_ss_node_conf(flag) {
 		ns[p + "_type_" + node_id] = "5";
 	}
 	//fancyss_naive_1
+	/* FORK doge.10: Naive (type 6) save branch removed — see doc/design/protocol-roadmap.md §2
 	else if (flag == 'naive') {
 		var params7 = ["mode", "name", "naive_prot", "naive_server", "naive_port", "naive_user"]; //naive
 		for (var i = 0; i < params7.length; i++) {
@@ -9249,8 +9278,10 @@ function add_ss_node_conf(flag) {
 		ns[p + "_naive_pass_" + node_id] = Base64.encode($.trim($("#ss_node_table_naive_pass").val()));
 		ns[p + "_type_" + node_id] = "6";
 	}
+	*/
 	//fancyss_naive_2
 	//fancyss_tuic_1
+	/* FORK doge.10: Tuic (type 7) save branch removed — see doc/design/protocol-roadmap.md §2
 	else if (flag == 'tuic') {
 		ns[p + "_mode_" + node_id] = $.trim($("#ss_node_table_mode").val());
 		ns[p + "_name_" + node_id] = $.trim($("#ss_node_table_name").val());
@@ -9272,6 +9303,7 @@ function add_ss_node_conf(flag) {
 		}
 		ns[p + "_type_" + node_id] = "7";
 	}
+	*/
 	//fancyss_tuic_2
 		else if (flag == 'hysteria2') {
 			var params8 = ["mode", "name", "hy2_server", "hy2_port", "hy2_up", "hy2_dl", "hy2_obfs", "hy2_obfs_pass", "hy2_pass", "hy2_sni", "hy2_pcs", "hy2_vcn", "hy2_cg"];
@@ -10648,18 +10680,19 @@ function get_node_display_type_label(c) {
 	switch(String(c["type"] || "")) {
 		case "0":
 			return (c["ss_obfs"] == "http" || c["ss_obfs"] == "tls") ? "ss[obfs]" : "ss";
-		case "1":
-			return "ssr";
+		/* FORK doge.10: SSR (1) / Naive (6) / Tuic (7) removed — see doc/design/protocol-roadmap.md §2 */
+		// case "1":
+		// 	return "ssr";
 		case "3":
 			return c["protoc"] || "vmess";
 		case "4":
 			return c["protoc"] || c["xray_prot"] || "vless";
 		case "5":
 			return "trojan";
-		case "6":
-			return "Naive";
-		case "7":
-			return "tuic";
+		// case "6":
+		// 	return "Naive";
+		// case "7":
+		// 	return "tuic";
 		case "8":
 			return "hy2";
 		case "9":	//fancyss-full
@@ -11250,12 +11283,13 @@ function sync_node_card_current_state(nodeId) {
 function get_node_card_protocol_class(c) {
 	var label = String(get_node_display_type_label(c) || "").toLowerCase();
 	if (label.indexOf("ss[obfs]") === 0 || label == "ss") return "proto-ss";
-	if (label == "ssr") return "proto-ssr";
+	/* FORK doge.10: SSR / Naive / Tuic removed — see doc/design/protocol-roadmap.md §2 */
+	// if (label == "ssr") return "proto-ssr";
 	if (label == "vmess") return "proto-vmess";
 	if (label == "vless") return "proto-vless";
 	if (label == "trojan") return "proto-trojan";
-	if (label == "naïve" || label == "naive") return "proto-naive";
-	if (label == "tuic") return "proto-tuic";
+	// if (label == "naïve" || label == "naive") return "proto-naive";
+	// if (label == "tuic") return "proto-tuic";
 	if (label == "hy2" || label == "hysteria2") return "proto-hy2";
 	if (label == "anytls") return "proto-anytls";	//fancyss-full
 	return "";
@@ -16805,12 +16839,16 @@ function toggleKeyMask(o, show){
 																<table width="100%" border="0" align="left" cellpadding="0" cellspacing="0" class="vpnClientTitle">
 																	<tr>
 																	<td width="11.111%" align="center" id="ssTitle" onclick="tabclickhandler(0);">SS节点</td>
+																	<!-- FORK doge.10: SSR/Naive/Tuic cut, see doc/design/protocol-roadmap.md §2
 																	<td width="11.111%" align="center" id="ssrTitle" onclick="tabclickhandler(1);">SSR节点</td>
+																	-->
 																	<td width="11.111%" align="center" id="vmessTitle" onclick="tabclickhandler(3);">Vmess节点</td>
 																	<td width="11.111%" align="center" id="vlessTitle" onclick="tabclickhandler(4);">Vless节点</td>
 																	<td width="11.111%" align="center" id="trojanTitle" onclick="tabclickhandler(5);">Trojan节点</td>
-																	<td width="11.111%" align="center" id="naiveTitle" onclick="tabclickhandler(6);">Naïve节点</td>		<!--fancyss-full-->
-																	<td width="11.111%" align="center" id="tuicTitle" onclick="tabclickhandler(7);">tuic节点</td>		<!--fancyss-full-->
+																	<!-- FORK doge.10: Naive/Tuic cut, see doc/design/protocol-roadmap.md §2
+																	<td width="11.111%" align="center" id="naiveTitle" onclick="tabclickhandler(6);">Naïve节点</td>		[fancyss-full]
+																	<td width="11.111%" align="center" id="tuicTitle" onclick="tabclickhandler(7);">tuic节点</td>		[fancyss-full]
+																	-->
 																	<td width="11.111%" align="center" id="hy2Title" onclick="tabclickhandler(8);">hysteria2节点</td>
 																	<td width="11.111%" align="center" id="anytlsTitle" onclick="tabclickhandler(9);">AnyTLS节点</td>		<!--fancyss-full-->
 																	</tr>

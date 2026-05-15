@@ -60,6 +60,16 @@ fss_chain_type_supported() {
 		[ -z "${v}" ] || [ "${v}" = "none" ] || [ "${v}" = "0" ]
 		return $?
 		;;
+	8)
+		# hysteria2：xray 原生 outbound（doge.10 加入）。不支持 obfs 和端口跳跃
+		v=$(fss_get_node_field_plain "${id}" "hy2_obfs" 2>/dev/null)
+		if [ "${v}" = "1" ]; then return 1; fi
+		# 端口跳跃：hy2_port 含逗号或连字符即范围
+		local port_raw
+		port_raw=$(fss_get_node_field_plain "${id}" "hy2_port" 2>/dev/null)
+		case "${port_raw}" in *,*|*-*) return 1 ;; esac
+		return 0
+		;;
 	esac
 	return 1
 }
@@ -315,6 +325,54 @@ fss_chain_build_front_outbound_json() {
 			}
 		') || return 1
 		;;
+	8)
+		# Hysteria2：xray 原生 outbound，network=hysteria（QUIC over UDP）
+		# 字段：hy2_pass / hy2_sni / hy2_ai / hy2_pcs / hy2_vcn
+		local hy2_pass hy2_sni hy2_ai hy2_pcs hy2_vcn
+		hy2_pass=$(fss_get_node_field_plain "${id}" "hy2_pass" 2>/dev/null)
+		hy2_sni=$(fss_get_node_field_plain "${id}" "hy2_sni" 2>/dev/null)
+		hy2_ai=$(fss_get_node_field_plain "${id}" "hy2_ai" 2>/dev/null)
+		hy2_pcs=$(fss_get_node_field_plain "${id}" "hy2_pcs" 2>/dev/null)
+		hy2_vcn=$(fss_get_node_field_plain "${id}" "hy2_vcn" 2>/dev/null)
+
+		# SNI 默认值：跟 ssconfig.sh 4825-4834 行的逻辑保持一致 —— sni 空时用 server（除非 server 是 IP）
+		if [ -z "${hy2_sni}" ]; then
+			case "${server}" in
+			*[a-zA-Z]*) hy2_sni="${server}" ;;
+			esac
+		fi
+
+		local tls_block
+		if [ "${hy2_ai}" = "1" ]; then
+			tls_block=$(jq -n --arg sni "${hy2_sni}" '
+				{serverName: $sni, allowInsecure: true, alpn: ["h3"]}
+				| with_entries(select(.value != null and .value != ""))
+			')
+		else
+			tls_block=$(jq -n --arg sni "${hy2_sni}" --arg pcs "${hy2_pcs}" --arg vcn "${hy2_vcn}" '
+				{serverName: $sni, pinnedPeerCertSha256: $pcs, verifyPeerCertByName: $vcn, alpn: ["h3"]}
+				| with_entries(select(.value != null and .value != ""))
+			')
+		fi
+
+		outbound=$(jq -n \
+			--arg tag "${FSS_CHAIN_FRONT_TAG}" \
+			--arg srv "${server}" --argjson port "${port}" \
+			--arg pwd "${hy2_pass}" \
+			--argjson tls "${tls_block}" '
+			{
+				tag: $tag,
+				protocol: "hysteria",
+				settings: {version: 2, address: $srv, port: $port},
+				streamSettings: {
+					network: "hysteria",
+					hysteriaSettings: {version: 2, auth: $pwd},
+					security: "tls",
+					tlsSettings: $tls
+				}
+			}
+		') || return 1
+		;;
 	*)
 		return 1
 		;;
@@ -362,9 +420,9 @@ fss_chain_apply() {
 	local landing_type="${ss_basic_type}"
 	[ -n "${landing_type}" ] || landing_type=$(dbus get ss_basic_type 2>/dev/null)
 	case "${landing_type}" in
-	0|3|4|5) ;;
+	0|3|4|5|8) ;;
 	*)
-		fss_chain_log "落地节点协议(type=${landing_type})不在 SS/VMess/VLess/Trojan 范围，已跳过链式代理"
+		fss_chain_log "落地节点协议(type=${landing_type})不在 SS/VMess/VLess/Trojan/HY2 范围，已跳过链式代理"
 		fss_chain_set_status "fallback" ""
 		return 0
 		;;
@@ -379,9 +437,9 @@ fss_chain_apply() {
 	local front_type
 	front_type=$(fss_get_node_field_plain "${front_id}" "type" 2>/dev/null)
 	case "${front_type}" in
-	0|3|4|5) ;;
+	0|3|4|5|8) ;;
 	*)
-		fss_chain_log "前置节点协议(type=${front_type})不在 SS/VMess/VLess/Trojan 范围，已跳过链式代理"
+		fss_chain_log "前置节点协议(type=${front_type})不在 SS/VMess/VLess/Trojan/HY2 范围，已跳过链式代理"
 		fss_chain_set_status "fallback" ""
 		return 0
 		;;

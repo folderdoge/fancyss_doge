@@ -87,6 +87,8 @@ rm -rf /koolshare/scripts/ss_*
 rm -rf /koolshare/webs/Module_shadowsocks*
 rm -rf /koolshare/bin/rss-tunnel
 rm -rf /koolshare/bin/rss-local
+# FORK: cut in doge.10, see doc/design/protocol-roadmap.md §2 — added rss-redir cleanup for upgrades from pre-doge.10
+rm -rf /koolshare/bin/rss-redir
 rm -rf /koolshare/bin/obfs-local
 rm -rf /koolshare/bin/kcptun
 rm -rf /koolshare/bin/chinadns-ng

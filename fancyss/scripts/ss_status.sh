@@ -47,9 +47,10 @@ pick_status_tool(){
 }
 
 status_socks5_ready() {
+	# FORK doge.10: removed naive|tuic|rss-local from socks5 readiness regex, see doc/design/protocol-roadmap.md §2
 	netstat -nlp 2>/dev/null \
 		| grep -w "23456" \
-		| grep -Eq "xray|v2ray|naive|tuic|anytls-zig|rss-local"
+		| grep -Eq "xray|v2ray|anytls-zig"
 }
 
 set_waiting_status(){

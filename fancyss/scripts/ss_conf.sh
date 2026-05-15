@@ -164,9 +164,10 @@ backup_tar(){
 		cp /koolshare/bin/v2ray ${TARGET_FOLDER}/bin/
 		[ -f "/koolshare/bin/haveged" ] && cp /koolshare/bin/haveged ${TARGET_FOLDER}/bin/
 		cp /koolshare/bin/ipt2socks ${TARGET_FOLDER}/bin/
-		cp /koolshare/bin/naive ${TARGET_FOLDER}/bin/
-		cp /koolshare/bin/tuic-client ${TARGET_FOLDER}/bin/
-		[ -f "/koolshare/bin/tuic-client" ] && cp /koolshare/bin/tuic-client ${TARGET_FOLDER}/bin/
+		# FORK: cut in doge.10, see doc/design/protocol-roadmap.md §2 (Naive type=6 / Tuic type=7)
+		# cp /koolshare/bin/naive ${TARGET_FOLDER}/bin/
+		# cp /koolshare/bin/tuic-client ${TARGET_FOLDER}/bin/
+		# [ -f "/koolshare/bin/tuic-client" ] && cp /koolshare/bin/tuic-client ${TARGET_FOLDER}/bin/
 		[ -f "/koolshare/bin/anytls-zig" ] && cp /koolshare/bin/anytls-zig ${TARGET_FOLDER}/bin/
 		cp /koolshare/bin/hysteria2 ${TARGET_FOLDER}/bin/
 	fi

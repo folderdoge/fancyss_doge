@@ -1258,17 +1258,18 @@ kill_process() {
 		kill -9 "$xray_process" >/dev/null 2>&1
 	fi
 
-	local rssredir=$(pidof rss-redir)
-	if [ -n "$rssredir" ]; then
-		echo_date "关闭ssr-redir进程..."
-		killall rss-redir >/dev/null 2>&1
-	fi
-
-	local ssrlocal=$(ps | grep -w rss-local | grep -v "grep" | grep -w "23456" | awk '{print $1}')
-	if [ -n "$ssrlocal" ]; then
-		echo_date "关闭ssr-local进程:23456端口..."
-		kill $ssrlocal >/dev/null 2>&1
-	fi
+	# FORK: cut in doge.10, see doc/design/protocol-roadmap.md §2 (SSR type=1)
+	# local rssredir=$(pidof rss-redir)
+	# if [ -n "$rssredir" ]; then
+	# 	echo_date "关闭ssr-redir进程..."
+	# 	killall rss-redir >/dev/null 2>&1
+	# fi
+	#
+	# local ssrlocal=$(ps | grep -w rss-local | grep -v "grep" | grep -w "23456" | awk '{print $1}')
+	# if [ -n "$ssrlocal" ]; then
+	# 	echo_date "关闭ssr-local进程:23456端口..."
+	# 	kill $ssrlocal >/dev/null 2>&1
+	# fi
 
 	local sstunnel=$(pidof ss-tunnel)
 	if [ -n "$sstunnel" ]; then
@@ -1312,17 +1313,18 @@ kill_process() {
 		killall ipt2socks
 	fi	
 
-	local NAIVE_PID=$(ps | grep "naive" | grep -v grep | awk '{print $1}')
-	if [ -n "${NAIVE_PID}" ];then
-		echo_date "关闭naive进程..."
-		killall naive
-	fi
-
-	local TUIC_PID=$(ps | grep "tuic-client" | grep -v grep | awk '{print $1}')
-	if [ -n "${TUIC_PID}" ];then
-		echo_date "关闭tuic-client进程..."
-		killall tuic-client
-	fi
+	# FORK: cut in doge.10, see doc/design/protocol-roadmap.md §2 (Naive type=6 / Tuic type=7)
+	# local NAIVE_PID=$(ps | grep "naive" | grep -v grep | awk '{print $1}')
+	# if [ -n "${NAIVE_PID}" ];then
+	# 	echo_date "关闭naive进程..."
+	# 	killall naive
+	# fi
+	#
+	# local TUIC_PID=$(ps | grep "tuic-client" | grep -v grep | awk '{print $1}')
+	# if [ -n "${TUIC_PID}" ];then
+	# 	echo_date "关闭tuic-client进程..."
+	# 	killall tuic-client
+	# fi
 
 	local ANYTLS_PID=$(ps | grep "anytls-zig" | grep -v grep | awk '{print $1}')
 	if [ -n "${ANYTLS_PID}" ];then
@@ -1433,7 +1435,9 @@ resolv_server_ip() {
 	return 0
 }
 
+# FORK: cut in doge.10, see doc/design/protocol-roadmap.md §2
 # create shadowsocks config file...
+: <<'FORK_CUT_DOGE10'
 creat_ssr_json() {
 	if [ -z "${WEB_ACTION}" ]; then
 		if [ -n "${WAN_ACTION}" ]; then
@@ -1460,6 +1464,7 @@ creat_ssr_json() {
 		}
 	EOF
 }
+FORK_CUT_DOGE10
 
 get_proxy_server_ip(){
 	# 获取代理服务器ip地址
@@ -1504,6 +1509,8 @@ get_proxy_server_ip(){
 	fi
 }
 
+# FORK: cut in doge.10, see doc/design/protocol-roadmap.md §2
+: <<'FORK_CUT_DOGE10'
 start_ssr_local() {
 	if [ -n "$(ps|grep rss-local|grep 23456)" ];then
 		return
@@ -1513,6 +1520,7 @@ start_ssr_local() {
 	run_bg rss-local -b 127.0.0.1 -l 23456 -c ${CONFIG_FILE} -u -f /var/run/ssrlocal.pid
 	detect_running_status rss-local "/var/run/ssrlocal.pid"
 }
+FORK_CUT_DOGE10
 
 dbus_dset(){
 	# set key when value exist, delete when empty
@@ -3359,6 +3367,8 @@ auto_start() {
 	[ ! -L "/koolshare/init.d/N99shadowsocks.sh" ] && ln -sf /koolshare/ss/ssconfig.sh /koolshare/init.d/N99shadowsocks.sh
 }
 
+# FORK: cut in doge.10, see doc/design/protocol-roadmap.md §2
+: <<'FORK_CUT_DOGE10'
 start_ssr_redir() {
 	echo_date "开启ssr-redir进程，用于透明代理."
 	BIN=rss-redir
@@ -3379,6 +3389,7 @@ start_ssr_redir() {
 	# start socks5，socks5端口默认提供，但目前监听在127.0.0.1，所有协议都需要开socks5端口，以前适用于dns tcp远程解析，未来用户开放给用户
 	start_ssr_local
 }
+FORK_CUT_DOGE10
 
 fire_redir() {
 	local ARG_1 ARG_2 ARG_3
@@ -4953,6 +4964,8 @@ start_hy2(){
 }
 
 
+# FORK: cut in doge.10, see doc/design/protocol-roadmap.md §2
+: <<'FORK_CUT_DOGE10'
 start_naive(){
 	if [ -f "/koolshare/bin/naive" ];then
 		chmod +x /koolshare/bin/naive
@@ -4977,16 +4990,19 @@ start_naive(){
 		echo_date ""
 		close_in_five flag
 	fi
-	
+
 	echo_date "开启ipt2socks进程..."
 	run_bg ipt2socks -p 23456 -l 3333 -b 0.0.0.0 -B :: -n 10000 -R
 	detect_running_status2 ipt2socks 23456
-	
+
 	echo_date "开启NaïveProxy主进程..."
 	run_bg naive --listen=socks://127.0.0.1:23456 --proxy=${ss_basic_naive_prot}://${ss_basic_naive_user}:${ss_basic_password}@${ss_basic_server}:${ss_basic_naive_port}
 	detect_running_status2 naive 23456
 }
+FORK_CUT_DOGE10
 
+# FORK: cut in doge.10, see doc/design/protocol-roadmap.md §2
+: <<'FORK_CUT_DOGE10'
 start_tuic(){
 	if [ -f "/koolshare/bin/tuic-client" ];then
 		chmod +x /koolshare/bin/tuic-client
@@ -5060,6 +5076,7 @@ start_tuic(){
 	run_bg tuic-client -c /koolshare/ss/tuic.json
 	detect_running_status tuic-client
 }
+FORK_CUT_DOGE10
 
 anytls_hostport() {
 	local host="$1"
@@ -7162,7 +7179,8 @@ apply_ss() {
 		creat_shunt_json
 	else
 		[ "${ss_basic_type}" == "0" ] && creat_xray_ss_json
-		[ "${ss_basic_type}" == "1" ] && creat_ssr_json
+		# FORK: cut in doge.10, see doc/design/protocol-roadmap.md §2 (SSR type=1)
+		# [ "${ss_basic_type}" == "1" ] && creat_ssr_json
 		[ "${ss_basic_type}" == "3" ] && creat_vmess_json
 		[ "${ss_basic_type}" == "4" ] && creat_vless_json
 		[ "${ss_basic_type}" == "5" ] && creat_trojan_json
@@ -7193,12 +7211,13 @@ apply_ss() {
 		fi
 	else
 		[ "${ss_basic_type}" == "0" ] && start_xray
-		[ "${ss_basic_type}" == "1" ] && start_ssr_redir
+		# FORK: cut in doge.10, see doc/design/protocol-roadmap.md §2 (SSR type=1 / Naive type=6 / Tuic type=7)
+		# [ "${ss_basic_type}" == "1" ] && start_ssr_redir
 		[ "${ss_basic_type}" == "3" ] && start_xray
 		[ "${ss_basic_type}" == "4" ] && start_xray
 		[ "${ss_basic_type}" == "5" ] && start_trojan
-		[ "${ss_basic_type}" == "6" ] && start_naive
-		[ "${ss_basic_type}" == "7" ] && start_tuic
+		# [ "${ss_basic_type}" == "6" ] && start_naive
+		# [ "${ss_basic_type}" == "7" ] && start_tuic
 		[ "${ss_basic_type}" == "8" ] && start_hy2
 		[ "${ss_basic_type}" == "9" ] && start_anytls
 	fi

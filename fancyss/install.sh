@@ -373,7 +373,8 @@ restart_status_runtime_async() {
 				waited=$((waited + 1))
 			done
 			waited=0
-			while ! netstat -nlp 2>/dev/null | grep -w "23456" | grep -Eq "xray|v2ray|naive|tuic|anytls-zig|rss-local"
+			# FORK doge.10: removed naive|tuic|rss-local from socks5 readiness regex, see doc/design/protocol-roadmap.md §2
+			while ! netstat -nlp 2>/dev/null | grep -w "23456" | grep -Eq "xray|v2ray|anytls-zig"
 			do
 				[ "${waited}" -ge 15 ] && break
 				sleep 1
@@ -509,6 +510,173 @@ migrate_failover_v2(){
 	echo_date "故障转移：combo 前缀迁移 v2 完成（fss_failover_combo_* → ss_failover_combo_*）。"
 }
 
+# FORK doge.10: 主动删除 dbus 里所有 type=1 (SSR) / type=6 (Naive) / type=7 (Tuic) 的节点 + 清理引用。
+# 详见 doc/design/protocol-roadmap.md §2。后端专用迁移旗标走 fss_* 前缀（CLAUDE.md 硬规则 #1）。
+# 触发条件：fss_doge10_legacy_protocols_migrated != "1"。幂等。
+# 依赖：fss_b64_decode（ss_node_common.sh）+ jq。
+migrate_doge10_drop_legacy_protocols(){
+	local migrated_flag order csv_in id blob node_json node_type
+	local ssr_count=0 naive_count=0 tuic_count=0 total_dropped=0
+	local kept_ids="" dropped_ids=""
+	local current_id current_dropped=0
+	local front_id front_dropped=0
+	local total i landing_id landing_dropped front_id_combo combo_changes=0
+	local drop_combo_list=""
+
+	migrated_flag="$(dbus get fss_doge10_legacy_protocols_migrated)"
+	if [ "${migrated_flag}" = "1" ]; then
+		return 0
+	fi
+
+	order="$(dbus get fss_node_order)"
+	if [ -z "${order}" ]; then
+		# 还没有节点数据 → 直接落旗标退出（避免下次重复扫描）
+		dbus set fss_doge10_legacy_protocols_migrated="1"
+		return 0
+	fi
+
+	# 1. 遍历 fss_node_order，识别 type=1/6/7 节点
+	csv_in="$(printf '%s' "${order}" | tr ',' ' ')"
+	for id in ${csv_in}
+	do
+		[ -n "${id}" ] || continue
+		blob="$(dbus get "fss_node_${id}")"
+		if [ -z "${blob}" ]; then
+			# blob 不存在 → 保留 id（防误删；上游负责清理）
+			kept_ids="${kept_ids}${kept_ids:+,}${id}"
+			continue
+		fi
+		node_json="$(fss_b64_decode "${blob}" 2>/dev/null)"
+		if [ -z "${node_json}" ]; then
+			# 解码失败 → 保留 id（防误删）
+			kept_ids="${kept_ids}${kept_ids:+,}${id}"
+			continue
+		fi
+		node_type="$(printf '%s' "${node_json}" | jq -r '(.type // "") | tostring' 2>/dev/null)"
+		case "${node_type}" in
+			1) ssr_count=$((ssr_count + 1)); dropped_ids="${dropped_ids}${dropped_ids:+ }${id}" ;;
+			6) naive_count=$((naive_count + 1)); dropped_ids="${dropped_ids}${dropped_ids:+ }${id}" ;;
+			7) tuic_count=$((tuic_count + 1)); dropped_ids="${dropped_ids}${dropped_ids:+ }${id}" ;;
+			*) kept_ids="${kept_ids}${kept_ids:+,}${id}" ;;
+		esac
+	done
+
+	total_dropped=$((ssr_count + naive_count + tuic_count))
+	if [ "${total_dropped}" = "0" ]; then
+		echo_date "[doge.10 migrate] 无遗留 SSR/Naive/Tuic 节点需要删除。"
+		dbus set fss_doge10_legacy_protocols_migrated="1"
+		return 0
+	fi
+
+	# 2. 物理删除节点 blob
+	for id in ${dropped_ids}
+	do
+		dbus remove "fss_node_${id}" >/dev/null 2>&1
+	done
+
+	# 3. 重写 fss_node_order（kept_ids 已按原顺序拼接）
+	if [ -n "${kept_ids}" ]; then
+		dbus set fss_node_order="${kept_ids}"
+	else
+		dbus remove fss_node_order >/dev/null 2>&1
+	fi
+
+	# 4. 清理 ssconf_basic_node（主出口节点）：指向被删 → 改成新 order 首项；新 order 空则清空
+	current_id="$(dbus get ssconf_basic_node)"
+	if [ -n "${current_id}" ]; then
+		for id in ${dropped_ids}
+		do
+			if [ "${current_id}" = "${id}" ]; then
+				current_dropped=1
+				break
+			fi
+		done
+	fi
+	if [ "${current_dropped}" = "1" ]; then
+		if [ -n "${kept_ids}" ]; then
+			local new_main="${kept_ids%%,*}"
+			dbus set ssconf_basic_node="${new_main}"
+			echo_date "[doge.10 migrate] 主出口节点（id=${current_id}）已被删除，切换到 id=${new_main}。"
+		else
+			dbus remove ssconf_basic_node >/dev/null 2>&1
+			echo_date "[doge.10 migrate] 主出口节点（id=${current_id}）已被删除，且无剩余节点可用。"
+		fi
+	fi
+
+	# 5. 清理 ssconf_basic_node_front（前置节点）：指向被删 → 清空（前置是可选的）
+	front_id="$(dbus get ssconf_basic_node_front)"
+	if [ -n "${front_id}" ]; then
+		for id in ${dropped_ids}
+		do
+			if [ "${front_id}" = "${id}" ]; then
+				front_dropped=1
+				break
+			fi
+		done
+	fi
+	if [ "${front_dropped}" = "1" ]; then
+		dbus set ssconf_basic_node_front=""
+		echo_date "[doge.10 migrate] 前置节点（id=${front_id}）已被删除，已清空前置设置。"
+	fi
+
+	# 6. 遍历 combo 列表
+	#    - landing_id 指向被删 → 整个 combo 待删（收集 idx，倒序 drop 避免索引错位）
+	#    - front_id 指向被删（landing 仍有效）→ 清空 front_id / front_identity
+	total="$(dbus get ss_failover_combo_count)"
+	case "${total}" in ''|*[!0-9]*) total=0 ;; esac
+	if [ "${total}" -gt 0 ] 2>/dev/null; then
+		i=1
+		while [ "${i}" -le "${total}" ]
+		do
+			landing_id="$(dbus get "ss_failover_combo_${i}_landing_id")"
+			front_id_combo="$(dbus get "ss_failover_combo_${i}_front_id")"
+			landing_dropped=0
+			front_dropped=0
+			if [ -n "${landing_id}" ]; then
+				for id in ${dropped_ids}
+				do
+					if [ "${landing_id}" = "${id}" ]; then
+						landing_dropped=1
+						break
+					fi
+				done
+			fi
+			if [ -n "${front_id_combo}" ]; then
+				for id in ${dropped_ids}
+				do
+					if [ "${front_id_combo}" = "${id}" ]; then
+						front_dropped=1
+						break
+					fi
+				done
+			fi
+			if [ "${landing_dropped}" = "1" ]; then
+				# 把待删 idx 倒序压栈（drop 时要从大到小）
+				drop_combo_list="${i}${drop_combo_list:+ }${drop_combo_list}"
+				combo_changes=$((combo_changes + 1))
+			elif [ "${front_dropped}" = "1" ]; then
+				dbus set "ss_failover_combo_${i}_front_id"=""
+				dbus set "ss_failover_combo_${i}_front_identity"=""
+				combo_changes=$((combo_changes + 1))
+			fi
+			i=$((i + 1))
+		done
+		# 倒序删 combo
+		for i in ${drop_combo_list}
+		do
+			fss_failover_combo_drop "${i}" >/dev/null 2>&1
+		done
+	fi
+
+	# 7. 汇总日志
+	echo_date "[doge.10 migrate] 已删除 SSR 节点 ${ssr_count} 个、Naive ${naive_count} 个、Tuic ${tuic_count} 个。"
+	if [ "${combo_changes}" -gt 0 ] 2>/dev/null; then
+		echo_date "[doge.10 migrate] 已清理 ${combo_changes} 个故障转移备用组合（landing 被删则整组删除；front 被删则清空前置）。"
+	fi
+
+	dbus set fss_doge10_legacy_protocols_migrated="1"
+}
+
 get_model(){
 	local ODMPID=$(nvram get odmpid)
 	local PRODUCTID=$(nvram get productid)
@@ -628,7 +796,8 @@ normalize_schema2_secret_fields_after_install() {
 	local changed_fields=0
 	local scanned_nodes=0
 	local total_nodes=0
-	local fields="password naive_pass"
+	# FORK: cut in doge.10, see doc/design/protocol-roadmap.md §2 — removed naive_pass
+	local fields="password"
 
 	[ "$(fss_detect_storage_schema 2>/dev/null)" = "2" ] || return 0
 	if [ "${force_scan}" != "1" ] && [ "$(dbus get fss_data_secret_mode 2>/dev/null)" = "raw" ];then
@@ -1866,7 +2035,8 @@ install_now(){
 		echo_date "检测/data分区剩余空间..."
 		local SPACE_DATA_AVAL1=$(df | grep -w "/data" | awk '{print $4}')
 		echo_date "/data分区剩余空间为：${SPACE_DATA_AVAL1}KB"
-		local _BINS="xray v2ray hysteria2 naive anytls-zig sslocal rss-local rss-tunnel rss-redir"
+		# FORK: cut in doge.10, see doc/design/protocol-roadmap.md §2 — removed naive (kept hysteria2 even though unused — out of scope)
+		local _BINS="xray v2ray hysteria2 anytls-zig sslocal rss-local rss-tunnel rss-redir"
 		for _BIN in ${_BINS}
 		do
 			if [ -f "/tmp/shadowsocks/bin/${_BIN}" ];then
@@ -2005,6 +2175,8 @@ install_now(){
 	migrate_failover_v1
 	# combo 前缀重命名 v2：fss_failover_combo_* → ss_failover_combo_*（CLAUDE.md 硬规则 #1）
 	migrate_failover_v2
+	# FORK doge.10：删除老的 SSR/Naive/Tuic 节点 + 清理引用（详见 doc/design/protocol-roadmap.md §2）
+	migrate_doge10_drop_legacy_protocols
 	# fork toggle（doge.9）：「直连 AsusGo / koolcenter 生态域名」首次安装默认开启
 	# 详见 doc/implementation/asusgo-whitelist-toggle.md
 	[ -z "$(dbus get ss_basic_direct_asusgo)" ] && dbus set ss_basic_direct_asusgo=1

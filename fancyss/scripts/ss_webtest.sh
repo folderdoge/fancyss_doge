@@ -605,12 +605,13 @@ wt_try_webtest_tool_batch() {
 }
 
 wt_webtest_group_label() {
+	# FORK: cut in doge.10, see doc/design/protocol-roadmap.md §2 (Naive type=6 / Tuic type=7 / SSR type=1)
 	case "$1" in
 	xg*) printf '%s\n' "xray-like" ;;
-	nv) printf '%s\n' "naive" ;;
-	tc) printf '%s\n' "tuic" ;;
+	# nv) printf '%s\n' "naive" ;;
+	# tc) printf '%s\n' "tuic" ;;
 	09) printf '%s\n' "anytls" ;;
-	01|single) printf '%s\n' "ssr" ;;
+	# 01|single) printf '%s\n' "ssr" ;;
 	*) printf '%s\n' "$1" ;;
 	esac
 }
@@ -1396,12 +1397,14 @@ wt_runtime_cleanup() {
 	killall wt-ss >/dev/null 2>&1
 	killall wt-ss-local >/dev/null 2>&1
 	killall wt-obfs >/dev/null 2>&1
-	killall wt-rss-local >/dev/null 2>&1
+	# FORK: cut in doge.10, see doc/design/protocol-roadmap.md §2 (SSR type=1)
+	# killall wt-rss-local >/dev/null 2>&1
 	killall wt-v2ray >/dev/null 2>&1
 	killall wt-xray >/dev/null 2>&1
 	killall wt-trojan >/dev/null 2>&1
-	killall wt-naive >/dev/null 2>&1
-	killall wt-tuic >/dev/null 2>&1
+	# FORK: cut in doge.10, see doc/design/protocol-roadmap.md §2 (Naive type=6 / Tuic type=7)
+	# killall wt-naive >/dev/null 2>&1
+	# killall wt-tuic >/dev/null 2>&1
 	killall wt-hy2 >/dev/null 2>&1
 	killall webtest-tool >/dev/null 2>&1
 	killall curl-fancyss >/dev/null 2>&1
@@ -1783,12 +1786,11 @@ wt_node_get_plain_from_cache() {
 	jq_bin=$(fss_pick_jq_bin)
 	[ -n "${jq_bin}" ] || return 1
 	value=$(printf '%s' "${WT_NODE_ACTIVE_JSON}" | "${jq_bin}" -r --arg field "${store_field}" '
+		# FORK: cut in doge.10, see doc/design/protocol-roadmap.md §2 — removed naive_pass|tuic_json
 		def is_b64_field($key):
 			$key == "password"
-			or $key == "naive_pass"
 			or $key == "v2ray_json"
-			or $key == "xray_json"
-			or $key == "tuic_json";
+			or $key == "xray_json";
 		. as $root
 		| ($root[$field] // empty) as $v
 		| if ($v | type) == "null" then
@@ -1819,8 +1821,9 @@ wt_node_get() {
 			[ "${value}" = "1" ] || return 0
 		fi
 		if fss_is_b64_field "${store_field}"; then
+			# FORK: cut in doge.10, see doc/design/protocol-roadmap.md §2 — removed tuic_json from compact set
 			case "${store_field}" in
-			v2ray_json|xray_json|tuic_json)
+			v2ray_json|xray_json)
 				value=$(fss_compact_json_value "${value}")
 				;;
 			esac
@@ -2956,11 +2959,13 @@ get_webtest_usable_count(){
 # ----------------------------------------------------------------------
 # webtest
 # 0: ss: ss, ss + simpple obfs, ss + v2ray plugin
-# 1: ssr
+# FORK: cut in doge.10, see doc/design/protocol-roadmap.md §2 — type 1 (SSR) / type 6 (Naive) / type 7 (Tuic) removed from proxy core paths
+# 1: ssr           (removed)
 # 3: v2ray
 # 4: xray
 # 5: trojan
-# 6: naive
+# 6: naive         (removed)
+# 7: tuic          (removed)
 
 # 1. 先分类，ss分4类（ss, ss+simple, ss+v2ray, ss2022），ssr一类，v2ray + xray + trojan一类，naive一类，总共7类
 # 2. 按照类别分别进行测试，而不是按照节点顺序测试，这样可以避免v2ray，xray等线程过多导致路由器资源耗尽，每个类的线程数不一样
@@ -3180,15 +3185,10 @@ test_nodes(){
 				xray_group_done=1
 			fi
 			;;
-		01)
-			test_07_sr $file_name $node_type
-			;;
-		06)
-			test_11_nv $file_name $node_type
-			;;
-		07)
-			test_12_tc $file_name $node_type
-			;;
+		# FORK doge.10: SSR/Naive/Tuic dispatch removed (see doc/design/protocol-roadmap.md §2)
+		# 01) test_07_sr $file_name $node_type ;;
+		# 06) test_11_nv $file_name $node_type ;;
+		# 07) test_12_tc $file_name $node_type ;;
 		09)
 			test_13_at $file_name $node_type
 			;;
@@ -3273,6 +3273,8 @@ test_xray_group(){
 	return 0
 }
 
+# FORK: cut in doge.10, see doc/design/protocol-roadmap.md §2 (SSR type=1)
+: <<'FORK_CUT_DOGE10'
 test_07_sr(){
 	local file=$1
 	local mark=$2
@@ -3355,7 +3357,10 @@ test_07_sr(){
 	killall wt-rss-local >/dev/null 2>&1
 	rm -rf "${hooks_dir}" ${TMP2}/wt-rss-local
 }
+FORK_CUT_DOGE10
 
+# FORK: cut in doge.10, see doc/design/protocol-roadmap.md §2 (Naive type=6)
+: <<'FORK_CUT_DOGE10'
 test_11_nv(){
 	local file=$1
 	local file_path=""
@@ -3416,7 +3421,10 @@ test_11_nv(){
 	killall wt-naive >/dev/null 2>&1
 	rm -rf ${TMP2}/wt-naive "${hooks_dir}"
 }
+FORK_CUT_DOGE10
 
+# FORK: cut in doge.10, see doc/design/protocol-roadmap.md §2 (Tuic type=7)
+: <<'FORK_CUT_DOGE10'
 test_12_tc(){
 	local file=$1
 	local file_path=""
@@ -3484,6 +3492,7 @@ test_12_tc(){
 	killall wt-tuic >/dev/null 2>&1
 	rm -rf ${TMP2}/wt-tuic "${hooks_dir}"
 }
+FORK_CUT_DOGE10
 
 test_13_at(){
 	local file=$1
@@ -3757,15 +3766,10 @@ single_test_node(){
 	0|3|4|5|8)
 		test_xray_group ${single_file} xg
 		;;
-	1)
-		test_07_sr ${single_file} single
-		;;
-	6)
-		test_11_nv ${single_file}
-		;;
-	7)
-		test_12_tc ${single_file}
-		;;
+	# FORK doge.10: SSR/Naive/Tuic dispatch removed (see doc/design/protocol-roadmap.md §2)
+	# 1) test_07_sr ${single_file} single ;;
+	# 6) test_11_nv ${single_file} ;;
+	# 7) test_12_tc ${single_file} ;;
 	9)
 		test_13_at ${single_file} 09
 		;;
@@ -3910,6 +3914,8 @@ wt_json_escape_simple() {
 	printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
 }
 
+# FORK: cut in doge.10, see doc/design/protocol-roadmap.md §2 (Tuic type=7)
+: <<'FORK_CUT_DOGE10'
 wt_build_tuic_runtime_json() {
 	local node_id="$1"
 	local local_addr="$2"
@@ -3953,6 +3959,7 @@ wt_build_tuic_runtime_json() {
 	raw_json=$(printf '%s' "${raw_json}" | sed 's/}[[:space:]]*$/,"local":{"server":"'"${escaped_local_addr}"'"}}/')
 	printf '%s' "${raw_json}" > "${out_file}"
 }
+FORK_CUT_DOGE10
 
 wait_program(){
 	local BINNAME=$1

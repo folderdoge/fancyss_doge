@@ -1,5 +1,20 @@
 fancyss Changelog
 
+3.5.28-doge.10（20260514）
+   - note	fork 战略调整：押注链式代理，与上游分离方向迈出第一步。砍掉当前不支持链式代理的 3 个独立进程协议（SSR / Naive / Tuic），同时给链式代理加入 HY2 支持（HY2 本就是 xray 原生 outbound）。已有 SSR/Naive/Tuic 节点会在升级时被主动删除（type ID 1/6/7 永久预留，后续版本按需逐个加回）。
+   - update	链式代理 `fss_chain_type_supported` 新增 type 8 (Hysteria2) 分支，前置/落地双端均可选 HY2 节点；不支持 hy2_obfs 启用和端口跳跃配置（fallback 静默回退）。
+   - update	前置节点下拉、故障转移备用组合面板的前置选项加入 HY2 类型节点。
+   - update	「添加节点」弹窗砍掉 SSR/Naive/Tuic 三个协议 tab + 联动逻辑，用户无法新建这 3 类节点。
+   - update	`install.sh` 新增 `migrate_doge10_drop_legacy_protocols()` 一次性迁移函数：升级时遍历 `fss_node_order` 把所有 type=1/6/7 节点删除，并清理 `ssconf_basic_node` / `ssconf_basic_node_front` / `ss_failover_combo_*` 等引用（被删 landing 整 combo 删除，被删 front 仅清 front 字段）。旗标 `fss_doge10_legacy_protocols_migrated` 保证幂等。
+   - update	`ss_node_subscribe.sh` 新增 `sub_filter_legacy_protocols_inplace()`：订阅导入 (`sub_write_nodes_schema2` / `sub_append_nodes_schema2` 两条路径) 在 sub-tool 处理前过滤 type 1/6/7，按协议分类统计并 echo_date 输出"⚠️ 跳过 X 协议节点 N 个"日志。
+   - update	`ss_node_common.sh` 三处 `keep_type`（prune / v1→v2 迁移 / 备份恢复）改方案 A：顶层 `select($type != "1" and != "6" and != "7")`，整节点过滤而非保留空壳。备份恢复路径额外加 `fss_node_order` 收敛逻辑应对过滤后节点数减少的情况。
+   - update	后端 `start_ssr_local / start_ssr_redir / creat_ssr_json / start_naive / start_tuic` 函数注释保留（`FORK_CUT_DOGE10` 包裹），dispatch 行注释；ssconfig.sh / ss_proc_status.sh / ss_node_common.sh / ss_webtest.sh / ss_status.sh / install.sh / uninstall.sh / ss_conf.sh 关联代码全部清理或注释。
+   - update	Module_shadowsocks.asp 移除 SSR/Naive/Tuic 表单 base64 处理、协议显示标签、节点比对字段、tabclickhandler / add_ss_node_conf 保存分支等 15+ 处；ss-menu.js 协议介绍超链接列表删除 NaïveProxy/tuic、SSR 帮助链接、108 帮助文案；hint id 200（前置节点）文案加入 HY2 支持说明。
+   - update	build.sh 打包步骤新增 gen_folder rm 块，从发行 tarball 中剔除 `naive / tuic-client / rss-redir / rss-local / obfs-local` 五个二进制（仓库 `fancyss/bin-*/` 下保留以便将来加回）。tarball 单平台预计瘦身约 5-8MB。
+   - update	新增 `doc/design/protocol-roadmap.md` 战略文档，记录协议矩阵、砍协议方案、AnyTLS 依赖管理、协议加回路线图。
+   - fix	`ss_webtest.sh` 测速分发 case（两处）注释掉 `test_07_sr / test_11_nv / test_12_tc` 调用，避免对老节点点测速时撞 command not found。
+   - test	`bash -n` 通过所有改动的 shell 脚本；asp 文件 BOM/CRLF/字节级行尾严格一致（CR=LF=17852）；ss_chain_proxy.sh 加入 HY2 后通过 `bash -n` 校验；HY2/AnyTLS 代码路径未受砍除影响（grep 验证）。
+
 3.5.28（20260510）
    - note	本次更新重点刷新核心代理二进制，并针对 Xray-core 新版配置字段变化、详细状态展示和 TUIC/Naïve 运行兼容做补丁收口。
    - update	Xray-core 升级到自编译 `v26.3.27-d2758a0`，使用 Go `1.26.3` 构建，已重新编译并 UPX 压缩 `arm64 / armv7 / armv5` 产物，同步进入 `binaries/xray` 与对应 `fancyss/bin-*` 分发链路。

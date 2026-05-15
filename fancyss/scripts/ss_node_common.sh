@@ -25,11 +25,11 @@ anytls_ai
 
 FSS_NODE_B64_FIELDS="
 password
-naive_pass
 v2ray_json
 xray_json
-tuic_json
 "
+# FORK: cut in doge.10, see doc/design/protocol-roadmap.md §2 (Naive type=6 / Tuic type=7)
+# Removed from B64 fields: naive_pass, tuic_json
 
 FSS_NODE_RUNTIME_FIELDS="
 latency
@@ -339,8 +339,9 @@ fss_touch_node_config_ts() {
 }
 
 fss_node_field_affects_direct_domains() {
+	# FORK: cut in doge.10, see doc/design/protocol-roadmap.md §2 — removed naive_server|tuic_json
 	case "$1" in
-	type|server|naive_server|hy2_server|anytls_server|v2ray_use_json|v2ray_json|xray_use_json|xray_json|tuic_json)
+	type|server|hy2_server|anytls_server|v2ray_use_json|v2ray_json|xray_use_json|xray_json)
 		return 0
 		;;
 	esac
@@ -1317,14 +1318,8 @@ fss_prune_node_json() {
 				or $k == "ss_obfs"
 				or $k == "ss_obfs_host"
 			elif $type == "1" then
-				$k == "server"
-				or $k == "port"
-				or $k == "method"
-				or $k == "password"
-				or $k == "rss_protocol"
-				or $k == "rss_protocol_param"
-				or $k == "rss_obfs"
-				or $k == "rss_obfs_param"
+				# FORK doge.10: SSR nodes are filtered out entirely upstream (see select below); kept for safety only.
+				false
 			elif $type == "3" then
 				$k == "server"
 				or $k == "port"
@@ -1395,13 +1390,11 @@ fss_prune_node_json() {
 				or $k == "trojan_obfshost"
 				or $k == "trojan_obfsuri"
 			elif $type == "6" then
-				$k == "naive_prot"
-				or $k == "naive_server"
-				or $k == "naive_port"
-				or $k == "naive_user"
-				or $k == "naive_pass"
+				# FORK doge.10: Naive nodes are filtered out entirely upstream (see select below); kept for safety only.
+				false
 			elif $type == "7" then
-				$k == "tuic_json"
+				# FORK doge.10: Tuic nodes are filtered out entirely upstream (see select below); kept for safety only.
+				false
 			elif $type == "8" then
 				$k == "hy2_server"
 				or $k == "hy2_port"
@@ -1427,6 +1420,9 @@ fss_prune_node_json() {
 			end;
 		. as $root
 		| (($root.type // "") | tostring) as $type
+		# FORK doge.10: drop type 1/6/7 entirely — install.sh migrate removes existing,
+		# this catches restored backups / legacy migrations that still carry these protocols.
+		| select($type != "1" and $type != "6" and $type != "7")
 		| with_entries(select((.key | startswith("_")) or keep_common(.key) or keep_type($type; .key)))
 	'
 }
@@ -2152,7 +2148,8 @@ fss_legacy_node_dump_to_v2_tsv() {
 			if $type == "0" then
 				$k == "server" or $k == "port" or $k == "method" or $k == "password" or $k == "ss_obfs" or $k == "ss_obfs_host"
 			elif $type == "1" then
-				$k == "server" or $k == "port" or $k == "method" or $k == "password" or $k == "rss_protocol" or $k == "rss_protocol_param" or $k == "rss_obfs" or $k == "rss_obfs_param"
+				# FORK doge.10: SSR nodes are filtered out entirely upstream (see select below); kept for safety only.
+				false
 			elif $type == "3" then
 				$k == "server" or $k == "port" or $k == "v2ray_uuid" or $k == "v2ray_alterid" or $k == "v2ray_security" or $k == "v2ray_network" or $k == "v2ray_headtype_tcp" or $k == "v2ray_headtype_kcp" or $k == "v2ray_kcp_seed" or $k == "v2ray_headtype_quic" or $k == "v2ray_grpc_mode" or $k == "v2ray_grpc_authority" or $k == "v2ray_network_path" or $k == "v2ray_network_host" or $k == "v2ray_network_security" or $k == "v2ray_network_security_ai" or $k == "v2ray_network_security_alpn_h2" or $k == "v2ray_network_security_alpn_http" or $k == "v2ray_network_security_sni" or $k == "v2ray_mux_concurrency" or $k == "v2ray_json" or $k == "v2ray_use_json" or $k == "v2ray_mux_enable"
 			elif $type == "4" then
@@ -2160,9 +2157,11 @@ fss_legacy_node_dump_to_v2_tsv() {
 			elif $type == "5" then
 				$k == "server" or $k == "port" or $k == "trojan_ai" or $k == "trojan_uuid" or $k == "trojan_sni" or $k == "trojan_pcs" or $k == "trojan_vcn" or $k == "trojan_tfo" or $k == "trojan_plugin" or $k == "trojan_obfs" or $k == "trojan_obfshost" or $k == "trojan_obfsuri"
 			elif $type == "6" then
-				$k == "naive_prot" or $k == "naive_server" or $k == "naive_port" or $k == "naive_user" or $k == "naive_pass"
+				# FORK doge.10: Naive nodes are filtered out entirely upstream (see select below); kept for safety only.
+				false
 			elif $type == "7" then
-				$k == "tuic_json"
+				# FORK doge.10: Tuic nodes are filtered out entirely upstream (see select below); kept for safety only.
+				false
 			elif $type == "8" then
 				$k == "hy2_server" or $k == "hy2_port" or $k == "hy2_pass" or $k == "hy2_up" or $k == "hy2_dl" or $k == "hy2_obfs" or $k == "hy2_obfs_pass" or $k == "hy2_sni" or $k == "hy2_pcs" or $k == "hy2_vcn" or $k == "hy2_ai" or $k == "hy2_tfo" or $k == "hy2_cg"
 			elif $type == "9" then
@@ -2175,11 +2174,10 @@ fss_legacy_node_dump_to_v2_tsv() {
 			| (($root.type // "") | tostring) as $type
 			| with_entries(select((.key | startswith("_")) or keep_common(.key) or keep_type($type; .key)));
 		def is_b64_field($key):
+			# FORK: cut in doge.10, see doc/design/protocol-roadmap.md §2 — removed naive_pass|tuic_json
 			$key == "password"
-			or $key == "naive_pass"
 			or $key == "v2ray_json"
-			or $key == "xray_json"
-			or $key == "tuic_json";
+			or $key == "xray_json";
 		def decode_value($key; $value):
 			if is_b64_field($key) and ($value != "" and $value != null) then
 				try ($value | @base64d) catch $value
@@ -2215,8 +2213,10 @@ fss_legacy_node_dump_to_v2_tsv() {
 				| .xray_grpc_mode = (if ((.xray_grpc_mode // "") == "") then "gun" else .xray_grpc_mode end)
 				| .xray_xhttp_mode = (if ((.xray_xhttp_mode // "") == "") then "auto" else .xray_xhttp_mode end)
 				| .xray_network_security = (if ((.xray_network_security // "") == "") then "none" else .xray_network_security end)
+			# FORK: cut in doge.10, see doc/design/protocol-roadmap.md §2 (Naive type=6) — branch made no-op
 			elif $type == "6" then
-				.naive_prot = (if ((.naive_prot // "") == "") then "https" else .naive_prot end)
+				.
+				# .naive_prot = (if ((.naive_prot // "") == "") then "https" else .naive_prot end)
 			elif $type == "8" then
 				.hy2_obfs = (if ((.hy2_obfs // "") == "") then "0" else .hy2_obfs end)
 			else
@@ -2235,6 +2235,9 @@ fss_legacy_node_dump_to_v2_tsv() {
 			end
 		)
 		| to_entries[]
+		# FORK doge.10: drop type 1/6/7 entirely - install.sh migrate removes existing,
+		# this catches restored backups / legacy migrations that still carry these protocols.
+		| select(((.value.type // "") | tostring) as $t | $t != "1" and $t != "6" and $t != "7")
 		| . as $entry
 		| (
 			$entry.value
@@ -2382,8 +2385,10 @@ fss_node_legacy_to_v2_json() {
 				| .xray_grpc_mode = (if ((.xray_grpc_mode // "") == "") then "gun" else .xray_grpc_mode end)
 				| .xray_xhttp_mode = (if ((.xray_xhttp_mode // "") == "") then "auto" else .xray_xhttp_mode end)
 				| .xray_network_security = (if ((.xray_network_security // "") == "") then "none" else .xray_network_security end)
+			# FORK: cut in doge.10, see doc/design/protocol-roadmap.md §2 (Naive type=6) — branch made no-op
 			elif $type == "6" then
-				.naive_prot = (if ((.naive_prot // "") == "") then "https" else .naive_prot end)
+				.
+				# .naive_prot = (if ((.naive_prot // "") == "") then "https" else .naive_prot end)
 			elif $type == "8" then
 				.hy2_obfs = (if ((.hy2_obfs // "") == "") then "0" else .hy2_obfs end)
 			else
@@ -3073,8 +3078,9 @@ fss_get_node_field_legacy() {
 	fi
 
 	if fss_is_b64_field "${store_field}"; then
+		# FORK: cut in doge.10, see doc/design/protocol-roadmap.md §2 — removed tuic_json from compact set
 		case "${store_field}" in
-		v2ray_json|xray_json|tuic_json)
+		v2ray_json|xray_json)
 			value=$(fss_compact_json_value "${value}")
 			;;
 		esac
@@ -3084,6 +3090,8 @@ fss_get_node_field_legacy() {
 	printf '%s' "${value}"
 }
 
+# FORK: cut in doge.10, see doc/design/protocol-roadmap.md §2 (Tuic type=7)
+: <<'FORK_CUT_DOGE10'
 fss_extract_tuic_server_host_port() {
 	local tuic_server_raw="$1"
 	local tuic_server=""
@@ -3110,6 +3118,7 @@ fss_extract_tuic_server_host_port() {
 
 	printf '%s\n%s\n' "${tuic_server}" "${tuic_port}"
 }
+FORK_CUT_DOGE10
 
 fss_extract_xray_like_server_field_from_json_text() {
 	local json_text="$1"
@@ -3216,13 +3225,16 @@ fss_node_json_server_host_port() {
 					text(.port)
 				]
 			end
+		# FORK: cut in doge.10, see doc/design/protocol-roadmap.md §2 (Naive type=6 / Tuic type=7) — branches return empty pair
 		elif $type == "6" then
-			[
-				text(.naive_server),
-				text(.naive_port)
-			]
+			["", ""]
+			# [
+			# 	text(.naive_server),
+			# 	text(.naive_port)
+			# ]
 		elif $type == "7" then
-			split_tuic_server(text((parse_embedded_json(.tuic_json).relay.server)))
+			["", ""]
+			# split_tuic_server(text((parse_embedded_json(.tuic_json).relay.server)))
 		elif $type == "8" then
 			[
 				text(.hy2_server),
@@ -3252,6 +3264,7 @@ fss_get_node_server_host_port() {
 	node_type="$(fss_get_node_field_plain "${node_id}" "type")"
 
 	case "${node_type}" in
+	# FORK: cut in doge.10, see doc/design/protocol-roadmap.md §2 — type=1 (SSR) kept in pattern (still uses common server/port) but proxy core removed
 	0|1|5)
 		host="$(fss_get_node_field_plain "${node_id}" "server")"
 		port="$(fss_get_node_field_plain "${node_id}" "port")"
@@ -3276,20 +3289,21 @@ fss_get_node_server_host_port() {
 			port="$(fss_get_node_field_plain "${node_id}" "port")"
 		fi
 		;;
-	6)
-		host="$(fss_get_node_field_plain "${node_id}" "naive_server")"
-		port="$(fss_get_node_field_plain "${node_id}" "naive_port")"
-		;;
-	7)
-		json_text="$(fss_get_node_field_plain "${node_id}" "tuic_json")"
-		relay_server="$(printf '%s' "${json_text}" | jq -r '.relay.server // empty' 2>/dev/null)"
-		{
-			read -r host
-			read -r port
-		} <<-EOF
-		$(fss_extract_tuic_server_host_port "${relay_server}")
-		EOF
-		;;
+	# FORK: cut in doge.10, see doc/design/protocol-roadmap.md §2 (Naive type=6 / Tuic type=7)
+	# 6)
+	# 	host="$(fss_get_node_field_plain "${node_id}" "naive_server")"
+	# 	port="$(fss_get_node_field_plain "${node_id}" "naive_port")"
+	# 	;;
+	# 7)
+	# 	json_text="$(fss_get_node_field_plain "${node_id}" "tuic_json")"
+	# 	relay_server="$(printf '%s' "${json_text}" | jq -r '.relay.server // empty' 2>/dev/null)"
+	# 	{
+	# 		read -r host
+	# 		read -r port
+	# 	} <<-EOF
+	# 	$(fss_extract_tuic_server_host_port "${relay_server}")
+	# 	EOF
+	# 	;;
 	8)
 		host="$(fss_get_node_field_plain "${node_id}" "hy2_server")"
 		port="$(fss_get_node_field_plain "${node_id}" "hy2_port")"
@@ -3364,22 +3378,27 @@ fss_list_node_server_domains_v2_fast() {
 			else
 				""
 			end;
+		# FORK: cut in doge.10, see doc/design/protocol-roadmap.md §2 (Tuic type=7) — function kept as no-op stub
 		def tuic_host:
-			if . == "" then
-				""
-			elif startswith("[") then
-				(try capture("^\\[(?<host>[^\\]]+)\\](?::.*)?$").host catch "")
-			else
-				sub(":.*$"; "")
-			end;
+			""
+			# if . == "" then
+			# 	""
+			# elif startswith("[") then
+			# 	(try capture("^\\[(?<host>[^\\]]+)\\](?::.*)?$").host catch "")
+			# else
+			# 	sub(":.*$"; "")
+			# end
+			;
 		inputs
 		| (try fromjson catch null)
 		| select(type == "object")
 		| (.type // "") as $type
 		| if ($type == "0" or $type == "1" or $type == "5") then
 			(.server // "")
+		# FORK: cut in doge.10, see doc/design/protocol-roadmap.md §2 (Naive type=6) — branch returns empty
 		elif $type == "6" then
-			(.naive_server // "")
+			""
+			# (.naive_server // "")
 		elif $type == "8" then
 			(.hy2_server // "")
 		elif $type == "9" then
@@ -3396,8 +3415,10 @@ fss_list_node_server_domains_v2_fast() {
 			else
 				(.server // "")
 			end
+		# FORK: cut in doge.10, see doc/design/protocol-roadmap.md §2 (Tuic type=7) — branch returns empty
 		elif $type == "7" then
-			(.tuic_json | parse_embedded_json | .relay.server // "" | tuic_host)
+			""
+			# (.tuic_json | parse_embedded_json | .relay.server // "" | tuic_host)
 		else
 			(.server // "")
 		end
@@ -3697,16 +3718,14 @@ $(printf '%s' "${node_json}" | jq -r --rawfile meta "${meta_file}" '
 		or $f == "hy2_ai"
 		or $f == "hy2_tfo"
 		or $f == "anytls_ai";
+	# FORK: cut in doge.10, see doc/design/protocol-roadmap.md §2 — removed naive_pass|tuic_json
 	def is_b64($f):
 		$f == "password"
-		or $f == "naive_pass"
 		or $f == "v2ray_json"
-		or $f == "xray_json"
-		or $f == "tuic_json";
+		or $f == "xray_json";
 	def need_compact_json($f):
 		$f == "v2ray_json"
-		or $f == "xray_json"
-		or $f == "tuic_json";
+		or $f == "xray_json";
 	def compact_json_string:
 		try (fromjson | tojson) catch .;
 	def to_plain_value($root; $field; $value):
@@ -4462,7 +4481,8 @@ fss_restore_native_backup_v2() {
 				if $type == "0" then
 					$k == "server" or $k == "port" or $k == "method" or $k == "password" or $k == "ss_obfs" or $k == "ss_obfs_host"
 				elif $type == "1" then
-					$k == "server" or $k == "port" or $k == "method" or $k == "password" or $k == "rss_protocol" or $k == "rss_protocol_param" or $k == "rss_obfs" or $k == "rss_obfs_param"
+					# FORK doge.10: SSR nodes are filtered out entirely upstream (see select below); kept for safety only.
+					false
 				elif $type == "3" then
 					$k == "server" or $k == "port" or $k == "v2ray_uuid" or $k == "v2ray_alterid" or $k == "v2ray_security" or $k == "v2ray_network" or $k == "v2ray_headtype_tcp" or $k == "v2ray_headtype_kcp" or $k == "v2ray_kcp_seed" or $k == "v2ray_headtype_quic" or $k == "v2ray_grpc_mode" or $k == "v2ray_grpc_authority" or $k == "v2ray_network_path" or $k == "v2ray_network_host" or $k == "v2ray_network_security" or $k == "v2ray_network_security_ai" or $k == "v2ray_network_security_alpn_h2" or $k == "v2ray_network_security_alpn_http" or $k == "v2ray_network_security_sni" or $k == "v2ray_mux_concurrency" or $k == "v2ray_json" or $k == "v2ray_use_json" or $k == "v2ray_mux_enable"
 				elif $type == "4" then
@@ -4470,9 +4490,11 @@ fss_restore_native_backup_v2() {
 				elif $type == "5" then
 					$k == "server" or $k == "port" or $k == "trojan_ai" or $k == "trojan_uuid" or $k == "trojan_sni" or $k == "trojan_pcs" or $k == "trojan_vcn" or $k == "trojan_tfo" or $k == "trojan_plugin" or $k == "trojan_obfs" or $k == "trojan_obfshost" or $k == "trojan_obfsuri"
 				elif $type == "6" then
-					$k == "naive_prot" or $k == "naive_server" or $k == "naive_port" or $k == "naive_user" or $k == "naive_pass"
+					# FORK doge.10: Naive nodes are filtered out entirely upstream (see select below); kept for safety only.
+					false
 				elif $type == "7" then
-					$k == "tuic_json"
+					# FORK doge.10: Tuic nodes are filtered out entirely upstream (see select below); kept for safety only.
+					false
 				elif $type == "8" then
 					$k == "hy2_server" or $k == "hy2_port" or $k == "hy2_pass" or $k == "hy2_up" or $k == "hy2_dl" or $k == "hy2_obfs" or $k == "hy2_obfs_pass" or $k == "hy2_sni" or $k == "hy2_pcs" or $k == "hy2_vcn" or $k == "hy2_ai" or $k == "hy2_tfo" or $k == "hy2_cg"
 				elif $type == "9" then
@@ -4504,6 +4526,9 @@ fss_restore_native_backup_v2() {
 			| $order[]
 			| . as $id
 			| ($nodes_map[$id] // empty)
+			# FORK doge.10: drop type 1/6/7 entirely - install.sh migrate removes existing,
+			# this catches restored backups / legacy migrations that still carry these protocols.
+			| select(((.type // "") | tostring) as $t | $t != "1" and $t != "6" and $t != "7")
 			| with_entries(select(.value != "" and .value != null))
 			| del(.server_ip, .latency, .ping)
 				| if ((.type // "") == "4" and ((.xray_prot // "") == "")) then .xray_prot = "vless" else . end
@@ -4522,10 +4547,14 @@ fss_restore_native_backup_v2() {
 		}
 		restored_nodes=$(wc -l < "${nodes_tsv}" 2>/dev/null)
 		[ -n "${restored_nodes}" ] || restored_nodes=0
-		[ "${restored_nodes}" = "${node_count}" ] || {
-			rm -rf "${tmp_dir}"
-			return 1
-		}
+		# FORK doge.10: type 1/6/7 nodes are filtered upstream by the jq pipeline; rebuild
+		# node_order_file to only contain IDs that survived, preserving original order.
+		# Without this, fss_node_order would reference IDs with no backing fss_node_<id>.
+		if [ "${restored_nodes}" != "${node_count}" ];then
+			awk -F '\t' 'NR==FNR{keep[$1]=1; next} ($0 in keep)' "${nodes_tsv}" "${node_order_file}" > "${node_order_file}.filtered" 2>/dev/null && mv -f "${node_order_file}.filtered" "${node_order_file}"
+			node_count="${restored_nodes}"
+			echo_date "[doge.10] 备份恢复：已跳过 SSR/Naive/Tuic 类型节点，剩余 ${node_count} 个节点。"
+		fi
 	else
 		: > "${nodes_tsv}"
 	fi

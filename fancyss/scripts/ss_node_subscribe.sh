@@ -3923,6 +3923,43 @@ sub_apply_existing_ids_by_identity(){
 	return 0
 }
 
+# FORK doge.10: filter SSR (type=1) / Naive (type=6) / Tuic (type=7) nodes out of subscription input.
+# Operates on a JSONL file in-place. Logs counts per protocol (skipped when 0). Caller
+# must invoke this BEFORE pick_node_tool / json2node so both the sub-tool and shell-jq paths
+# share the same filtered stream. See doc/design/protocol-roadmap.md §2.
+sub_filter_legacy_protocols_inplace(){
+	local input_file="$1"
+	local filtered_tmp ssr_count naive_count tuic_count total_dropped line node_type
+	[ -f "${input_file}" ] || return 0
+	filtered_tmp="${input_file}.doge10_filtered.$$"
+	# Walk lines once: emit kept ones to filtered_tmp, count dropped per type.
+	ssr_count=0
+	naive_count=0
+	tuic_count=0
+	while IFS= read -r line || [ -n "${line}" ]
+	do
+		[ -n "${line}" ] || continue
+		node_type=$(printf '%s' "${line}" | jq -r '(.type // "") | tostring' 2>/dev/null)
+		case "${node_type}" in
+		1) ssr_count=$((ssr_count + 1)) ;;
+		6) naive_count=$((naive_count + 1)) ;;
+		7) tuic_count=$((tuic_count + 1)) ;;
+		*) printf '%s\n' "${line}" >> "${filtered_tmp}" ;;
+		esac
+	done < "${input_file}"
+	total_dropped=$((ssr_count + naive_count + tuic_count))
+	if [ "${total_dropped}" -gt 0 ] 2>/dev/null; then
+		[ -f "${filtered_tmp}" ] || : > "${filtered_tmp}"
+		mv -f "${filtered_tmp}" "${input_file}"
+		[ "${ssr_count}" -gt 0 ] 2>/dev/null && echo_date "⚠️跳过 SSR 协议节点 ${ssr_count} 个（doge.10 已砍除）"
+		[ "${naive_count}" -gt 0 ] 2>/dev/null && echo_date "⚠️跳过 Naive 协议节点 ${naive_count} 个（doge.10 已砍除）"
+		[ "${tuic_count}" -gt 0 ] 2>/dev/null && echo_date "⚠️跳过 Tuic 协议节点 ${tuic_count} 个（doge.10 已砍除）"
+	else
+		rm -f "${filtered_tmp}" 2>/dev/null
+	fi
+	return 0
+}
+
 sub_write_nodes_schema2(){
 	local input_file="$1"
 	local node_tool=""
@@ -3937,6 +3974,13 @@ sub_write_nodes_schema2(){
 	local prepared_reuse_temp=0
 
 	[ -f "${input_file}" ] || return 1
+	# FORK doge.10: strip SSR/Naive/Tuic nodes before either node-tool or jq path consumes them.
+	sub_filter_legacy_protocols_inplace "${input_file}"
+	# 过滤后文件可能为空，避免下游写空 dbus 引发的逻辑错误。
+	if [ ! -s "${input_file}" ]; then
+		echo_date "⚠️过滤后无可导入节点（订阅内容全部为已砍除的 SSR/Naive/Tuic 协议）。"
+		return 1
+	fi
 	SUB_NODE_TOOL_PLAN_FILE_CURRENT=""
 	node_tool="$(pick_node_tool 2>/dev/null)" || node_tool=""
 	if [ -n "${node_tool}" ];then
@@ -4145,6 +4189,12 @@ sub_append_nodes_schema2(){
 
 	[ "${SUB_STORAGE_SCHEMA}" = "2" ] || return 1
 	[ -f "${input_file}" ] || return 1
+	# FORK doge.10: strip SSR/Naive/Tuic before append; same rationale as sub_write_nodes_schema2.
+	sub_filter_legacy_protocols_inplace "${input_file}"
+	if [ ! -s "${input_file}" ]; then
+		echo_date "⚠️过滤后无可追加节点（订阅内容全部为已砍除的 SSR/Naive/Tuic 协议）。"
+		return 1
+	fi
 	SUB_NODE_TOOL_PLAN_FILE_CURRENT=""
 	node_tool="$(pick_node_tool 2>/dev/null)" || node_tool=""
 	if [ -n "${node_tool}" ];then

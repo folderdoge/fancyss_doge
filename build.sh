@@ -74,7 +74,8 @@ sync_binary(){
 	# done
 
 	# update to latest binary
-	BINS_COPY="xray naive ipt2socks"
+	# FORK doge.10: removed naive (type 6 Naive) — see doc/design/protocol-roadmap.md §2
+	BINS_COPY="xray ipt2socks"
 	for BIN in $BINS_COPY;
 	do
 		local VERSION_FLAG="latest.txt"
@@ -93,14 +94,15 @@ sync_binary(){
 		cp -rf ${CURR_PATH}/binaries/${BIN}/${version}/${BIN}_armv5 ${CURR_PATH}/fancyss/bin-arm/${BIN}
 	done
 
-	local TUIC_VERSION=$(cat ${CURR_PATH}/binaries/tuic-client/latest.txt)
-	echo ">>> start to copy latest tuic-client, version: ${TUIC_VERSION}"
-	cp -rf ${CURR_PATH}/binaries/tuic-client/${TUIC_VERSION}/tuic-client_arm64 ${CURR_PATH}/fancyss/bin-mtk/tuic-client
-	cp -rf ${CURR_PATH}/binaries/tuic-client/${TUIC_VERSION}/tuic-client_arm64 ${CURR_PATH}/fancyss/bin-hnd_v8/tuic-client
-	cp -rf ${CURR_PATH}/binaries/tuic-client/${TUIC_VERSION}/tuic-client_armv7 ${CURR_PATH}/fancyss/bin-ipq32/tuic-client
-	cp -rf ${CURR_PATH}/binaries/tuic-client/${TUIC_VERSION}/tuic-client_armv7 ${CURR_PATH}/fancyss/bin-hnd/tuic-client
-	cp -rf ${CURR_PATH}/binaries/tuic-client/${TUIC_VERSION}/tuic-client_armv7 ${CURR_PATH}/fancyss/bin-qca/tuic-client
-	cp -rf ${CURR_PATH}/binaries/tuic-client/${TUIC_VERSION}/tuic-client_armv7 ${CURR_PATH}/fancyss/bin-arm/tuic-client
+	# FORK doge.10: tuic-client (type 7 Tuic) copy block removed — see doc/design/protocol-roadmap.md §2
+	# local TUIC_VERSION=$(cat ${CURR_PATH}/binaries/tuic-client/latest.txt)
+	# echo ">>> start to copy latest tuic-client, version: ${TUIC_VERSION}"
+	# cp -rf ${CURR_PATH}/binaries/tuic-client/${TUIC_VERSION}/tuic-client_arm64 ${CURR_PATH}/fancyss/bin-mtk/tuic-client
+	# cp -rf ${CURR_PATH}/binaries/tuic-client/${TUIC_VERSION}/tuic-client_arm64 ${CURR_PATH}/fancyss/bin-hnd_v8/tuic-client
+	# cp -rf ${CURR_PATH}/binaries/tuic-client/${TUIC_VERSION}/tuic-client_armv7 ${CURR_PATH}/fancyss/bin-ipq32/tuic-client
+	# cp -rf ${CURR_PATH}/binaries/tuic-client/${TUIC_VERSION}/tuic-client_armv7 ${CURR_PATH}/fancyss/bin-hnd/tuic-client
+	# cp -rf ${CURR_PATH}/binaries/tuic-client/${TUIC_VERSION}/tuic-client_armv7 ${CURR_PATH}/fancyss/bin-qca/tuic-client
+	# cp -rf ${CURR_PATH}/binaries/tuic-client/${TUIC_VERSION}/tuic-client_armv7 ${CURR_PATH}/fancyss/bin-arm/tuic-client
 
 	local upx=".upx"
 	
@@ -522,6 +524,16 @@ gen_folder(){
 	else
 		mv -f ./shadowsocks/res/icon-shadowsocks_debug.png ./shadowsocks/res/icon-shadowsocks.png
 	fi
+
+	# FORK doge.10: drop binaries for removed protocols — see doc/design/protocol-roadmap.md §2
+	# type 1 SSR runtime (rss-redir / rss-local / obfs-local)
+	# type 6 Naive (naive)
+	# type 7 Tuic (tuic-client)
+	rm -rf ./shadowsocks/bin/rss-redir
+	rm -rf ./shadowsocks/bin/rss-local
+	rm -rf ./shadowsocks/bin/obfs-local
+	rm -rf ./shadowsocks/bin/naive
+	rm -rf ./shadowsocks/bin/tuic-client
 
 	# 有些功能还没准备好，先去掉
 	# 1. 广告过滤规则

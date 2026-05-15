@@ -203,13 +203,13 @@ function pop_help() {
 			<b><% nvram_get("productid"); %> - 科学上网插件 - ' + db_ss["ss_basic_version_local"] + '</b><br \><br \>\
 			本插件是支持\
 			<a target="_blank" href="https://github.com/shadowsocks/shadowsocks-libev"><u>SS</u></a>\
-			、<a target="_blank" href="https://github.com/shadowsocksrr/shadowsocksr-libev"><u>SSR</u></a>\
+			<!-- FORK doge.10: SSR link removed — see doc/design/protocol-roadmap.md §2 -->\
 			、<a target="_blank" href="https://github.com/v2ray/v2ray-core"><u>V2ray</u></a>\
 			、<a target="_blank" href="https://github.com/XTLS/xray-core"><u>Xray</u></a>\
 			、<a target="_blank" href="https://github.com/trojan-gfw/trojan"><u>Trojan</u></a>\
-			、<a target="_blank" href="https://github.com/klzgrad/naiveproxy"><u>NaïveProxy</u></a>\
-			、<a target="_blank" href="https://github.com/Itsusinn/tuic"><u>tuic</u></a>\
-			七种客户端的科学上网、游戏加速工具。<br \><br \>\
+			<!-- FORK doge.10: NaïveProxy / tuic links removed — see doc/design/protocol-roadmap.md §2 -->\
+			、<a target="_blank" href="https://github.com/apernet/hysteria"><u>Hysteria2</u></a>\
+			客户端的科学上网、游戏加速工具。<br \><br \>\
 			本插件支持以Asuswrt、Asuswrt-Merlin为基础的，带软件中心的固件，目前固件均由<a style="color:#e7bd16" target="_blank" href="https://www.koolcenter.com/">https:\/\/www.koolcenter.com/</a>提供。<br \><br \>\
 			使用本插件有任何问题，可以前往<a style="color:#e7bd16" target="_blank" href="https://github.com/folderdoge/fancyss_doge/issues"><u>github的issue页面</u></a>反馈~<br \><br \>\
 			● 插件交流：<a style="color:#e7bd16" target="_blank" href="https://t.me/+PzdfDBssIIFmMThl"><u>加入telegram群组</u></a><br \><br \>\
@@ -691,7 +691,8 @@ function openssHint(itemNum, flag) {
 	} else if (itemNum == 11) {
 		statusmenu = "如果不知道如何填写，请一定留空，不然可能带来副作用！"
 		statusmenu += "<br /><br />请参考<a class='hintstyle' href='javascript:void(0);' onclick='openssHint(8)'><font color='#00F'>协议插件（protocol）</font></a>和<a class='hintstyle' href='javascript:void(0);' onclick='openssHint(9)'><font color='#00F'>混淆插件 (obfs)</font></a>内说明。"
-		statusmenu += "<br /><br />更多信息，请参考<a href='https://github.com/koolshare/shadowsocks-rss/blob/master/ssr.md' target='_blank'><u><font color='#00F'>ShadowsocksR 协议插件文档</font></u></a>"
+		// FORK doge.10: SSR removed — see doc/design/protocol-roadmap.md §2
+		// statusmenu += "<br /><br />更多信息，请参考<a href='https://github.com/koolshare/shadowsocks-rss/blob/master/ssr.md' target='_blank'><u><font color='#00F'>ShadowsocksR 协议插件文档</font></u></a>"
 		_caption = "自定义参数 (obfs_param)";
 	} else if (itemNum == 24) {
 		statusmenu = "&nbsp;&nbsp;&nbsp;&nbsp;导出功能可以将ss所有的设置全部导出，包括节点信息，dns设定，黑白名单设定等；"
@@ -832,8 +833,9 @@ function openssHint(itemNum, flag) {
 		statusmenu += "<br /><br />&nbsp;&nbsp;&nbsp;&nbsp;<font color='#CC0066'>2.</font>一些机场节点的域名托管在国外服务商，此时使用国外的DNS服务器效果可能更好。";
 		_caption = "节点域名解析DNS服务器：";
 	} else if (itemNum == 108) {
-		statusmenu = "ss/ssr/trojan多核心支持.<br />&nbsp;&nbsp;&nbsp;&nbsp;开启后ss-redir/rss-redir/trojan将同时运行在路由器的全部核心上，最大化ss-redir/rss-redir/trojan的性能。注意：如果线路速度不存在瓶颈，可能使CPU全部核心满载，影响路由的稳定性。"
-		_caption = "ss/ssr/trojan多核心支持：";
+		// FORK doge.10: SSR removed — see doc/design/protocol-roadmap.md §2
+		statusmenu = "ss/trojan多核心支持.<br />&nbsp;&nbsp;&nbsp;&nbsp;开启后ss-redir/trojan将同时运行在路由器的全部核心上，最大化ss-redir/trojan的性能。注意：如果线路速度不存在瓶颈，可能使CPU全部核心满载，影响路由的稳定性。"
+		_caption = "ss/trojan多核心支持：";
 	} else if (itemNum == 110) {
 		statusmenu = "&nbsp;&nbsp;&nbsp;&nbsp;匹配节点名称和节点域名/IP，含关键词的节点不会添加，多个关键词用<font color='#00F'>英文逗号</font>分隔，关键词支持中文、英文、数字，如：<font color='#CC0066'>测试,过期,剩余,曼谷,M247,D01,硅谷</font><br />&nbsp;&nbsp;&nbsp;&nbsp;此功能支持SS/SSR/V2ray/Xray订阅，<font color='#00F'>[排除]关键词</font>功能和<font color='#00F'>[包括]关键词</font>功能同时起作用。"
 		_caption = "[排除]关键词：";
@@ -1064,10 +1066,10 @@ function openssHint(itemNum, flag) {
 	} else if (itemNum == 200) {
 		width = "560px";
 		statusmenu = "<b>非空时启用链式代理：</b><font color='#669900'>路由器 → 前置节点 → 落地节点 → 目标</font><br /><br />";
-		statusmenu += "<b><font color='#CC0066'>支持的协议：</font></b>SS / VMess / VLess / Trojan，前置和落地都必须在此范围内。<br /><br />";
+		statusmenu += "<b><font color='#CC0066'>支持的协议：</font></b>SS / VMess / VLess / Trojan / Hysteria2，前置和落地都必须在此范围内。<br /><br />";
 		statusmenu += "<b><font color='#CC0066'>限制：</font></b>";
-		statusmenu += "<br />&nbsp;&nbsp;&nbsp;&nbsp;1. 传输协议仅支持 tcp / ws / grpc，安全层仅 none / tls；";
-		statusmenu += "<br />&nbsp;&nbsp;&nbsp;&nbsp;2. 不支持 SS obfs、json 自定义节点、Trojan obfs-local 插件；";
+		statusmenu += "<br />&nbsp;&nbsp;&nbsp;&nbsp;1. 传输协议仅支持 tcp / ws / grpc / hysteria，安全层仅 none / tls；";
+		statusmenu += "<br />&nbsp;&nbsp;&nbsp;&nbsp;2. 不支持 SS obfs、json 自定义节点、Trojan obfs-local 插件、Hysteria2 端口跳跃/obfs；";
 		statusmenu += "<br />&nbsp;&nbsp;&nbsp;&nbsp;3. 不支持 xray 分流模式；";
 		statusmenu += "<br />&nbsp;&nbsp;&nbsp;&nbsp;4. 前置节点不能与落地节点相同。<br /><br />";
 		statusmenu += "<b><font color='#669900'>失败处理：</font></b>构建或 xray 自检失败时，自动回滚为非链式（仅落地节点直连），插件依然可用。";

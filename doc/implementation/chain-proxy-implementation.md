@@ -35,7 +35,7 @@
 | Trojan | 5 | ✅ | ✅ | 不支持 `trojan_plugin="obfs-local"` 的 ws 伪装分支 |
 | Naïve | 6 | ❌ | ❌ | 独立进程 |
 | Tuic | 7 | ❌ | ❌ | 独立进程 |
-| Hysteria2 | 8 | ❌ | ❌ | 独立进程 |
+| Hysteria2 | 8 | ✅ | ✅ | **xray 原生 outbound**（doge.10 加入），和 Trojan 共用 xray.json |
 
 ### 1.2 传输 & 安全层
 

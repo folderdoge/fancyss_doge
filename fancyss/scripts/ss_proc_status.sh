@@ -70,9 +70,10 @@ GET_PROXY_TOOL(){
 	0)
 		echo "xray-core"
 		;;
-	1)
-		echo "shadowsocksR"
-		;;
+	# FORK: cut in doge.10, see doc/design/protocol-roadmap.md §2 (SSR type=1)
+	# 1)
+	# 	echo "shadowsocksR"
+	# 	;;
 	3)
 		if [ "${ss_basic_vcore}"  == "1" ];then
 			echo "xray-core"
@@ -86,12 +87,13 @@ GET_PROXY_TOOL(){
 	5)
 		echo "xray-core"
 		;;
-	6)
-		echo "naive"
-		;;
-	7)
-		echo "tuic"
-		;;
+	# FORK: cut in doge.10, see doc/design/protocol-roadmap.md §2 (Naive type=6 / Tuic type=7)
+	# 6)
+	# 	echo "naive"
+	# 	;;
+	# 7)
+	# 	echo "tuic"
+	# 	;;
 	8)
 		echo "xray-core"
 		;;
@@ -106,9 +108,10 @@ GET_TYPE_NAME(){
 	0)
 		echo "SS"
 		;;
-	1)
-		echo "SSR"
-		;;
+	# FORK: cut in doge.10, see doc/design/protocol-roadmap.md §2 (SSR type=1)
+	# 1)
+	# 	echo "SSR"
+	# 	;;
 	3)
 		echo "v2ray"
 		;;
@@ -118,12 +121,13 @@ GET_TYPE_NAME(){
 	5)
 		echo "trojan"
 		;;
-	6)
-		echo "NaïveProxy"
-		;;
-	7)
-		echo "tuic"
-		;;
+	# FORK: cut in doge.10, see doc/design/protocol-roadmap.md §2 (Naive type=6 / Tuic type=7)
+	# 6)
+	# 	echo "NaïveProxy"
+	# 	;;
+	# 7)
+	# 	echo "tuic"
+	# 	;;
 	8)
 		echo "hysteria2"
 		;;
@@ -141,9 +145,10 @@ GET_TYPE_DIST_NAME(){
 	0)
 		echo "ss"
 		;;
-	1)
-		echo "ssr"
-		;;
+	# FORK: cut in doge.10, see doc/design/protocol-roadmap.md §2 (SSR type=1)
+	# 1)
+	# 	echo "ssr"
+	# 	;;
 	3)
 		echo "vmess"
 		;;
@@ -153,12 +158,13 @@ GET_TYPE_DIST_NAME(){
 	5)
 		echo "trojan"
 		;;
-	6)
-		echo "naive"
-		;;
-	7)
-		echo "tuic"
-		;;
+	# FORK: cut in doge.10, see doc/design/protocol-roadmap.md §2 (Naive type=6 / Tuic type=7)
+	# 6)
+	# 	echo "naive"
+	# 	;;
+	# 7)
+	# 	echo "tuic"
+	# 	;;
 	8)
 		echo "hysteria2"
 		;;
@@ -618,16 +624,18 @@ GET_PROG_STAT(){
 	echo "程序		状态		作用		PID		内存		运行时长"
 
 	# proxy core program
-if [ "${current_type}" == "1" ]; then
+# FORK: cut in doge.10, see doc/design/protocol-roadmap.md §2 (SSR type=1) — condition forced false to keep elif chain intact
+if false; then
 		# ssr
-		local SSR_REDIR_PID=$(pidof rss-redir)
-		local SSR_REDIR_RSS=$(GET_VM_RSS_MULTI ${SSR_REDIR_PID})
-		local SSR_REDIR_UPTIME=$(GET_PROC_UPTIME_MULTI ${SSR_REDIR_PID})
-		if [ -n "${SSR_REDIR_PID}" ];then
-			echo "ssr-redir	运行中🟢		透明代理		${SSR_REDIR_PID}		${SSR_REDIR_RSS}		${SSR_REDIR_UPTIME}"
-		else
-			echo "ssr-redir	未运行🔴		透明代理"
-		fi
+		# local SSR_REDIR_PID=$(pidof rss-redir)
+		# local SSR_REDIR_RSS=$(GET_VM_RSS_MULTI ${SSR_REDIR_PID})
+		# local SSR_REDIR_UPTIME=$(GET_PROC_UPTIME_MULTI ${SSR_REDIR_PID})
+		# if [ -n "${SSR_REDIR_PID}" ];then
+		# 	echo "ssr-redir	运行中🟢		透明代理		${SSR_REDIR_PID}		${SSR_REDIR_RSS}		${SSR_REDIR_UPTIME}"
+		# else
+		# 	echo "ssr-redir	未运行🔴		透明代理"
+		# fi
+		:
 	elif [ "${current_type}" == "0" -o "${current_type}" == "3" -o "${current_type}" == "4" -o "${current_type}" == "5" -o "${current_type}" == "8" ]; then
 		# xray
 		local XRAY_PID=$(pidof xray)
@@ -666,42 +674,43 @@ if [ "${current_type}" == "1" ]; then
 		else
 			echo "ipt2socks	未运行🔴		透明代理"
 		fi
-	elif [ "${current_type}" == "6" ]; then
-		# naive
-		local NAIVE_PID=$(pidof naive)
-		local NAIVE_RSS=$(GET_VM_RSS_MULTI ${NAIVE_PID})
-		local NAIVE_UPTIME=$(GET_PROC_UPTIME_MULTI ${NAIVE_PID})
-		if [ -n "${NAIVE_PID}" ]; then
-			echo "naive		运行中🟢		socks5		${NAIVE_PID}		${NAIVE_RSS}		${NAIVE_UPTIME}"
-		else
-			echo "naive		未运行🔴		socks5"
-		fi
-		local IPT2SOCKS_PID=$(pidof ipt2socks)
-		local IPT2SOCKS_RSS=$(GET_VM_RSS_MULTI ${IPT2SOCKS_PID})
-		local IPT2SOCKS_UPTIME=$(GET_PROC_UPTIME_MULTI ${IPT2SOCKS_PID})
-		if [ -n "${IPT2SOCKS_PID}" ]; then
-			echo "ipt2socks	运行中🟢		透明代理		${IPT2SOCKS_PID}		${IPT2SOCKS_RSS}		${IPT2SOCKS_UPTIME}"
-		else
-			echo "ipt2socks	未运行🔴		透明代理"
-		fi
-	elif [ "${current_type}" == "7" ]; then
-		# tuic
-		local TUIC_PID=$(pidof tuic-client)
-		local TUIC_RSS=$(GET_VM_RSS_MULTI ${TUIC_PID})
-		local TUIC_UPTIME=$(GET_PROC_UPTIME_MULTI ${TUIC_PID})
-		if [ -n "${TUIC_PID}" ]; then
-			echo "tuic-client	运行中🟢		socks5		${TUIC_PID}		${TUIC_RSS}		${TUIC_UPTIME}"
-		else
-			echo "tuic-client	未运行🔴		socks5"
-		fi
-		local IPT2SOCKS_PID=$(pidof ipt2socks)
-		local IPT2SOCKS_RSS=$(GET_VM_RSS_MULTI ${IPT2SOCKS_PID})
-		local IPT2SOCKS_UPTIME=$(GET_PROC_UPTIME_MULTI ${IPT2SOCKS_PID})
-		if [ -n "${IPT2SOCKS_PID}" ]; then
-			echo "ipt2socks	运行中🟢		透明代理		${IPT2SOCKS_PID}		${IPT2SOCKS_RSS}		${IPT2SOCKS_UPTIME}"
-		else
-			echo "ipt2socks	未运行🔴		透明代理"
-		fi
+	# FORK: cut in doge.10, see doc/design/protocol-roadmap.md §2 (Naive type=6 / Tuic type=7)
+	# elif [ "${current_type}" == "6" ]; then
+	# 	# naive
+	# 	local NAIVE_PID=$(pidof naive)
+	# 	local NAIVE_RSS=$(GET_VM_RSS_MULTI ${NAIVE_PID})
+	# 	local NAIVE_UPTIME=$(GET_PROC_UPTIME_MULTI ${NAIVE_PID})
+	# 	if [ -n "${NAIVE_PID}" ]; then
+	# 		echo "naive		运行中🟢		socks5		${NAIVE_PID}		${NAIVE_RSS}		${NAIVE_UPTIME}"
+	# 	else
+	# 		echo "naive		未运行🔴		socks5"
+	# 	fi
+	# 	local IPT2SOCKS_PID=$(pidof ipt2socks)
+	# 	local IPT2SOCKS_RSS=$(GET_VM_RSS_MULTI ${IPT2SOCKS_PID})
+	# 	local IPT2SOCKS_UPTIME=$(GET_PROC_UPTIME_MULTI ${IPT2SOCKS_PID})
+	# 	if [ -n "${IPT2SOCKS_PID}" ]; then
+	# 		echo "ipt2socks	运行中🟢		透明代理		${IPT2SOCKS_PID}		${IPT2SOCKS_RSS}		${IPT2SOCKS_UPTIME}"
+	# 	else
+	# 		echo "ipt2socks	未运行🔴		透明代理"
+	# 	fi
+	# elif [ "${current_type}" == "7" ]; then
+	# 	# tuic
+	# 	local TUIC_PID=$(pidof tuic-client)
+	# 	local TUIC_RSS=$(GET_VM_RSS_MULTI ${TUIC_PID})
+	# 	local TUIC_UPTIME=$(GET_PROC_UPTIME_MULTI ${TUIC_PID})
+	# 	if [ -n "${TUIC_PID}" ]; then
+	# 		echo "tuic-client	运行中🟢		socks5		${TUIC_PID}		${TUIC_RSS}		${TUIC_UPTIME}"
+	# 	else
+	# 		echo "tuic-client	未运行🔴		socks5"
+	# 	fi
+	# 	local IPT2SOCKS_PID=$(pidof ipt2socks)
+	# 	local IPT2SOCKS_RSS=$(GET_VM_RSS_MULTI ${IPT2SOCKS_PID})
+	# 	local IPT2SOCKS_UPTIME=$(GET_PROC_UPTIME_MULTI ${IPT2SOCKS_PID})
+	# 	if [ -n "${IPT2SOCKS_PID}" ]; then
+	# 		echo "ipt2socks	运行中🟢		透明代理		${IPT2SOCKS_PID}		${IPT2SOCKS_RSS}		${IPT2SOCKS_UPTIME}"
+	# 	else
+	# 		echo "ipt2socks	未运行🔴		透明代理"
+	# 	fi
 	fi
 
 	# DNS program
@@ -797,12 +806,13 @@ ECHO_VERSION(){
 		local v2_info_all=$(run v2ray version|head -n1)
 		printf '%-16s %-16s %s\n' "v2ray" "$(echo ${v2_info_all}|awk '{print $2}')" "https://github.com/v2fly/v2ray-core"
 	fi
-	if [ -x "/koolshare/bin/naive" ];then
-		printf '%-16s %-16s %s\n' "naive" "$(run naive --version|awk '{print $NF}')" "https://github.com/klzgrad/naiveproxy"
-	fi
-		if [ -x "/koolshare/bin/tuic-client" ];then
-			printf '%-16s %-16s %s\n' "tuic-client" "$(run tuic-client -V|awk '{print $NF}')" "https://github.com/Itsusinn/tuic"
-		fi
+	# FORK: cut in doge.10, see doc/design/protocol-roadmap.md §2 (Naive type=6 / Tuic type=7)
+	# if [ -x "/koolshare/bin/naive" ];then
+	# 	printf '%-16s %-16s %s\n' "naive" "$(run naive --version|awk '{print $NF}')" "https://github.com/klzgrad/naiveproxy"
+	# fi
+	# 	if [ -x "/koolshare/bin/tuic-client" ];then
+	# 		printf '%-16s %-16s %s\n' "tuic-client" "$(run tuic-client -V|awk '{print $NF}')" "https://github.com/Itsusinn/tuic"
+	# 	fi
 		if [ -x "/koolshare/bin/anytls-zig" ];then
 			print_bin_version_line "anytls-zig" "$(get_zig_tool_version /koolshare/bin/anytls-zig)" "fancyss Zig / AnyTLS 客户端"
 		fi
@@ -816,8 +826,9 @@ ECHO_VERSION(){
 		fi
 	fi
 	printf '%-16s %-16s %s\n' "obfs-local" "$(run obfs-local -h|sed '/^$/d'|head -n1|awk '{print $NF}')" "https://github.com/shadowsocks/simple-obfs"
-	printf '%-16s %-16s %s\n' "ssr-redir" "$(run rss-redir -h|sed '/^$/d'|head -n1|awk '{print $2}')" "https://github.com/shadowsocksrr/shadowsocksr-libev"
-	printf '%-16s %-16s %s\n' "ssr-local" "$(run rss-local -h|sed '/^$/d'|head -n1|awk '{print $2}')" "https://github.com/shadowsocksrr/shadowsocksr-libev"
+	# FORK: cut in doge.10, see doc/design/protocol-roadmap.md §2 (SSR type=1)
+	# printf '%-16s %-16s %s\n' "ssr-redir" "$(run rss-redir -h|sed '/^$/d'|head -n1|awk '{print $2}')" "https://github.com/shadowsocksrr/shadowsocksr-libev"
+	# printf '%-16s %-16s %s\n' "ssr-local" "$(run rss-local -h|sed '/^$/d'|head -n1|awk '{print $2}')" "https://github.com/shadowsocksrr/shadowsocksr-libev"
 	if [ -x "/koolshare/bin/chinadns-ng" ];then
 		printf '%-16s %-16s %s\n' "chinadns-ng" "$(run chinadns-ng -V | awk '{print $2}')" "https://github.com/zfl9/chinadns-ng"
 	fi
