@@ -1123,6 +1123,128 @@ function openssHint(itemNum, flag) {
 		statusmenu += "<b>关闭后</b>：启动时只用本地 nvram 查路由器 WAN IP；时间检测自动 fallback 到 weibo/baidu/qq/taobao/jd/nist.time.gov（这些只查时间不上送 IP）；公网出口属地判断会被跳过（启动日志不再输出'属地：大陆/海外'行）。<br /><br />";
 		statusmenu += "<font color='#888888'>技术细节：控制 ssconfig.sh:264（worldtimeapi）+ 554-576（4 个 IP 检测源）。关闭时 close_in_five 告警也被跳过（用户主动选择，不算异常）。详见 fork 文档 doc/design/protocol-roadmap.md §7 doge.11 的 G6 条目。修改后需点击「保存&应用」并重启代理才能生效。</font>";
 		_caption = "启动时联网检测公网 IP/时间";
+	} else if (itemNum == 210) {
+		width = "640px";
+		bgcolor = "#CC0066";
+		statusmenu = "<div style='background:#FFEBA0;padding:8px;border:1px dashed #CC0066;color:#CC0066;'><b>⚠️ 实验性功能：默认未启用</b></div><br />";
+		statusmenu += "<b>分流架构 V2（doge.12）</b>是 fancyss_doge 的重大架构跃迁，将当前 fancyss 的 GFW/CHN/HOM/GAM/全局 5 个硬编码模式 + 半成品 xray 分流，重构为 <b>Clash/Mihomo 风格</b>的三层模型：<br />";
+		statusmenu += "<br />&nbsp;&nbsp;&nbsp;&nbsp;• <b>Rule</b> = 一组域名 + IP/CIDR，可有 auto-update URL<br />";
+		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• <b>Mode</b> = (Rule → Action) 有序序列 + 兜底动作 + DNS 模式<br />";
+		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• <b>User</b> = 每个 LAN 设备 1:1 分配一个 Mode<br /><br />";
+		statusmenu += "<b>路由层变化</b>：per-Mode TPROXY + xray sniffing-based routing（不再依赖 ipset 域名匹配）<br /><br />";
+		statusmenu += "<b><font color='#CC0066'>启用条件：</font></b>必须先在「附加功能」点保存&应用一次让 install.sh::migrate_split_routing_v1 跑完种子内置 Mode/Rule，再回此页打开开关。<br /><br />";
+		statusmenu += "<b><font color='#CC0066'>切换后操作：</font></b>开关从 0 改到 1（或反向）之后<b>必须</b>点底部「保存&应用」按钮，否则路由层不会切换——dbus 值已写但 ssconfig.sh 未重启。<br /><br />";
+		statusmenu += "<b><font color='#CC0066'>alpha 已知限制：</font></b><br />";
+		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• LAN 内 hostname 解析（如 <code>&lt;asusrouter&gt;</code> / <code>*.lan</code>）可能在新架构下静默失败（dnsmasq 让位未实现，留 doge.13）<br />";
+		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• 编辑/删除 Mode 和 Rule 暂时只能用 SSH + dbus 命令操作（alpha 第一稿无弹窗）<br />";
+		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• per-rule 链式代理（proxy_chain:Y:X）会被回退为主节点 outbound（alpha 简化）<br />";
+		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• 分流 DNS upstream 设置 alpha 阶段仍读「DNS 设置」老页面的国内/国外服务器配置<br /><br />";
+		statusmenu += "<b><font color='#CC0066'>失败降级：</font></b>新架构启动失败时，ssconfig.sh restart 会兜底回退到旧路径（保留 ss_split_enabled=1 但走旧 ss_basic_mode），日志告警。<br /><br />";
+		statusmenu += "<font color='#888888'>设计：doc/design/split-routing-architecture.md / 实施：doc/implementation/split-routing-implementation.md</font>";
+		_caption = "分流架构 V2 (doge.12 实验性)";
+	} else if (itemNum == 211) {
+		width = "560px";
+		statusmenu = "<b>Mode（模式）= 一组规则 + 全局修饰符</b>，由内置预设和用户自定义组成。<br /><br />";
+		statusmenu += "<b><font color='#669900'>字段：</font></b><br />";
+		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• <b>name</b>：显示名（如「全局代理」/「大陆白名单」）<br />";
+		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• <b>udp_proxy</b>：是否启用 UDP 代理<br />";
+		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• <b>block_quic</b>：是否屏蔽 QUIC（建议开启 udp_proxy 时勾选）<br />";
+		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• <b>apply_blackwhite</b>：是否受全局黑白名单（账号设置页文本框）影响<br />";
+		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• <b>dns_mode</b>：split=智能分流DNS / global=单一海外DNS<br />";
+		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• <b>rules[]</b>：按顺序匹配的 (Rule → Action) 列表<br />";
+		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• <b>default_action</b>：未命中 rules 时的兜底动作（不可为 reject）<br /><br />";
+		statusmenu += "<b><font color='#CC0066'>内置 Mode</font></b>（id 1-99 预留）：#1 全局代理 / #2 大陆白名单，用户自定义从 100 起。<br /><br />";
+		statusmenu += "<b><font color='#CC0066'>引用保护</font></b>：被任何 user 引用的 Mode 不可删除（删除按钮置灰）。<br /><br />";
+		statusmenu += "<font color='#888888'>详见 doc/design/split-routing-architecture.md §2.1</font>";
+		_caption = "模式 (Mode)";
+	} else if (itemNum == 212) {
+		width = "560px";
+		statusmenu = "<b>Rule（规则）= 一组域名 + IP/CIDR 混排</b>，可以来自远程 URL 自动更新，也可以手编。<br /><br />";
+		statusmenu += "<b><font color='#669900'>字段：</font></b><br />";
+		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• <b>name</b>：显示名<br />";
+		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• <b>source_url</b>：auto-update URL（空=手编）<br />";
+		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• <b>update_hours</b>：自动更新间隔小时（0=禁用）<br />";
+		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• <b>entries</b>：实际规则内容（路径 /koolshare/ss/rules_user/rule_&lt;id&gt;.txt）<br /><br />";
+		statusmenu += "<b><font color='#CC0066'>内置 Rule</font></b>（id 1-99 预留）：alpha 阶段 8 条：大陆白名单_常用 / GFW列表_常用 / 中国公共DNS / 广告统计屏蔽 / Telegram加速 / 在线状态检测站 / 查IP常用站 / Bing加速。<br /><br />";
+		statusmenu += "<b><font color='#CC0066'>auto-update 安全：</font></b>远程更新前会备份 .bak（保留 1 版），可手动「回滚到 .bak」。<br /><br />";
+		statusmenu += "<b><font color='#CC0066'>引用保护</font></b>：被任何 Mode 引用的 Rule 不可删除。<br /><br />";
+		statusmenu += "<font color='#888888'>详见 doc/design/split-routing-architecture.md §2.1</font>";
+		_caption = "规则 (Rule)";
+	} else if (itemNum == 213) {
+		width = "640px";
+		statusmenu = "<b>双轨 DNS</b>是 doge.12 的核心架构变更之一，消除「DNS 解析无法 per-Mode 区分」的根本缺陷。<br /><br />";
+		statusmenu += "<b><font color='#669900'>分流 DNS（chinadns-ng 智能分流）：</font></b><br />";
+		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;同时向「国内 upstream」+「国外 upstream」发出请求，按 chnlist/gfwlist tag 智能选择响应。<br />";
+		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;Mode 的 <code>dns_mode=split</code> 时使用此轨。<br /><br />";
+		statusmenu += "<b><font color='#669900'>全局 DNS（单一海外 upstream）：</font></b><br />";
+		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;只用一个海外 DNS upstream（如 8.8.8.8），无智能分流。<br />";
+		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;Mode 的 <code>dns_mode=global</code> 时使用此轨，可拿到「真正的国外解析结果」（如 microsoft.com 解到英文站 IP）。<br /><br />";
+		statusmenu += "<b><font color='#CC0066'>upstream 格式：</font></b>一行一个，支持 <code>udp://IP:port</code> / <code>tcp://IP:port</code> / <code>tls://IP:port</code><br /><br />";
+		statusmenu += "<font color='#888888'>详见 doc/design/split-routing-architecture.md §6（chinadns tag 优先级在新架构下不再适用）</font>";
+		_caption = "双轨 DNS";
+	} else if (itemNum == 214) {
+		width = "560px";
+		statusmenu = "<b>Action（动作）编码</b>采用单字符串 `:` 分隔格式：<br /><br />";
+		statusmenu += "<table cellpadding='4' cellspacing='0' style='border-collapse:collapse;border:1px solid #888;'>";
+		statusmenu += "<tr style='background:#445;color:#fff;'><th align='left'>动作</th><th align='left'>编码</th></tr>";
+		statusmenu += "<tr><td>直连</td><td><code>direct</code></td></tr>";
+		statusmenu += "<tr><td>屏蔽</td><td><code>reject</code></td></tr>";
+		statusmenu += "<tr><td>代理 (节点 X)</td><td><code>proxy_node:&lt;node_id&gt;</code></td></tr>";
+		statusmenu += "<tr><td>代理 (链式 Y→Z)</td><td><code>proxy_chain:&lt;front_id&gt;:&lt;landing_id&gt;</code></td></tr>";
+		statusmenu += "</table><br />";
+		statusmenu += "<b><font color='#CC0066'>注意：</font></b>Mode 的 <code>default_action</code>（兜底）<b>不可</b>为 <code>reject</code>，避免「所有流量被屏蔽」的死锁。<br /><br />";
+		statusmenu += "<b>链式代理</b>动作直接复用 fork 现有的 dialerProxy 注入机制（详见 doc/implementation/chain-proxy-implementation.md）。";
+		_caption = "Action 编码";
+	} else if (itemNum == 215) {
+		width = "480px";
+		statusmenu = "<b>规则顺序很重要</b>——Mode 按列表顺序逐条匹配，首个命中的规则决定动作。<br /><br />";
+		statusmenu += "<b><font color='#669900'>典型顺序（大陆白名单 Mode）：</font></b><br />";
+		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;1. 中国公共DNS → direct（最先匹配）<br />";
+		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;2. 广告统计屏蔽 → reject<br />";
+		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;3. Telegram 加速 → proxy_node:X<br />";
+		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;4. GFW列表 → proxy_node:X<br />";
+		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;5. 大陆白名单 → direct（最后兜底前）<br />";
+		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;<i>default_action</i>: proxy_node:X（兜底走代理）<br /><br />";
+		statusmenu += "<b><font color='#CC0066'>alpha 阶段：</font></b>暂用 ↑↓ 按钮重排（不一定要 jQuery UI sortable）。<br /><br />";
+		statusmenu += "<font color='#888888'>TODO(doge.12-alpha)：完整拖动排序留待 doge.13。</font>";
+		_caption = "规则顺序";
+	} else if (itemNum == 216) {
+		width = "560px";
+		statusmenu = "<b>auto-update（自动更新）</b>由 cron 任务 <code>fancyss_rules_update</code> 驱动，每小时检查一次。<br /><br />";
+		statusmenu += "<b><font color='#669900'>触发条件：</font></b>当前时间 - last_update ≥ update_hours × 3600 秒<br /><br />";
+		statusmenu += "<b><font color='#669900'>安全机制：</font></b><br />";
+		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• 下载到临时文件 → 校验大小 / 行数 → 拷到 .bak → 替换<br />";
+		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• 失败时保留原文件，不覆盖<br />";
+		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• 互斥锁 <code>fss_split_rules_update_lock</code> 防止并发<br />";
+		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• 用户可手动「立即更新」/「回滚到 .bak」<br /><br />";
+		statusmenu += "<b><font color='#CC0066'>alpha 阶段：</font></b>所有内置 Rule 的 <code>update_hours=0</code>（cron 不去更新），doge.13 切到 fork raw URL 后再开启。<br /><br />";
+		statusmenu += "<font color='#888888'>详见 fancyss/scripts/fss_rules_update.sh</font>";
+		_caption = "Rule 自动更新";
+	} else if (itemNum == 217) {
+		width = "560px";
+		statusmenu = "<b>per-MAC ACL</b>：每个 LAN 设备（按 MAC 标识）<b>1:1 分配一个 Mode</b>。<br /><br />";
+		statusmenu += "<b><font color='#669900'>分配方式：</font></b><br />";
+		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• 在「访问控制」页面添加 ACL 行，选择该设备的 Mode<br />";
+		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• 未在 ACL 表里的设备走「默认 Mode」（本页面顶部 select）<br />";
+		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• Mode = 0 时该设备不通过代理（透传）<br /><br />";
+		statusmenu += "<b><font color='#669900'>实现：</font></b>per-Mode TPROXY 端口 + per-MAC DNAT，每个 MAC 的流量被 DNAT 到对应 Mode 的 inbound 端口。<br /><br />";
+		statusmenu += "<b><font color='#CC0066'>alpha 阶段：</font></b>访问控制 UI 暂未改造，先通过 dbus_set 命令手动配 <code>ss_acl_split_mode_&lt;acl_node&gt;</code>。<br /><br />";
+		statusmenu += "<font color='#888888'>TODO(doge.12-alpha)：访问控制 UI 改造留待 doge.13。</font>";
+		_caption = "per-MAC ACL";
+	} else if (itemNum == 218) {
+		width = "560px";
+		statusmenu = "<b>失败降级（fallback）</b>：新架构启动失败时自动回退到旧路径，避免「升级后断网」。<br /><br />";
+		statusmenu += "<b><font color='#669900'>触发场景：</font></b><br />";
+		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• xray sniffing 配置生成失败<br />";
+		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• per-Mode TPROXY 端口绑定冲突<br />";
+		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• chinadns-ng 双轨实例启动失败<br />";
+		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• 内置 Rule 文件缺失<br /><br />";
+		statusmenu += "<b><font color='#669900'>降级行为：</font></b><br />";
+		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• 保留 <code>ss_split_enabled=1</code>（用户的选择不变）<br />";
+		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• 但实际运行走旧 <code>ss_basic_mode</code> 路径<br />";
+		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• 日志输出 <code>[WARN] split routing fallback to legacy</code><br /><br />";
+		statusmenu += "<font color='#888888'>详见 doc/implementation/split-routing-implementation.md §0</font>";
+		_caption = "失败降级";
 	}
 	return overlib(statusmenu, OFFSETX, 30, OFFSETY, 10, RIGHT, STICKY, WIDTH, 'width', CAPTION, _caption, CLOSETITLE, '');
 

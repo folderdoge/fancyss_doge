@@ -33,7 +33,9 @@ remove_fancyss_cron(){
 	cru d sswebtest >/dev/null 2>&1
 	cru d fancyss_webtest >/dev/null 2>&1
 	cru d fancyss_subscribe >/dev/null 2>&1
-	sed -i '/ssconfig\.sh/d;/ss_rule_update\.sh/d;/ss_node_subscribe\.sh/d;/ss_webtest\.sh/d;/fancyss/d' /var/spool/cron/crontabs/* >/dev/null 2>&1
+	# FORK doge.12 alpha：分流 Rule 自动更新 cron
+	cru d fancyss_rules_update >/dev/null 2>&1
+	sed -i '/ssconfig\.sh/d;/ss_rule_update\.sh/d;/ss_node_subscribe\.sh/d;/ss_webtest\.sh/d;/fss_rules_update\.sh/d;/fancyss/d' /var/spool/cron/crontabs/* >/dev/null 2>&1
 }
 
 stop_fancyss_websocketd(){

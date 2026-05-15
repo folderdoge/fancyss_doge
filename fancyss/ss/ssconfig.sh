@@ -29,6 +29,24 @@ ARG_OBFS=""
 OUTBOUNDS="[]"
 LINUX_VER=$(uname -r|awk -F"." '{print $1$2}')
 
+# FORK doge.12 alpha: 分流架构总开关。详见 doc/implementation/split-routing-implementation.md §0
+# ss_* 前缀的 key 已经被 ss_base.sh 的 `eval $(dbus export ss ...)` 导入；
+# 这里只是兜底确保未配置时默认为 "0"（沿用旧路径，零感知）。
+ss_split_enabled="${ss_split_enabled:-$(dbus get ss_split_enabled 2>/dev/null)}"
+[ -z "${ss_split_enabled}" ] && ss_split_enabled="0"
+# 分流架构 per-Mode TPROXY/REDIRECT 端口基址（详见 split-routing-architecture.md §5.1）
+SS_SPLIT_PORT_BASE="13333"
+# 双轨 chinadns-ng 实例端口（详见 split-routing-architecture.md §6.2）
+SS_SPLIT_DNS_SPLIT_PORT="65353"
+SS_SPLIT_DNS_GLOBAL_PORT="65354"
+# TODO(doge.12-alpha → doge.13)：dnsmasq 让 53 给 chinadns 后，需要把 dnsmasq
+# listen 改到 SS_SPLIT_DNS_LAN_PORT（这里的常量值），让 *.lan / *.local /
+# <asusrouter> 等本地域名能从 chinadns group lan 链路解出。alpha 阶段未实现
+# 该让位（涉及 fancyss postscripts/dnsmasq.postconf 和路由器 nvram 联动），
+# 因此 ss_split_enabled=1 模式下 LAN 内 hostname 解析可能静默失败。
+# 详见 doc/implementation/split-routing-implementation.md §6.2 D5。
+SS_SPLIT_DNS_LAN_PORT="65355"
+
 #-----------------------------------------------
 
 set_lock() {
@@ -1620,8 +1638,13 @@ start_dns_x(){
 				dbus set ss_basic_chng="2"
 			fi
 		fi
-	
-		start_chinadns_ng
+
+		# FORK doge.12 alpha: 分流架构走双轨 chinadns-ng
+		if [ "${ss_split_enabled}" = "1" ]; then
+			start_chinadns_ng_split
+		else
+			start_chinadns_ng
+		fi
 	elif [ "${dns_plan_runtime}" == "2" ];then
 		# DNS分流模式和iptables分流需要匹配，不然效果不好，这里需要检测用户当前代理模式和当前DNS模式
 		if [ "${runtime_mode}" == "1" ];then
@@ -2111,6 +2134,311 @@ start_smartdns(){
 	else
 		echo_date "smartdns启动成功!"
 	fi
+}
+
+# ============================================================================
+# FORK doge.12 alpha: 双轨 DNS（chinadns-ng × 2）
+# 详见 doc/design/split-routing-architecture.md §6 与
+#      doc/implementation/split-routing-implementation.md §1.6
+# ----------------------------------------------------------------------------
+# 旧 start_chinadns_ng() 与本节函数共存。`ss_split_enabled=0` 时走旧函数；
+# `=1` 时由 start_chinadns_ng_split / stop_chinadns_ng_split 接管，并启动两个
+# 实例：
+#   分流实例 chinadns-ng @127.0.0.1:65353 → 服务 dns_mode=split 的 Mode
+#   全局实例 chinadns-ng @127.0.0.1:65354 → 服务 dns_mode=global 的 Mode
+# ============================================================================
+
+# 收集所有 dns_mode=split 的 Mode 中 action=reject 的 rule_id 引用，
+# 把对应 rule 文件中的"非 +exact 前缀"的域名输出到 stdout（去重）
+ss_split_collect_reject_domains() {
+	# 注意：mode/rule 索引按 1-based（与 install.sh::migrate_split_routing_v1 一致）。
+	# 详见 doc/implementation/split-routing-implementation.md §1.5 索引规范。
+	local mode_count=$(dbus get ss_split_mode_count 2>/dev/null)
+	[ -z "${mode_count}" ] && mode_count=0
+	local m=1
+	local tmp_collect="/tmp/fss_split_reject.$$"
+	: > "${tmp_collect}"
+	while [ "${m}" -le "${mode_count}" ]; do
+		local dns_mode=$(dbus get ss_split_mode_${m}_dns_mode 2>/dev/null)
+		if [ "${dns_mode}" = "split" ]; then
+			local rcnt=$(dbus get ss_split_mode_${m}_rule_count 2>/dev/null)
+			[ -z "${rcnt}" ] && rcnt=0
+			local r=1
+			while [ "${r}" -le "${rcnt}" ]; do
+				local action=$(dbus get ss_split_mode_${m}_rule_${r}_action 2>/dev/null)
+				if [ "${action}" = "reject" ]; then
+					local rid=$(dbus get ss_split_mode_${m}_rule_${r}_rid 2>/dev/null)
+					local rfile="/koolshare/ss/rules_user/rule_${rid}.txt"
+					if [ -n "${rid}" ] && [ -f "${rfile}" ]; then
+						# 取域名行（忽略注释 / 空行 / IP / CIDR），
+						# +exact 前缀的精确域名转回普通域名；suffix 域名保持原样
+						awk '
+							/^[[:space:]]*#/ { next }
+							{ sub(/#.*/, ""); gsub(/[[:space:]]+/, ""); }
+							!$0 { next }
+							/\// { next }                # CIDR 跳过
+							/^[0-9.]+$/ { next }         # IPv4 单 IP 跳过
+							/^[0-9a-fA-F:]+$/ { next }   # IPv6 单 IP 跳过
+							/^\+/ { print substr($0,2); next }
+							{ print }
+						' "${rfile}" >> "${tmp_collect}" 2>/dev/null
+					fi
+				fi
+				r=$((r + 1))
+			done
+		fi
+		m=$((m + 1))
+	done
+	# 去重输出（保持稳定性，sort -u 即可）
+	if [ -s "${tmp_collect}" ]; then
+		sort -u "${tmp_collect}"
+	fi
+	rm -f "${tmp_collect}" >/dev/null 2>&1
+}
+
+# 收集所有 dns_mode=split 的 Mode 中所有 rule 关联的"应当走代理 (proxy_*)"的
+# rule_id，用于把这些 rule 文件喂给分流 chinadns-ng 实例的 gfwlist tag
+# （alpha 简化：默认 chnlist/gfwlist 维持原 /koolshare/ss/rules/*.gz；
+#  Rule 文件本身将由 xray sniffing 在路由层兜起来。这里仅生成 reject group。）
+# 留作未来扩展占位（doge.13+ 加聚合 chn/gfw tag 数据时启用）
+
+# 生成分流 chinadns-ng 实例配置：/tmp/chinadns_ng_split.conf @ 端口 65353
+# - 国内 / 国外 upstream 取自现有用户配置（ss_basic_chng_china_* / trust_*）
+# - 不写 ipset（去掉 add-tagchn-ip / add-taggfw-ip / add-tagignore-ip）
+# - reject group 动态收集
+# - LAN 域名 → 127.0.0.1:65355 (dnsmasq let-port，由 split 路径在 start_dns_x
+#   阶段配合 ss_basic_dns_serverx=1 把 dnsmasq 让到该端口)
+# alpha 简化：本函数复用 start_chinadns_ng() 内部已构造的 CDNS_LINE / FDNS_LINE
+# 变量（通过把它们提升为 globals）。因为这两条线索的生成依赖大量校验逻辑，
+# 重写代价过高。所以"调用顺序"是：先 start_chinadns_ng() 走一遍校验链构造
+# 出 CDNS_LINE/FDNS_LINE → 然后我们 dump 到 split conf。
+# 但 start_chinadns_ng() 还会真起一个进程。所以这里采用另一思路：
+# 把 CDNS/FDNS 直接从 dbus 读 + 简化拼接，跳过 fixup（fixup 由旧路径承担）。
+generate_chinadns_split_conf() {
+	local conf="/tmp/chinadns_ng_split.conf"
+	local CDNS_LINE=""
+	local FDNS_LINE=""
+	local CDNS_1=""
+	local CDNS_2=""
+	local CDNS_3=""
+	local FDNS_1=""
+	local FDNS_2=""
+	local FDNS_3=""
+
+	# 复用现有 get_dns() 拼接国内/可信上游
+	[ "${ss_basic_chng_china_dns_1_chk}" = "1" ] && CDNS_1=$(get_dns china 1)
+	[ "${ss_basic_chng_china_dns_2_chk}" = "1" ] && CDNS_2=$(get_dns china 2)
+	[ "${ss_basic_chng_china_dns_3_chk}" = "1" ] && CDNS_3=$(get_dns china 3)
+	[ "${ss_basic_chng_trust_dns_1_chk}" = "1" ] && FDNS_1=$(get_dns trust 1)
+	[ "${ss_basic_chng_trust_dns_2_chk}" = "1" ] && FDNS_2=$(get_dns trust 2)
+	[ "${ss_basic_chng_trust_dns_3_chk}" = "1" ] && FDNS_3=$(get_dns trust 3)
+
+	# 拼 CDNS_LINE / FDNS_LINE （非空逗号 join）
+	for v in "${CDNS_1}" "${CDNS_2}" "${CDNS_3}"; do
+		[ -n "${v}" ] || continue
+		[ -z "${CDNS_LINE}" ] && CDNS_LINE="${v}" || CDNS_LINE="${CDNS_LINE},${v}"
+	done
+	for v in "${FDNS_1}" "${FDNS_2}" "${FDNS_3}"; do
+		[ -n "${v}" ] || continue
+		[ -z "${FDNS_LINE}" ] && FDNS_LINE="${v}" || FDNS_LINE="${FDNS_LINE},${v}"
+	done
+
+	# 兜底：上游空时填补
+	[ -z "${CDNS_LINE}" ] && CDNS_LINE="223.5.5.5"
+	[ -z "${FDNS_LINE}" ] && FDNS_LINE="tcp://8.8.8.8"
+
+	rm -f "${conf}" >/dev/null 2>&1
+	cat > "${conf}" <<-EOF
+		# fancyss_doge doge.12 alpha - chinadns-ng split instance
+		# 监听: 127.0.0.1:${SS_SPLIT_DNS_SPLIT_PORT}
+		bind-addr 127.0.0.1
+		bind-port ${SS_SPLIT_DNS_SPLIT_PORT}@udp
+
+		proxy-server socks5://127.0.0.1:23456
+		proxy-group gfw,black,router
+		proxy-protocol tcp,tls
+
+		# 国内上游
+		china-dns ${CDNS_LINE}
+
+		# 可信上游
+		trust-dns ${FDNS_LINE}
+
+		# 默认 chnlist 白名单 (默认 tag=gfw，命中 chnlist 改 tag=chn 走国内)
+		chnlist-file /koolshare/ss/rules/chnlist.gz
+		gfwlist-file /koolshare/ss/rules/gfwlist.gz
+		default-tag gfw
+
+		# LAN 域名 → dnsmasq fallback
+		group lan
+		group-dnl /tmp/fss_split_lan_dnl.txt
+		group-upstream 127.0.0.1#${SS_SPLIT_DNS_LAN_PORT}
+
+	EOF
+
+	# 生成 LAN 域名清单（dnsmasq 让位端口）
+	{
+		echo "lan"
+		echo "local"
+		echo "asuscomm.com"
+		# 路由器本机 hostname
+		local rh=$(nvram get computer_name 2>/dev/null)
+		[ -n "${rh}" ] && echo "${rh}"
+		# LAN domain（路由器 DHCP 设的 .lan 后缀）
+		local ld=$(nvram get lan_domain 2>/dev/null)
+		[ -n "${ld}" ] && echo "${ld}"
+	} > /tmp/fss_split_lan_dnl.txt
+
+	# reject group（动态收集 dns_mode=split 中 reject 动作的域名）
+	local reject_file="/tmp/fss_split_reject_dnl.txt"
+	ss_split_collect_reject_domains > "${reject_file}" 2>/dev/null
+	if [ -s "${reject_file}" ]; then
+		cat >> "${conf}" <<-EOF
+			# reject 组：返回 NXDOMAIN（CLAUDE.md 硬规则 #11：chnlist/gfwlist tag
+			# 优先级问题留给 xray blackhole outbound 作终态屏蔽——本组只是 DNS 层快速失败）
+			group reject
+			group-dnl ${reject_file}
+			group-upstream 127.0.0.1#65353
+			group-tag-noip reject
+
+		EOF
+	fi
+
+	# IPv6 行为（沿用现有用户偏好）
+	if [ "${ss_basic_chng_ipv6_drop_direc:-0}" = "0" ] && [ "${ss_basic_chng_ipv6_drop_proxy:-1}" = "1" ]; then
+		echo "no-ipv6 tag:gfw" >> "${conf}"
+	elif [ "${ss_basic_chng_ipv6_drop_direc:-0}" = "1" ] && [ "${ss_basic_chng_ipv6_drop_proxy:-1}" = "1" ]; then
+		echo "no-ipv6 tag:chn,tag:gfw" >> "${conf}"
+	elif [ "${ss_basic_chng_ipv6_drop_direc:-0}" = "1" ] && [ "${ss_basic_chng_ipv6_drop_proxy:-1}" = "0" ]; then
+		echo "no-ipv6 tag:chn" >> "${conf}"
+	fi
+
+	cat >> "${conf}" <<-EOF
+
+		# 过滤 dns
+		filter-qtype 64,65
+
+		# hosts
+		hosts /etc/hosts
+
+		# dns 缓存
+		cache 8192
+		cache-stale 86400
+		cache-refresh 20
+		cache-ignore asuscomm.com
+
+		verdict-cache 8192
+
+	EOF
+}
+
+# 生成全局 chinadns-ng 实例配置：/tmp/chinadns_ng_global.conf @ 端口 65354
+# - 所有查询走 trust 组（代理）
+# - 不挂 chnlist/gfwlist
+# - LAN 域名 → 127.0.0.1:65355
+generate_chinadns_global_conf() {
+	local conf="/tmp/chinadns_ng_global.conf"
+	local FDNS_LINE=""
+	local FDNS_1=""
+	local FDNS_2=""
+	local FDNS_3=""
+
+	[ "${ss_basic_chng_trust_dns_1_chk}" = "1" ] && FDNS_1=$(get_dns trust 1)
+	[ "${ss_basic_chng_trust_dns_2_chk}" = "1" ] && FDNS_2=$(get_dns trust 2)
+	[ "${ss_basic_chng_trust_dns_3_chk}" = "1" ] && FDNS_3=$(get_dns trust 3)
+	for v in "${FDNS_1}" "${FDNS_2}" "${FDNS_3}"; do
+		[ -n "${v}" ] || continue
+		[ -z "${FDNS_LINE}" ] && FDNS_LINE="${v}" || FDNS_LINE="${FDNS_LINE},${v}"
+	done
+	[ -z "${FDNS_LINE}" ] && FDNS_LINE="tcp://1.1.1.1"
+
+	rm -f "${conf}" >/dev/null 2>&1
+	cat > "${conf}" <<-EOF
+		# fancyss_doge doge.12 alpha - chinadns-ng global instance
+		# 监听: 127.0.0.1:${SS_SPLIT_DNS_GLOBAL_PORT}
+		bind-addr 127.0.0.1
+		bind-port ${SS_SPLIT_DNS_GLOBAL_PORT}@udp
+
+		proxy-server socks5://127.0.0.1:23456
+		proxy-group trust
+		proxy-protocol tcp,tls
+
+		# 单一海外可信上游（通过代理走）
+		trust-dns ${FDNS_LINE}
+
+		# 不挂 chnlist/gfwlist，所有域名默认走 trust（除 LAN/reject）
+		default-tag none
+
+		# LAN 域名 → dnsmasq fallback
+		group lan
+		group-dnl /tmp/fss_split_lan_dnl.txt
+		group-upstream 127.0.0.1#${SS_SPLIT_DNS_LAN_PORT}
+
+	EOF
+
+	# reject group 复用分流实例生成的 reject 清单文件（若存在）
+	if [ -s "/tmp/fss_split_reject_dnl.txt" ]; then
+		cat >> "${conf}" <<-EOF
+			group reject
+			group-dnl /tmp/fss_split_reject_dnl.txt
+			group-upstream 127.0.0.1#65354
+			group-tag-noip reject
+
+		EOF
+	fi
+
+	cat >> "${conf}" <<-EOF
+		filter-qtype 64,65
+		hosts /etc/hosts
+		cache 4096
+		cache-stale 86400
+		verdict-cache 4096
+
+	EOF
+}
+
+# 启动双轨 chinadns-ng 实例
+start_chinadns_ng_split() {
+	echo_date "---------------- start chinadns-ng (split架构 双轨) ----------------"
+	echo_date "💾 生成分流 DNS 实例配置 /tmp/chinadns_ng_split.conf ..."
+	if ! generate_chinadns_split_conf; then
+		echo_date "❌ 分流 DNS 实例配置生成失败，回退到旧 chinadns-ng 路径！"
+		dbus set ss_split_dns_split_status="down"
+		# 失败降级：调用旧函数
+		start_chinadns_ng
+		return 1
+	fi
+	echo_date "💾 生成全局 DNS 实例配置 /tmp/chinadns_ng_global.conf ..."
+	if ! generate_chinadns_global_conf; then
+		echo_date "❌ 全局 DNS 实例配置生成失败，回退到旧 chinadns-ng 路径！"
+		dbus set ss_split_dns_global_status="down"
+		start_chinadns_ng
+		return 1
+	fi
+	echo_date "⚡️ 启动分流 chinadns-ng 实例 @127.0.0.1:${SS_SPLIT_DNS_SPLIT_PORT} ..."
+	env -i PATH=${PATH} chinadns-ng -C /tmp/chinadns_ng_split.conf >/dev/null 2>&1 &
+	echo_date "⚡️ 启动全局 chinadns-ng 实例 @127.0.0.1:${SS_SPLIT_DNS_GLOBAL_PORT} ..."
+	env -i PATH=${PATH} chinadns-ng -C /tmp/chinadns_ng_global.conf >/dev/null 2>&1 &
+	sleep 1
+	if pidof chinadns-ng >/dev/null 2>&1; then
+		dbus set ss_split_dns_split_status="ok"
+		dbus set ss_split_dns_global_status="ok"
+		echo_date "🆗 chinadns-ng 双实例启动完成。"
+	else
+		dbus set ss_split_dns_split_status="down"
+		dbus set ss_split_dns_global_status="down"
+		echo_date "❌ chinadns-ng 双实例启动失败！"
+	fi
+	echo_date "------------------------------------------------------------------"
+}
+
+# 停止双轨 chinadns-ng 实例（由 stop_dns_process 或 ss_pre_stop 在 split 路径调用）
+stop_chinadns_ng_split() {
+	killall chinadns-ng >/dev/null 2>&1
+	rm -f /tmp/chinadns_ng_split.conf /tmp/chinadns_ng_global.conf >/dev/null 2>&1
+	rm -f /tmp/fss_split_reject_dnl.txt >/dev/null 2>&1
+	dbus set ss_split_dns_split_status="down"
+	dbus set ss_split_dns_global_status="down"
 }
 
 start_chinadns_ng(){
@@ -4648,6 +4976,384 @@ creat_shunt_json() {
 	esac
 }
 
+# ============================================================================
+# FORK doge.12 alpha: generate_xray_json_split
+# 详见 doc/design/split-routing-architecture.md §4
+# ----------------------------------------------------------------------------
+# 策略：
+#   1) apply_ss() 已经依据 ss_basic_type 调用对应 creat_xxx_json() 产出基线
+#      /koolshare/ss/xray.json（包含 socks 入站:23456 + 主节点 outbound）
+#   2) 本函数用 jq 在该基线上：
+#      - 重写 inbounds 数组：保留 socks/DNS-relay 入站，新增 per-active-Mode
+#        dokodemo-door TPROXY 入站（带 sniffing）
+#      - 重写 outbounds：保留主节点 outbound 作为 "out_main"，按去重算法补齐
+#        direct / reject 等其他 outbound（alpha：proxy_node:X 引用非当前节点
+#        时回退到 out_main，记 warning）
+#      - 重写 routing.rules：按 §4.4 顺序铺 RFC1918→黑白名单→Mode rules→兜底
+#   3) 失败回退：jq 任意一步失败则保留基线 xray.json，写 warning dbus key
+# alpha 已知限制：
+#   - proxy_node:X 引用非主节点时回退主节点（避免引入跨节点 outbound 构建复杂性）
+#   - proxy_chain:Y:X 沿用现有 fss_chain_apply 单链路注入（只能覆盖一个落地节点）
+# ============================================================================
+
+# 把 rule 文件解析为 jq 友好的 JSON 数组（domains + ip_v4 + ip_v6）
+ss_split_rule_to_json() {
+	local rfile="$1"
+	[ -f "${rfile}" ] || { echo "{}"; return 0; }
+	awk '
+		BEGIN { print "{"; print "  \"domains\": ["; first_d = 1; first_i = 1; }
+		END   { print ""; print "  ], \"ips\": ["; if (any_ip) print ip_buf; print "  ] }"; }
+		/^[[:space:]]*#/ { next }
+		{ sub(/#.*/, ""); gsub(/[[:space:]]+/, ""); }
+		!$0 { next }
+		/\// {
+			# CIDR
+			if (any_ip) ip_buf = ip_buf ",\n"; ip_buf = ip_buf "    \"" $0 "\"";
+			any_ip = 1; next;
+		}
+		/^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ {
+			if (any_ip) ip_buf = ip_buf ",\n"; ip_buf = ip_buf "    \"" $0 "/32\"";
+			any_ip = 1; next;
+		}
+		/^[0-9a-fA-F:]+$/ {
+			if (any_ip) ip_buf = ip_buf ",\n"; ip_buf = ip_buf "    \"" $0 "/128\"";
+			any_ip = 1; next;
+		}
+		/^\+/ {
+			d = substr($0, 2);
+			if (first_d) first_d = 0; else printf(",\n");
+			printf("    \"full:%s\"", d);
+			next;
+		}
+		{
+			if (first_d) first_d = 0; else printf(",\n");
+			printf("    \"domain:%s\"", $0);
+		}
+	' "${rfile}"
+}
+
+# 从 action 字符串导出 canonical tag（与 §4.3 算法对齐）
+ss_split_action_to_tag() {
+	local action="$1"
+	case "${action}" in
+	direct) echo "out_direct" ;;
+	reject) echo "out_reject" ;;
+	proxy_node:*)
+		local nid="${action#proxy_node:}"
+		echo "out_node_${nid}"
+		;;
+	proxy_chain:*:*)
+		local rest="${action#proxy_chain:}"
+		local fid="${rest%%:*}"
+		local lid="${rest#*:}"
+		echo "out_chain_${fid}_${lid}"
+		;;
+	*)
+		echo "out_main"
+		;;
+	esac
+}
+
+# 主函数：在 /koolshare/ss/xray.json 基线上做 split 改造
+generate_xray_json_split() {
+	local xray_json="/koolshare/ss/xray.json"
+	local tmp_json="/tmp/fss_split_xray.$$.json"
+	local rules_user_dir="/koolshare/ss/rules_user"
+
+	if [ ! -f "${xray_json}" ]; then
+		echo_date "❌ split: 基线 ${xray_json} 不存在，跳过 split 改造。"
+		dbus set fss_split_xray_warn="baseline_missing"
+		return 1
+	fi
+	if ! type jq >/dev/null 2>&1; then
+		echo_date "❌ split: jq 不可用，跳过 split 改造。"
+		dbus set fss_split_xray_warn="jq_missing"
+		return 1
+	fi
+
+	echo_date "----------- 开始生成 xray 分流配置 (doge.12 alpha) -----------"
+
+	# 1. 扫描 Mode 元数据
+	local mode_count=$(dbus get ss_split_mode_count 2>/dev/null)
+	[ -z "${mode_count}" ] && mode_count=0
+	local default_mode_id=$(dbus get ss_split_default_mode_id 2>/dev/null)
+	[ -z "${default_mode_id}" ] && default_mode_id=2  # 大陆白名单兜底
+
+	# 收集 active modes（被任一 user 引用 + default 必激活）
+	# 索引按 1-based（与 install.sh::migrate_split_routing_v1 一致），
+	# 详见 doc/implementation/split-routing-implementation.md §1.5 索引规范
+	local active_indices=""
+	local active_count=0
+	local m=1
+	while [ "${m}" -le "${mode_count}" ]; do
+		local mid=$(dbus get ss_split_mode_${m}_id 2>/dev/null)
+		local is_default=0
+		[ "${mid}" = "${default_mode_id}" ] && is_default=1
+		# 简化：所有内置 Mode (builtin=1) 都视为 active
+		local builtin=$(dbus get ss_split_mode_${m}_builtin 2>/dev/null)
+		# alpha: 简化判定，全部 mode 都标为 active
+		if [ "${is_default}" = "1" ] || [ "${builtin}" = "1" ]; then
+			active_indices="${active_indices} ${m}"
+			active_count=$((active_count + 1))
+		fi
+		m=$((m + 1))
+	done
+	if [ "${active_count}" -eq 0 ]; then
+		echo_date "⚠️ split: 没有 active Mode，跳过 split 改造。"
+		dbus set fss_split_xray_warn="no_active_mode"
+		return 1
+	fi
+	echo_date "ℹ️ split: 检测到 ${active_count} 个 active Mode（共 ${mode_count}）"
+
+	# 2. 收集所有 unique action（去重）
+	local actions_seen=""
+	local main_node_id="${ssconf_basic_node}"
+	local main_front_id=$(dbus get ssconf_basic_node_front 2>/dev/null)
+	local main_action=""
+	if [ -n "${main_front_id}" ]; then
+		main_action="proxy_chain:${main_front_id}:${main_node_id}"
+	elif [ -n "${main_node_id}" ]; then
+		main_action="proxy_node:${main_node_id}"
+	fi
+
+	# 总是注册 direct / reject / out_main（主节点 outbound 来自基线）
+	actions_seen="direct reject out_main"
+
+	local mi=""
+	for mi in ${active_indices}; do
+		local rcnt=$(dbus get ss_split_mode_${mi}_rule_count 2>/dev/null)
+		[ -z "${rcnt}" ] && rcnt=0
+		local r=1
+		while [ "${r}" -le "${rcnt}" ]; do
+			local act=$(dbus get ss_split_mode_${mi}_rule_${r}_action 2>/dev/null)
+			local tag=$(ss_split_action_to_tag "${act}")
+			# alpha: proxy_node/chain 都收敛到 out_main（除非已是 direct/reject）
+			case "${tag}" in
+			out_direct|out_reject) : ;;
+			out_main) : ;;
+			out_node_*|out_chain_*)
+				# alpha 简化：所有非主节点引用都回退 out_main
+				tag="out_main"
+				;;
+			esac
+			case " ${actions_seen} " in
+			*" ${tag} "*) : ;;
+			*) actions_seen="${actions_seen} ${tag}" ;;
+			esac
+			r=$((r + 1))
+		done
+		local da=$(dbus get ss_split_mode_${mi}_default_action 2>/dev/null)
+		local dtag=$(ss_split_action_to_tag "${da}")
+		case "${dtag}" in
+		out_direct|out_reject|out_main) : ;;
+		*) dtag="out_main" ;;
+		esac
+		case " ${actions_seen} " in
+		*" ${dtag} "*) : ;;
+		*) actions_seen="${actions_seen} ${dtag}" ;;
+		esac
+	done
+
+	# 3. 用 jq 重写 inbounds + outbounds + routing
+	# 3a. inbounds：保留 socks 入站(:23456) 与可能存在的 DNS-relay 入站；
+	#     再为每个 active Mode 追加 dokodemo-door TPROXY (mark sniffing)
+	local sniff_blocks="["
+	local sniff_first=1
+	local m_index=0
+	local active_mode_ports=""    # 给 routing 用，记录每 active mode 的 inboundTag→端口
+	for mi in ${active_indices}; do
+		local port=$((SS_SPLIT_PORT_BASE + m_index))
+		local mid=$(dbus get ss_split_mode_${mi}_id 2>/dev/null)
+		local block_quic=$(dbus get ss_split_mode_${mi}_block_quic 2>/dev/null)
+		local network="tcp,udp"
+		# block_quic 不在 inbound 控制；走 iptables 层屏蔽 udp/443
+		if [ "${sniff_first}" = "1" ]; then sniff_first=0; else sniff_blocks="${sniff_blocks},"; fi
+		sniff_blocks="${sniff_blocks}$(cat <<EOF
+{
+  "tag": "mode_${mid}",
+  "port": ${port},
+  "protocol": "dokodemo-door",
+  "settings": { "network": "${network}", "followRedirect": true },
+  "sniffing": {
+    "enabled": true,
+    "destOverride": ["http", "tls", "quic"],
+    "metadataOnly": false,
+    "routeOnly": true
+  },
+  "streamSettings": { "sockopt": { "tproxy": "tproxy" } }
+}
+EOF
+)"
+		active_mode_ports="${active_mode_ports} ${mi}:${mid}:${port}"
+		m_index=$((m_index + 1))
+	done
+	sniff_blocks="${sniff_blocks}]"
+
+	# 3b. outbounds 去重：保留基线 outbounds[0] 作为 out_main；追加 direct / reject
+	local outb_appends="[
+		{ \"tag\": \"out_direct\", \"protocol\": \"freedom\", \"settings\": { \"domainStrategy\": \"UseIP\" } },
+		{ \"tag\": \"out_reject\", \"protocol\": \"blackhole\" }
+	]"
+
+	# 3c. routing.rules：按 §4.4 顺序生成
+	local routing_rules_file="/tmp/fss_split_routing_rules.$$.json"
+	echo "[" > "${routing_rules_file}"
+	local first_rule=1
+	__split_emit_rule() {
+		# 接收 jq object 字符串，追加到 routing_rules_file
+		local rule_json="$1"
+		if [ "${first_rule}" = "1" ]; then
+			first_rule=0
+		else
+			echo "," >> "${routing_rules_file}"
+		fi
+		printf '%s' "${rule_json}" >> "${routing_rules_file}"
+	}
+
+	# 每个 active Mode 一组规则
+	for mi in ${active_indices}; do
+		local mid=$(dbus get ss_split_mode_${mi}_id 2>/dev/null)
+		local apply_bw=$(dbus get ss_split_mode_${mi}_apply_blackwhite 2>/dev/null)
+		local da=$(dbus get ss_split_mode_${mi}_default_action 2>/dev/null)
+		local dtag=$(ss_split_action_to_tag "${da}")
+		case "${dtag}" in
+		out_direct|out_reject|out_main) : ;;
+		*) dtag="out_main" ;;
+		esac
+
+		# §4.4 #1: RFC1918 / loopback → out_direct
+		__split_emit_rule "$(jq -n --arg tag "mode_${mid}" '{
+			type: "field",
+			inboundTag: [$tag],
+			ip: ["geoip:private","127.0.0.0/8","169.254.0.0/16","224.0.0.0/4","240.0.0.0/4"],
+			outboundTag: "out_direct"
+		}')"
+
+		# §4.4 #2: 黑白名单（仅 apply_blackwhite=1）
+		if [ "${apply_bw}" = "1" ]; then
+			# 2a. 白名单 → out_direct
+			if [ -n "${ss_wan_white_domain}" ]; then
+				local wdoms=$(fss_b64_decode "${ss_wan_white_domain}" 2>/dev/null | awk '/^[[:space:]]*#/{next}{gsub(/[[:space:]]+/,""); if($0)print "domain:"$0}' | jq -R . | jq -s .)
+				[ -z "${wdoms}" ] && wdoms="[]"
+				if [ "${wdoms}" != "[]" ]; then
+					__split_emit_rule "$(jq -n --arg tag "mode_${mid}" --argjson d "${wdoms}" '{
+						type: "field", inboundTag: [$tag], domain: $d, outboundTag: "out_direct"
+					}')"
+				fi
+			fi
+			# 2b. 黑名单 → default_action tag
+			if [ -n "${ss_wan_black_domain}" ] && [ "${dtag}" != "out_direct" ]; then
+				local bdoms=$(fss_b64_decode "${ss_wan_black_domain}" 2>/dev/null | awk '/^[[:space:]]*#/{next}{gsub(/[[:space:]]+/,""); if($0)print "domain:"$0}' | jq -R . | jq -s .)
+				[ -z "${bdoms}" ] && bdoms="[]"
+				if [ "${bdoms}" != "[]" ]; then
+					__split_emit_rule "$(jq -n --arg tag "mode_${mid}" --argjson d "${bdoms}" --arg ob "${dtag}" '{
+						type: "field", inboundTag: [$tag], domain: $d, outboundTag: $ob
+					}')"
+				fi
+			fi
+		fi
+
+		# §4.4 #3: Mode 内的 Rule（按顺序）
+		local rcnt=$(dbus get ss_split_mode_${mi}_rule_count 2>/dev/null)
+		[ -z "${rcnt}" ] && rcnt=0
+		local r=1
+		while [ "${r}" -le "${rcnt}" ]; do
+			local rid=$(dbus get ss_split_mode_${mi}_rule_${r}_rid 2>/dev/null)
+			local act=$(dbus get ss_split_mode_${mi}_rule_${r}_action 2>/dev/null)
+			local rtag=$(ss_split_action_to_tag "${act}")
+			case "${rtag}" in
+			out_direct|out_reject|out_main) : ;;
+			*) rtag="out_main" ;;
+			esac
+			local rfile="${rules_user_dir}/rule_${rid}.txt"
+			if [ -n "${rid}" ] && [ -f "${rfile}" ]; then
+				# 解析 rule 文件为 domains + ips
+				local rdata=$(ss_split_rule_to_json "${rfile}")
+				if [ -n "${rdata}" ] && [ "${rdata}" != "{}" ]; then
+					__split_emit_rule "$(printf '%s' "${rdata}" | jq --arg tag "mode_${mid}" --arg ob "${rtag}" '
+						{ type: "field", inboundTag: [$tag], outboundTag: $ob }
+						+ (if (.domains | length) > 0 then { domain: .domains } else {} end)
+						+ (if (.ips | length) > 0 then { ip: .ips } else {} end)
+					' 2>/dev/null)"
+				fi
+			fi
+			r=$((r + 1))
+		done
+
+		# §4.4 #4: 兜底
+		__split_emit_rule "$(jq -n --arg tag "mode_${mid}" --arg ob "${dtag}" '{
+			type: "field", inboundTag: [$tag], outboundTag: $ob
+		}')"
+	done
+
+	echo "]" >> "${routing_rules_file}"
+
+	# 4. 用 jq 合并到 xray.json
+	if ! jq --argjson sniff "${sniff_blocks}" \
+	         --argjson appendOb "${outb_appends}" \
+	         --slurpfile rules "${routing_rules_file}" \
+	         '
+	           # 保留 socks-inbound (port 23456) 与 DNS-relay 入站，替换 dokodemo-door
+	           .inbounds = (
+	             [ .inbounds[] | select(.protocol != "dokodemo-door" or (.port // 0) == 23456) ]
+	             + $sniff
+	           )
+	           # 给主 outbound (originally outbounds[0]) 改 tag 为 out_main
+	           | .outbounds[0].tag = "out_main"
+	           # 追加 direct / reject outbound（若已存在则去重）
+	           | .outbounds = (
+	             .outbounds + ($appendOb | map(select(.tag as $t | (.outbounds // []) | map(.tag) | index($t) | not)))
+	           )
+	           | .routing = { domainStrategy: "IPIfNonMatch", rules: $rules[0] }
+	         ' \
+	         "${xray_json}" > "${tmp_json}" 2>/tmp/fss_split_xray.err; then
+		echo_date "❌ split: jq 合并失败，详见 /tmp/fss_split_xray.err，保留基线 xray.json。"
+		dbus set fss_split_xray_warn="jq_merge_failed"
+		rm -f "${tmp_json}" "${routing_rules_file}" >/dev/null 2>&1
+		return 1
+	fi
+
+	if [ ! -s "${tmp_json}" ]; then
+		echo_date "❌ split: 合并产出为空，保留基线 xray.json。"
+		dbus set fss_split_xray_warn="output_empty"
+		rm -f "${tmp_json}" "${routing_rules_file}" >/dev/null 2>&1
+		return 1
+	fi
+
+	# 在覆盖基线前备份，xray -test 失败时回滚（避免坏配置卡死 xray）
+	local xray_json_bak="${xray_json}.fss_split.bak"
+	cp -f "${xray_json}" "${xray_json_bak}" 2>/dev/null
+
+	mv -f "${tmp_json}" "${xray_json}"
+	rm -f "${routing_rules_file}" >/dev/null 2>&1
+
+	# 5. 自检（失败时显式回滚基线）
+	if [ -x /koolshare/bin/xray ]; then
+		if ! /koolshare/bin/xray run -test -c "${xray_json}" >/tmp/fss_split_xray.testlog 2>&1; then
+			echo_date "❌ split: xray -test 自检失败，详见 /tmp/fss_split_xray.testlog。回滚到基线 xray.json。"
+			dbus set fss_split_xray_warn="xray_test_failed"
+			if [ -s "${xray_json_bak}" ]; then
+				mv -f "${xray_json_bak}" "${xray_json}"
+			fi
+			return 1
+		fi
+	fi
+
+	# 备份用毕清理
+	rm -f "${xray_json_bak}" >/dev/null 2>&1
+
+	# 6. 状态 dbus 写入
+	local ob_count=$(jq '.outbounds | length' "${xray_json}" 2>/dev/null)
+	[ -z "${ob_count}" ] && ob_count=0
+	dbus set ss_split_xray_outbound_count="${ob_count}"
+	dbus set ss_split_active_mode_count="${active_count}"
+	dbus set ss_split_last_restart_ts="$(date +%s)"
+	dbus set fss_split_xray_warn=""
+	echo_date "✅ split: xray 配置生成完成 (active_mode=${active_count} outbound=${ob_count})"
+	echo_date "---------------------------------------------------------------"
+	return 0
+}
+
 start_xray() {
 	# tfo start
 	if [ "${LINUX_VER}" != "26" ]; then
@@ -4658,6 +5364,12 @@ start_xray() {
 			echo 1 >/proc/sys/net/ipv4/tcp_fastopen
 		fi
 	fi
+	# FORK doge.12 alpha: 在 split 路径下用新生成器改造基线 xray.json
+	if [ "${ss_split_enabled}" = "1" ] && [ -d /koolshare/ss/rules_user ]; then
+		if ! generate_xray_json_split; then
+			echo_date "⚠️ split: 新生成器失败，回退到基线 xray.json + 旧链式注入。"
+		fi
+	fi
 	# xray start
 	echo_date "开启Xray主进程..."
 	cd /koolshare/bin
@@ -4665,8 +5377,16 @@ start_xray() {
 	if [ "$(get_runtime_proxy_mode)" = "7" ] && type fss_shunt_xray_asset_dir >/dev/null 2>&1; then
 		xray_asset_dir="$(fss_shunt_xray_asset_dir 2>/dev/null || true)"
 	fi
-	# 链式代理（前置节点）注入
-	type fss_chain_apply >/dev/null 2>&1 && fss_chain_apply /koolshare/ss/xray.json
+	# 链式代理（前置节点）注入：split 路径下若 generate_xray_json_split 成功
+	# 已经把链式注入到 out_main 上层（fss_chain_apply 仍可二次叠加 dialerProxy；
+	# 但 alpha 不重复绑定——交给 fss_chain_apply 仍然写一次，jq 自带 idempotent
+	# 守卫即可避免重复）。
+	if [ "${ss_split_enabled}" != "1" ]; then
+		type fss_chain_apply >/dev/null 2>&1 && fss_chain_apply /koolshare/ss/xray.json
+	else
+		# split 模式下：alpha 简化——仍调用 fss_chain_apply 让它处理主节点链式
+		type fss_chain_apply >/dev/null 2>&1 && fss_chain_apply /koolshare/ss/xray.json
+	fi
 	if [ -n "${xray_asset_dir}" ]; then
 		run_bg env "xray.location.asset=${xray_asset_dir}" /koolshare/bin/xray run -c /koolshare/ss/xray.json
 	else
@@ -5258,6 +5978,11 @@ load_tproxy() {
 }
 
 flush_ipset() {
+	# FORK doge.12 alpha: 分流架构只 flush 极简 ignlist_minimal
+	if [ "${ss_split_enabled}" = "1" ]; then
+		flush_ipset_split
+		return $?
+	fi
 	# flush ipset
 	local existing_sets=""
 	local set_name=""
@@ -5322,6 +6047,32 @@ EOF
 	#remove_route_table
 	#echo_date 删除ip route规则.
 	ip route del local 0.0.0.0/0 dev lo table 310 >/dev/null 2>&1
+}
+
+# FORK doge.12 alpha: 极简化 ipset flush（只清 ignlist_minimal / 6）
+flush_ipset_split() {
+	local existing_sets=$(ipset list -name 2>/dev/null)
+	if [ -n "${existing_sets}" ]; then
+		echo "${existing_sets}" | while IFS= read -r set_name; do
+			case "${set_name}" in
+			ignlist_minimal|ignlist_minimal6)
+				ipset -F "${set_name}" >/dev/null 2>&1
+				ipset -X "${set_name}" >/dev/null 2>&1
+				;;
+			esac
+		done
+	fi
+	# 同时清 TPROXY 用的 ip rule / ip route
+	local ip_rule_exist=$(ip rule show | grep "lookup 310" | grep -c 310)
+	if [ -n "${ip_rule_exist}" ]; then
+		until [ "${ip_rule_exist}" = "0" ]; do
+			IP_ARG=$(ip rule show | grep "lookup 310" | head -n 1 | cut -d " " -f3,4,5,6)
+			ip rule del $IP_ARG
+			ip_rule_exist=$(expr $ip_rule_exist - 1)
+		done
+	fi
+	ip route del local 0.0.0.0/0 dev lo table 310 >/dev/null 2>&1
+	return 0
 }
 
 flush_iptables_restore_append() {
@@ -6126,6 +6877,11 @@ fallback_ipv6_proxy_to_ipv4() {
 }
 
 load_iptables() {
+	# FORK doge.12 alpha: 分流架构 iptables 简化路径
+	if [ "${ss_split_enabled}" = "1" ]; then
+		load_iptables_split
+		return $?
+	fi
 	#local nat_ready=$(ip6tables -t nat -L PREROUTING -v -n --line-numbers | grep -v PREROUTING | grep -v destination)
 	local nat_ready=$(iptables -t nat -L PREROUTING -v -n --line-numbers | grep -v PREROUTING | grep -v destination)
 	i=300
@@ -6146,6 +6902,228 @@ load_iptables() {
 		flush_ipset
 		close_in_five flag
 	fi
+}
+
+# ============================================================================
+# FORK doge.12 alpha: load_iptables_split / load_tproxy_split / flush_ipset_split
+# 详见 doc/design/split-routing-architecture.md §5 / §6.3
+# ----------------------------------------------------------------------------
+# 极简化路径：
+#   - 不再为 GLO/GFW/CHN/GAM/HOM 等模式建独立 chain
+#   - 只创建 SHADOWSOCKS / SHADOWSOCKS_DNS_${VLAN} / SHADOWSOCKS_USER
+#   - PREROUTING 按 acl MAC 分流到 per-Mode TPROXY 端口
+#   - SHADOWSOCKS_DNS_${VLAN} per-MAC DNAT 到对应 mode 的 DNS 端口 (65353/65354)
+# ============================================================================
+
+load_tproxy_split() {
+	# 仍要加载内核模块
+	MODULES="xt_TPROXY xt_socket xt_comment"
+	for MODULE in ${MODULES}
+	do
+		lsmod | grep ${MODULE} &>/dev/null
+		if [ "$?" != "0" ]; then
+			echo_date "加载${MODULE}模块..."
+			modprobe ${MODULE}.ko
+		else
+			echo_date "${MODULE}模块已加载..."
+		fi
+	done
+}
+
+# 极简 ignlist_minimal ipset：RFC1918 + 链路本地 + 多播段
+# 用于 PREROUTING 提前 RETURN（保险机制）
+creat_ipset_split() {
+	echo_date "创建极简 ignlist_minimal ipset (split 路径专用)"
+	{
+		echo "create ignlist_minimal nethash -exist"
+		echo "flush ignlist_minimal"
+		echo "create ignlist_minimal6 nethash family inet6 -exist"
+		echo "flush ignlist_minimal6"
+		# RFC1918 / loopback / link-local / multicast / reserved
+		# 沿用 ssconfig.sh:3249 ip_lan_reserve 数据
+		for ip in 0.0.0.0/8 10.0.0.0/8 100.64.0.0/10 127.0.0.0/8 169.254.0.0/16 \
+		          172.16.0.0/12 192.168.0.0/16 192.18.0.0/15 224.0.0.0/4 240.0.0.0/4
+		do
+			echo "add ignlist_minimal ${ip}"
+		done
+		echo "add ignlist_minimal6 ::1/128"
+		echo "add ignlist_minimal6 fe80::/10"
+		echo "add ignlist_minimal6 ff00::/8"
+		echo "COMMIT"
+	} | ipset -R
+}
+
+# 按 mode 索引计算 TPROXY 端口 (SS_SPLIT_PORT_BASE + index)
+__split_mode_port_by_id() {
+	# 索引按 1-based（合同 §1.5）
+	local target_mid="$1"
+	local mode_count=$(dbus get ss_split_mode_count 2>/dev/null)
+	[ -z "${mode_count}" ] && mode_count=0
+	local m=1
+	local idx=0
+	while [ "${m}" -le "${mode_count}" ]; do
+		local mid=$(dbus get ss_split_mode_${m}_id 2>/dev/null)
+		local builtin=$(dbus get ss_split_mode_${m}_builtin 2>/dev/null)
+		local is_default=0
+		local default_mid=$(dbus get ss_split_default_mode_id 2>/dev/null)
+		[ "${mid}" = "${default_mid}" ] && is_default=1
+		if [ "${is_default}" = "1" ] || [ "${builtin}" = "1" ]; then
+			if [ "${mid}" = "${target_mid}" ]; then
+				echo $((SS_SPLIT_PORT_BASE + idx))
+				return 0
+			fi
+			idx=$((idx + 1))
+		fi
+		m=$((m + 1))
+	done
+	# 没找到 → 兜底默认 mode 的端口
+	echo "${SS_SPLIT_PORT_BASE}"
+	return 1
+}
+
+# 根据 mode_id 返回 DNS 端口（split→65353 / global→65354）
+__split_mode_dns_port_by_id() {
+	# 索引按 1-based（合同 §1.5）
+	local target_mid="$1"
+	local mode_count=$(dbus get ss_split_mode_count 2>/dev/null)
+	[ -z "${mode_count}" ] && mode_count=0
+	local m=1
+	while [ "${m}" -le "${mode_count}" ]; do
+		local mid=$(dbus get ss_split_mode_${m}_id 2>/dev/null)
+		if [ "${mid}" = "${target_mid}" ]; then
+			local dm=$(dbus get ss_split_mode_${m}_dns_mode 2>/dev/null)
+			if [ "${dm}" = "global" ]; then
+				echo "${SS_SPLIT_DNS_GLOBAL_PORT}"
+			else
+				echo "${SS_SPLIT_DNS_SPLIT_PORT}"
+			fi
+			return 0
+		fi
+		m=$((m + 1))
+	done
+	# 兜底
+	echo "${SS_SPLIT_DNS_SPLIT_PORT}"
+	return 1
+}
+
+# 主函数：装配 split 路径下的 iptables
+load_iptables_split() {
+	echo_date "------------ 写入 iptables 规则 (split 极简化路径) ------------"
+	# 等待 nat 表准备好
+	local nat_ready=$(iptables -t nat -L PREROUTING -v -n --line-numbers | grep -v PREROUTING | grep -v destination)
+	local i=300
+	until [ -n "${nat_ready}" ]; do
+		i=$((i - 1))
+		if [ "${i}" -lt 1 ]; then
+			echo_date "错误：不能正确加载 nat 规则!"
+			close_in_five
+		fi
+		usleep 100000
+		nat_ready=$(iptables -t nat -L PREROUTING -v -n --line-numbers | grep -v PREROUTING | grep -v destination)
+	done
+
+	# 加载 TPROXY 模块
+	load_tproxy_split
+	# 建立极简 ignlist
+	creat_ipset_split
+
+	# 默认 Mode + 端口
+	local default_mid=$(dbus get ss_split_default_mode_id 2>/dev/null)
+	[ -z "${default_mid}" ] && default_mid=2
+	local default_port=$(__split_mode_port_by_id "${default_mid}")
+	local default_dns_port=$(__split_mode_dns_port_by_id "${default_mid}")
+
+	# 建立 ip rule / ip route（TPROXY 必须）
+	if [ -z "$(ip rule show table 310 2>/dev/null)" ]; then
+		ip rule add fwmark 0x07 table 310
+	fi
+	if [ -z "$(ip route show table 310 2>/dev/null)" ]; then
+		ip route add local 0.0.0.0/0 dev lo table 310
+	fi
+
+	# 主 SHADOWSOCKS chain (mangle, TPROXY 路径)
+	ensure_chain mangle SHADOWSOCKS
+	# 提前 RETURN：保留 IP 段
+	append_if_not_exists mangle -A SHADOWSOCKS -m set --match-set ignlist_minimal dst -j RETURN
+	append_if_not_exists mangle -A SHADOWSOCKS -p udp --dport 123 -j RETURN  # NTP 例外，避免时间同步被代理
+
+	# per-User TPROXY 分流
+	local VLAN_INDEXS=$(ifconfig | grep -E "^br" | awk '{print $1}' | sed 's/^br//g')
+	local default_iface="br0"
+
+	# 遍历 acl 行（沿用现有的 ss_acl_* 命名）
+	local acl_count=$(dbus get ss_acl_num 2>/dev/null)
+	[ -z "${acl_count}" ] && acl_count=0
+	local a=1
+	while [ "${a}" -le "${acl_count}" ]; do
+		local mac=$(dbus get ss_acl_mac_${a} 2>/dev/null)
+		local enable=$(dbus get ss_acl_enable_${a} 2>/dev/null)
+		local user_mode=$(dbus get ss_acl_split_mode_${a} 2>/dev/null)
+		if [ "${enable}" = "1" ] && [ -n "${mac}" ] && [ -n "${user_mode}" ]; then
+			if [ "${user_mode}" = "0" ]; then
+				# 不通过代理
+				append_if_not_exists mangle -A SHADOWSOCKS -m mac --mac-source "${mac}" -j RETURN
+			else
+				local user_port=$(__split_mode_port_by_id "${user_mode}")
+				# TCP 走 TPROXY (mangle)
+				append_if_not_exists mangle -A SHADOWSOCKS -p tcp -m mac --mac-source "${mac}" -j TPROXY --tproxy-mark 0x07/0x07 --on-port "${user_port}"
+				# UDP 同样走 TPROXY (新架构 TCP+UDP 统一 TPROXY)
+				append_if_not_exists mangle -A SHADOWSOCKS -p udp -m mac --mac-source "${mac}" -j TPROXY --tproxy-mark 0x07/0x07 --on-port "${user_port}"
+			fi
+		fi
+		a=$((a + 1))
+	done
+
+	# 默认（未在 acl 表中列出的设备）走默认 Mode
+	append_if_not_exists mangle -A SHADOWSOCKS -p tcp -j TPROXY --tproxy-mark 0x07/0x07 --on-port "${default_port}"
+	append_if_not_exists mangle -A SHADOWSOCKS -p udp -j TPROXY --tproxy-mark 0x07/0x07 --on-port "${default_port}"
+
+	# 挂到 PREROUTING (mangle)
+	append_if_not_exists mangle -A PREROUTING -i "${default_iface}" -j SHADOWSOCKS
+
+	# DNS 劫持：per-MAC DNAT 到对应 mode 的 chinadns 实例端口
+	if [ "${ss_basic_dns_hijack}" = "1" ]; then
+		for VLAN_INDEX in $VLAN_INDEXS
+		do
+			ensure_chain nat SHADOWSOCKS_DNS_${VLAN_INDEX}
+		done
+
+		# br0：per-MAC DNAT
+		a=1
+		while [ "${a}" -le "${acl_count}" ]; do
+			local mac=$(dbus get ss_acl_mac_${a} 2>/dev/null)
+			local enable=$(dbus get ss_acl_enable_${a} 2>/dev/null)
+			local user_mode=$(dbus get ss_acl_split_mode_${a} 2>/dev/null)
+			if [ "${enable}" = "1" ] && [ -n "${mac}" ] && [ -n "${user_mode}" ] && [ "${user_mode}" != "0" ]; then
+				local dns_port=$(__split_mode_dns_port_by_id "${user_mode}")
+				append_if_not_exists nat -A SHADOWSOCKS_DNS_0 -i br0 -p udp --dport 53 -m mac --mac-source "${mac}" -j DNAT --to-destination 127.0.0.1:${dns_port}
+				append_if_not_exists nat -A SHADOWSOCKS_DNS_0 -i br0 -p tcp --dport 53 -m mac --mac-source "${mac}" -j DNAT --to-destination 127.0.0.1:${dns_port}
+			fi
+			a=$((a + 1))
+		done
+		# br0 fallback
+		append_if_not_exists nat -A SHADOWSOCKS_DNS_0 -i br0 -p udp --dport 53 -j DNAT --to-destination 127.0.0.1:${default_dns_port}
+		append_if_not_exists nat -A SHADOWSOCKS_DNS_0 -i br0 -p tcp --dport 53 -j DNAT --to-destination 127.0.0.1:${default_dns_port}
+
+		# 其他 VLAN（br1/br2/...）：只 fallback 到默认 Mode 的 DNS 端口
+		for VLAN_INDEX in $VLAN_INDEXS
+		do
+			if [ "${VLAN_INDEX}" != "0" ]; then
+				append_if_not_exists nat -A SHADOWSOCKS_DNS_${VLAN_INDEX} -i "br${VLAN_INDEX}" -p udp --dport 53 -j DNAT --to-destination 127.0.0.1:${default_dns_port}
+				append_if_not_exists nat -A SHADOWSOCKS_DNS_${VLAN_INDEX} -i "br${VLAN_INDEX}" -p tcp --dport 53 -j DNAT --to-destination 127.0.0.1:${default_dns_port}
+			fi
+		done
+
+		# 挂到 PREROUTING (nat)
+		for VLAN_INDEX in $VLAN_INDEXS
+		do
+			append_if_not_exists nat -A PREROUTING -i "br${VLAN_INDEX}" -j SHADOWSOCKS_DNS_${VLAN_INDEX}
+		done
+	fi
+
+	echo_date "✅ split iptables 装配完成 (default_mode=${default_mid} default_port=${default_port} default_dns_port=${default_dns_port})"
+	echo_date "---------------------------------------------------------------"
+	return 0
 }
 
 ensure_chain() {
@@ -7204,8 +8182,15 @@ apply_ss() {
 	prepare_system
 	resolv_server_ip
 	load_module
-	creat_ipset
+	# FORK doge.12 alpha: split 路径下不创建旧版 ipset 大全（chnlist/chnroute/...）
+	# load_iptables_split 会自己创建 ignlist_minimal
+	if [ "${ss_split_enabled}" != "1" ]; then
+		creat_ipset
+	fi
 	create_dnsmasq_conf
+	# FORK doge.12 alpha: split 路径下白/黑名单数据由 generate_xray_json_split 内联消费，
+	# 不再写入 ipset；但 add_white_black 还会做一些 /tmp 文件准备工作（chinadns 用），
+	# 在 ss_basic_dns_serverx=1 时被分流 DNS 实例间接依赖，保留调用。
 	add_white_black
 	# 生成代理主程序配置
 	if [ "${ss_basic_mode}" = "7" ]; then
@@ -7483,7 +8468,13 @@ start_nat)
 	unset_lock
 	;;
 restart_chinadns_ng)
-	start_chinadns_ng
+	# FORK doge.12 alpha: 分流架构走双轨
+	if [ "${ss_split_enabled}" = "1" ]; then
+		stop_chinadns_ng_split
+		start_chinadns_ng_split
+	else
+		start_chinadns_ng
+	fi
 	;;
 refresh_node_direct_dns)
 	set_lock

@@ -510,6 +510,322 @@ migrate_failover_v2(){
 	echo_date "故障转移：combo 前缀迁移 v2 完成（fss_failover_combo_* → ss_failover_combo_*）。"
 }
 
+# ============================================================================
+# FORK doge.12 alpha: 分流架构（Rule + Mode + per-User + 双轨 DNS）一次性迁移。
+# 详见 doc/design/split-routing-architecture.md §14 + doc/implementation/split-routing-implementation.md。
+# 触发条件：fss_split_migrated_v1 != "1"。幂等。
+# alpha 阶段 NOT 物理删除任何旧 key（ss_node_shunt_* / ss_basic_mode / ss_acl_mode_<i> 全保留），
+# NOT 销毁旧 ipset（旧路径仍在用），仅写入新 key + 内置 Rule 文件。
+# 总开关 ss_split_enabled 默认 0，路由层走旧逻辑——老用户升级零感知。
+# ============================================================================
+
+# helper: 写入单个内置 Rule（rule_<id>.txt 头注释 + dbus 元数据）
+# 调用：write_builtin_rule_meta <id> <name> <source_url> <update_hours> <stat_domains> <stat_ips>
+write_builtin_rule_meta(){
+	local rid="$1" rname="$2" surl="$3" uhours="$4" sdom="$5" sips="$6"
+	local now_ts="$(date +%s)"
+	dbus set ss_split_rule_${rid}_id="${rid}"
+	dbus set ss_split_rule_${rid}_name="${rname}"
+	dbus set ss_split_rule_${rid}_builtin="1"
+	dbus set ss_split_rule_${rid}_source_url="${surl}"
+	dbus set ss_split_rule_${rid}_update_hours="${uhours}"
+	dbus set ss_split_rule_${rid}_last_update="${now_ts}"
+	dbus set ss_split_rule_${rid}_stat_domains="${sdom}"
+	dbus set ss_split_rule_${rid}_stat_ips="${sips}"
+}
+
+# helper: 给 rule_<id>.txt 顶部加 4 行头注释（覆盖式写入）
+# 调用：write_rule_header <id> <name>
+write_rule_header(){
+	local rid="$1" rname="$2"
+	local rfile="/koolshare/ss/rules_user/rule_${rid}.txt"
+	{
+		echo "# fancyss-rule v1"
+		echo "# id: ${rid}"
+		echo "# name: ${rname}"
+		echo "# updated: $(date -Iseconds 2>/dev/null || date -u +%Y-%m-%dT%H:%M:%SZ)"
+	} > "${rfile}"
+}
+
+# helper: 统计 rule 文件的 domain / ip 行数（跳过头注释 / 空行）
+# 输出：echo "<domains> <ips>"
+count_rule_entries(){
+	local rfile="$1"
+	if [ ! -f "${rfile}" ]; then
+		echo "0 0"
+		return
+	fi
+	# IP 行特征：包含 ':' (v6) 或 至少 3 个 '.' (v4)；其余非注释非空行算 domain
+	local dn=0 ip=0
+	while IFS= read -r line; do
+		case "${line}" in
+			''|'#'*) continue ;;
+		esac
+		# 粗略 IP/CIDR 检测：包含 ':' 或者全是 数字.数字.数字 等
+		if echo "${line}" | grep -qE '^[0-9a-fA-F:.]+(/[0-9]+)?$'; then
+			ip=$((ip+1))
+		else
+			dn=$((dn+1))
+		fi
+	done < "${rfile}"
+	echo "${dn} ${ip}"
+}
+
+# helper: 创建 rules_user 目录
+seed_rules_user_dir(){
+	mkdir -p /koolshare/ss/rules_user 2>/dev/null
+	chmod 755 /koolshare/ss/rules_user 2>/dev/null
+}
+
+# helper: 写入单个内置 Mode 元数据（不含 rules 数组，rules 由调用方逐条 set）
+# 调用：write_builtin_mode_meta <id> <name> <udp_proxy> <block_quic> <dns_mode> <default_action>
+write_builtin_mode_meta(){
+	local mid="$1" mname="$2" mudp="$3" mquic="$4" mdns="$5" mdef="$6"
+	dbus set ss_split_mode_${mid}_id="${mid}"
+	dbus set ss_split_mode_${mid}_name="${mname}"
+	dbus set ss_split_mode_${mid}_builtin="1"
+	dbus set ss_split_mode_${mid}_udp_proxy="${mudp}"
+	dbus set ss_split_mode_${mid}_block_quic="${mquic}"
+	dbus set ss_split_mode_${mid}_apply_blackwhite="1"
+	dbus set ss_split_mode_${mid}_dns_mode="${mdns}"
+	dbus set ss_split_mode_${mid}_default_action="${mdef}"
+}
+
+# helper: 给 Mode <mid> 追加一条 rule 引用（顺序敏感）
+# 调用：add_mode_rule <mid> <rule_seq> <rid> <action>
+add_mode_rule(){
+	local mid="$1" rseq="$2" rid="$3" raction="$4"
+	dbus set ss_split_mode_${mid}_rule_${rseq}_rid="${rid}"
+	dbus set ss_split_mode_${mid}_rule_${rseq}_action="${raction}"
+}
+
+migrate_split_routing_v1(){
+	local migrated_flag
+	migrated_flag="$(dbus get fss_split_migrated_v1)"
+	if [ "${migrated_flag}" = "1" ]; then
+		return 0
+	fi
+
+	echo_date "🔄 FORK doge.12 alpha: 开始迁移到分流架构 v1（仅写数据，不接管路由）..."
+
+	# ---------- Step 0: 准备目录 ----------
+	seed_rules_user_dir
+
+	# ---------- Step 1: 写入内置 Rule (id 1~99 预留) ----------
+	local stat_line dn_count ip_count
+	local rfile
+
+	# Rule 1: 大陆白名单_常用 = chnlist.gz 域名 + rules_ng2/ip/cn.txt
+	echo_date "  内置 Rule 1: 大陆白名单_常用"
+	write_rule_header 1 "大陆白名单_常用"
+	rfile="/koolshare/ss/rules_user/rule_1.txt"
+	if [ -f /koolshare/ss/rules/chnlist.gz ]; then
+		zcat /koolshare/ss/rules/chnlist.gz 2>/dev/null | grep -v '^[[:space:]]*$' | grep -v '^#' >> "${rfile}" || { echo_date "  ⚠️ Rule 1: zcat chnlist.gz 失败"; }
+	else
+		echo_date "  ⚠️ Rule 1: /koolshare/ss/rules/chnlist.gz 不存在，跳过域名灌入"
+	fi
+	if [ -f /koolshare/ss/rules_ng2/ip/cn.txt ]; then
+		cat /koolshare/ss/rules_ng2/ip/cn.txt 2>/dev/null | grep -v '^[[:space:]]*$' | grep -v '^#' >> "${rfile}" || { echo_date "  ⚠️ Rule 1: cat ip/cn.txt 失败"; }
+	else
+		echo_date "  ⚠️ Rule 1: /koolshare/ss/rules_ng2/ip/cn.txt 不存在，跳过 IP 灌入"
+	fi
+	stat_line="$(count_rule_entries "${rfile}")"
+	dn_count="${stat_line% *}"
+	ip_count="${stat_line#* }"
+	write_builtin_rule_meta 1 "大陆白名单_常用" "" 0 "${dn_count}" "${ip_count}"
+
+	# Rule 2: GFW列表_常用 = gfwlist.gz
+	echo_date "  内置 Rule 2: GFW列表_常用"
+	write_rule_header 2 "GFW列表_常用"
+	rfile="/koolshare/ss/rules_user/rule_2.txt"
+	if [ -f /koolshare/ss/rules/gfwlist.gz ]; then
+		zcat /koolshare/ss/rules/gfwlist.gz 2>/dev/null | grep -v '^[[:space:]]*$' | grep -v '^#' >> "${rfile}" || { echo_date "  ⚠️ Rule 2: zcat gfwlist.gz 失败"; }
+	else
+		echo_date "  ⚠️ Rule 2: /koolshare/ss/rules/gfwlist.gz 不存在，跳过域名灌入"
+	fi
+	stat_line="$(count_rule_entries "${rfile}")"
+	dn_count="${stat_line% *}"
+	ip_count="${stat_line#* }"
+	write_builtin_rule_meta 2 "GFW列表_常用" "" 0 "${dn_count}" "${ip_count}"
+
+	# Rule 3: 中国公共DNS = 硬编码 10 IP（沿用 ssconfig.sh ip_lan_chndns）
+	echo_date "  内置 Rule 3: 中国公共DNS"
+	write_rule_header 3 "中国公共DNS"
+	rfile="/koolshare/ss/rules_user/rule_3.txt"
+	{
+		echo "223.5.5.5"
+		echo "223.6.6.6"
+		echo "114.114.114.114"
+		echo "114.114.115.115"
+		echo "1.2.4.8"
+		echo "210.2.4.8"
+		echo "117.50.11.11"
+		echo "117.50.22.22"
+		echo "180.76.76.76"
+		echo "119.29.29.29"
+	} >> "${rfile}"
+	write_builtin_rule_meta 3 "中国公共DNS" "" 0 0 10
+
+	# Rule 4: 广告统计屏蔽 = adslist.gz（若存在）
+	echo_date "  内置 Rule 4: 广告统计屏蔽"
+	write_rule_header 4 "广告统计屏蔽"
+	rfile="/koolshare/ss/rules_user/rule_4.txt"
+	if [ -f /koolshare/ss/rules/adslist.gz ]; then
+		zcat /koolshare/ss/rules/adslist.gz 2>/dev/null | grep -v '^[[:space:]]*$' | grep -v '^#' >> "${rfile}" || { echo_date "  ⚠️ Rule 4: zcat adslist.gz 失败"; }
+	else
+		echo_date "  ℹ️ Rule 4: adslist.gz 不存在，保留空规则文件"
+	fi
+	stat_line="$(count_rule_entries "${rfile}")"
+	dn_count="${stat_line% *}"
+	ip_count="${stat_line#* }"
+	write_builtin_rule_meta 4 "广告统计屏蔽" "" 0 "${dn_count}" "${ip_count}"
+
+	# Rule 5: Telegram 加速 = rules_ng2/site/telegram.txt + ip/telegram.txt
+	echo_date "  内置 Rule 5: Telegram 加速"
+	write_rule_header 5 "Telegram 加速"
+	rfile="/koolshare/ss/rules_user/rule_5.txt"
+	if [ -f /koolshare/ss/rules_ng2/site/telegram.txt ]; then
+		cat /koolshare/ss/rules_ng2/site/telegram.txt 2>/dev/null | grep -v '^[[:space:]]*$' | grep -v '^#' >> "${rfile}" || { echo_date "  ⚠️ Rule 5: cat site/telegram.txt 失败"; }
+	fi
+	if [ -f /koolshare/ss/rules_ng2/ip/telegram.txt ]; then
+		cat /koolshare/ss/rules_ng2/ip/telegram.txt 2>/dev/null | grep -v '^[[:space:]]*$' | grep -v '^#' >> "${rfile}" || { echo_date "  ⚠️ Rule 5: cat ip/telegram.txt 失败"; }
+	fi
+	stat_line="$(count_rule_entries "${rfile}")"
+	dn_count="${stat_line% *}"
+	ip_count="${stat_line#* }"
+	write_builtin_rule_meta 5 "Telegram 加速" "" 0 "${dn_count}" "${ip_count}"
+
+	# Rule 6: 在线状态检测站 = 硬编码 5 项（沿用 ssconfig.sh ss_basic_online_ipcheck 5 源）
+	echo_date "  内置 Rule 6: 在线状态检测站"
+	write_rule_header 6 "在线状态检测站"
+	rfile="/koolshare/ss/rules_user/rule_6.txt"
+	{
+		echo "worldtimeapi.org"
+		echo "ip.ddnsto.com"
+		echo "ip.clang.cn"
+		echo "whatismyip.akamai.com"
+		echo "api.myip.com"
+	} >> "${rfile}"
+	write_builtin_rule_meta 6 "在线状态检测站" "" 0 5 0
+
+	# Rule 7: 查IP常用站 = 从 rules/rotlist.txt 抓"查 IP"类（9 项）
+	# 内容沿用 rotlist.txt 中实际属于"查 IP"语义的条目（api.skk.moe / icanhazip / ifconfig.me /
+	# ip-api / ip.sb / ip.skk.moe / ipecho.net / ipinfo.io / us.ip111.cn）。其余 rotlist 条目
+	# （github、google 等）不属于"查 IP"语义，未纳入。
+	echo_date "  内置 Rule 7: 查IP常用站"
+	write_rule_header 7 "查IP常用站"
+	rfile="/koolshare/ss/rules_user/rule_7.txt"
+	{
+		echo "api.skk.moe"
+		echo "icanhazip.com"
+		echo "ifconfig.me"
+		echo "ip-api.com"
+		echo "ip.sb"
+		echo "ip.skk.moe"
+		echo "ipecho.net"
+		echo "ipinfo.io"
+		echo "us.ip111.cn"
+	} >> "${rfile}"
+	write_builtin_rule_meta 7 "查IP常用站" "" 0 9 0
+
+	# Rule 8: Bing 加速 = 单行 bing.com
+	echo_date "  内置 Rule 8: Bing 加速"
+	write_rule_header 8 "Bing 加速"
+	rfile="/koolshare/ss/rules_user/rule_8.txt"
+	echo "bing.com" >> "${rfile}"
+	write_builtin_rule_meta 8 "Bing 加速" "" 0 1 0
+
+	dbus set ss_split_rule_count="8"
+
+	# ---------- Step 1.5: 现节点（front + landing）→ Mode 兜底动作 ----------
+	local cur_node cur_front cur_udp cur_action
+	cur_node="$(dbus get ssconf_basic_node)"
+	cur_front="$(dbus get ssconf_basic_node_front)"
+	cur_udp="$(dbus get ss_basic_udp_relay)"
+	[ -z "${cur_udp}" ] && cur_udp="0"
+	if [ -n "${cur_front}" ] && [ "${cur_front}" != "0" ]; then
+		cur_action="proxy_chain:${cur_front}:${cur_node}"
+	else
+		cur_action="proxy_node:${cur_node}"
+	fi
+	echo_date "  当前节点动作字符串：${cur_action}（udp_proxy=${cur_udp}）"
+
+	# ---------- Step 2: 写入内置 Mode（id 1~99 预留） ----------
+	# Mode 1 = 全局代理 (dns_mode=global, rules=[], default_action=cur_action)
+	echo_date "  内置 Mode 1: 全局代理（dns_mode=global）"
+	write_builtin_mode_meta 1 "全局代理" "${cur_udp}" 0 "global" "${cur_action}"
+	dbus set ss_split_mode_1_rule_count="0"
+
+	# Mode 2 = 大陆白名单 (dns_mode=split, 按合同 §2.2 顺序 7 条 rules, default_action=cur_action)
+	# 顺序：Rule 3 (chndns) → direct
+	#       Rule 4 (adblock) → reject
+	#       Rule 6 (online_ipcheck) → direct
+	#       Rule 7 (查IP) → direct
+	#       Rule 5 (telegram) → cur_action
+	#       Rule 2 (gfwlist) → cur_action
+	#       Rule 1 (chnlist) → direct
+	echo_date "  内置 Mode 2: 大陆白名单（dns_mode=split, 7 条规则）"
+	write_builtin_mode_meta 2 "大陆白名单" "${cur_udp}" 0 "split" "${cur_action}"
+	add_mode_rule 2 1 3 "direct"
+	add_mode_rule 2 2 4 "reject"
+	add_mode_rule 2 3 6 "direct"
+	add_mode_rule 2 4 7 "direct"
+	add_mode_rule 2 5 5 "${cur_action}"
+	add_mode_rule 2 6 2 "${cur_action}"
+	add_mode_rule 2 7 1 "direct"
+	dbus set ss_split_mode_2_rule_count="7"
+
+	dbus set ss_split_mode_count="2"
+
+	# ---------- Step 3: 迁移当前 ss_basic_mode → ss_split_default_mode_id ----------
+	local old_mode
+	old_mode="$(dbus get ss_basic_mode)"
+	case "${old_mode}" in
+		5)
+			dbus set ss_split_default_mode_id="1"
+			echo_date "  ss_basic_mode=5 (全局) → ss_split_default_mode_id=1 (全局代理)"
+			;;
+		*)
+			dbus set ss_split_default_mode_id="2"
+			echo_date "  ss_basic_mode=${old_mode:-未设置} → ss_split_default_mode_id=2 (大陆白名单)"
+			;;
+	esac
+
+	# ---------- Step 4: 迁移 acl 行 → ss_acl_split_mode_<i> ----------
+	local acl_indexes acl old_acl_mode
+	acl_indexes="$(dbus list ss_acl_mode_ 2>/dev/null | cut -d '=' -f 1 | cut -d '_' -f 4 | sort -n)"
+	for acl in ${acl_indexes}; do
+		[ -z "${acl}" ] && continue
+		old_acl_mode="$(dbus get ss_acl_mode_${acl})"
+		case "${old_acl_mode}" in
+			0)
+				dbus set ss_acl_split_mode_${acl}="0"
+				;;
+			5)
+				dbus set ss_acl_split_mode_${acl}="1"
+				;;
+			*)
+				dbus set ss_acl_split_mode_${acl}="2"
+				;;
+		esac
+	done
+
+	# ---------- Step 5: 黑白名单文本框保留 ----------
+	# ss_wan_white_domain / ss_wan_black_domain 不动，两个内置 Mode 默认 apply_blackwhite=1。
+
+	# ---------- Step 6/7: alpha 阶段 NOT 物理删除任何旧 key ----------
+	# ss_node_shunt_* / ss_basic_mode / ss_acl_mode_<i> / failover-combo 全保留——旧路径仍在用。
+	# 待 alpha 充分验证后由 doge.13+ 处理。
+
+	# ---------- Step 7.5: 销毁旧 ipset（alpha 跳过） ----------
+	# 跳过原因：alpha 阶段 ss_split_enabled 默认 0，路由层走旧路径，旧 ipset (chnlist/gfwlist/white_list 等)
+	# 仍由 ssconfig.sh 创建并使用。本步骤待 doge.13 默认 ss_split_enabled=1 时再启用。
+
+	# ---------- Step 9: 落幂等标志 ----------
+	dbus set fss_split_migrated_v1="1"
+	echo_date "✅ FORK doge.12 alpha: 分流架构迁移完成（fss_split_migrated_v1=1，ss_split_enabled 默认 0 不接管路由）"
+}
+
 # FORK doge.10: 主动删除 dbus 里所有 type=1 (SSR) / type=6 (Naive) / type=7 (Tuic) 的节点 + 清理引用。
 # 详见 doc/design/protocol-roadmap.md §2。后端专用迁移旗标走 fss_* 前缀（CLAUDE.md 硬规则 #1）。
 # 触发条件：fss_doge10_legacy_protocols_migrated != "1"。幂等。
@@ -2175,6 +2491,18 @@ install_now(){
 	migrate_failover_v1
 	# combo 前缀重命名 v2：fss_failover_combo_* → ss_failover_combo_*（CLAUDE.md 硬规则 #1）
 	migrate_failover_v2
+	# FORK doge.12 alpha：分流架构（Rule + Mode + per-User + 双轨 DNS）数据迁移
+	# 详见 doc/implementation/split-routing-implementation.md / doc/design/split-routing-architecture.md §14
+	# 仅写数据；ss_split_enabled 默认 0，路由层走旧逻辑——老用户升级零感知。
+	migrate_split_routing_v1
+	# FORK doge.12 alpha 总开关：=0 路由走旧路径（默认）；=1 启用新架构（实验性）。
+	# 首次安装/升级时若未设置则种 0，已有值不覆盖。
+	[ -z "$(dbus get ss_split_enabled)" ] && dbus set ss_split_enabled="0"
+	# FORK doge.12 alpha：分流 Rule 自动更新 cron（每 30 分钟扫一次；详见 doc/design/split-routing-architecture.md §10.3）。
+	# alpha 期内置 Rule 全部 update_hours=0，cron 跑等于 no-op；脚本里有守护跳过。
+	# 用户自定义 Rule + 设置 update_hours>0 + 配置 source_url 才会真正下载。
+	cru d fancyss_rules_update >/dev/null 2>&1
+	cru a fancyss_rules_update "*/30 * * * * /bin/sh /koolshare/scripts/fss_rules_update.sh"
 	# FORK doge.10：删除老的 SSR/Naive/Tuic 节点 + 清理引用（详见 doc/design/protocol-roadmap.md §2）
 	migrate_doge10_drop_legacy_protocols
 	# fork toggle（doge.9）：「直连 AsusGo / koolcenter 生态域名」首次安装默认开启
