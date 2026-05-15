@@ -199,30 +199,34 @@
 >
 > **工作量**：1-2 个工作日量级的小版本。
 >
-> **是否破坏性升级**：否。老用户升级后 UI 仅在"附加功能"页多出两个 checkbox，默认值维持现状行为，无 regression。
+> **是否破坏性升级**：否。老用户升级后 UI 仅在"黑白名单"页多出两个 select 控件（紧挨 doge.9 的 `ss_basic_direct_asusgo`），默认值维持现状行为，无 regression。
 
 ### 7.1 范围（来自 Phase 1 审计）
 
+> **实施备注**：下表 dbus key / 变量名为 doge.11 实际落地名（与最初规划略有简化，如 `chinadns → chndns`、`china_dns → chndns`、`reserved → reserve`、`online_check → online_ipcheck`）。实施时同步更新本表与 §7.3 / §8.2，避免 doge.12 迁移脚本因 key 名漂移失败。
+
 | 审计编号 | 处理方式 |
 |---|---|
-| **G1 拆变量** | [ssconfig.sh:3228](../../fancyss/ss/ssconfig.sh#L3228) 当前一行混了 RFC1918 私网地址 + 中国公共 DNS IP，拆成两个独立变量：<br>• `ip_lan_reserved` = RFC1918 + 127/8 + link-local + multicast（必须保留，不可关，即 R1）<br>• `ip_lan_china_dns` = 约 10 个中国公共 DNS IP（含阿里/腾讯/CNNIC/360 等，如 223.5.5.5 / 114.114.114.114 / 119.29.29.29 / 180.76.76.76）<br>新加 dbus 开关 `ss_basic_direct_chinadns`（默认 1，维持现状） |
-| **G6 在线检测开关** | [ssconfig.sh:264/556/562/568/574](../../fancyss/ss/ssconfig.sh#L264) 启动时硬编码上送出口 IP / 时间到 worldtimeapi.org / ip.ddnsto.com / ip.clang.cn / akamai / api.myip.com 等 4-5 个外部 endpoint。<br>新加 dbus 开关 `ss_basic_online_check`（默认 1，维持现状） |
-| **R1 与 G1 分离** | 纯粹是 G1 拆变量的副产品，文档明确"R1 RFC1918 部分作为 `ip_lan_reserved` 不可关；G1 中国 DNS 部分作为 `ip_lan_china_dns` 可关"。无新增 dbus key |
-| **Y4 注释标注** | [ss_rule_update.sh:9](../../fancyss/scripts/ss_rule_update.sh#L9) `URL_MAIN="https://raw.githubusercontent.com/hq450/fancyss/3.0/rules_ng"` 加注释 `# FORK TODO: 切换到 folderdoge/fancyss_doge 自建 rules_ng 镜像（见 doge.13 §9.1）`，**只标注不动逻辑**。实际切换留到 doge.13 |
+| **G1 拆变量** | [ssconfig.sh:3249-3263](../../fancyss/ss/ssconfig.sh#L3249) 原 `ip_lan` 一行混了 RFC1918 私网地址 + 中国公共 DNS IP，拆成两个独立变量：<br>• `ip_lan_reserve` = RFC1918 + 127/8 + link-local + multicast（必须保留，不可关，即 R1）<br>• `ip_lan_chndns` = 10 个中国公共 DNS IP（阿里 / 腾讯 / 114DNS / CNNIC / OneDNS / 百度，如 223.5.5.5 / 114.114.114.114 / 119.29.29.29 / 180.76.76.76）<br>新加 dbus 开关 `ss_basic_direct_chndns`（默认 1，维持现状） |
+| **G6 在线检测开关** | [ssconfig.sh:264/556/562/568/574](../../fancyss/ss/ssconfig.sh#L264) 启动时硬编码上送出口 IP / 时间到 worldtimeapi.org / ip.ddnsto.com / ip.clang.cn / akamai / api.myip.com 5 个外部 endpoint。<br>新加 dbus 开关 `ss_basic_online_ipcheck`（默认 1，维持现状） |
+| **R1 与 G1 分离** | 纯粹是 G1 拆变量的副产品，文档明确"R1 RFC1918 部分作为 `ip_lan_reserve` 不可关；G1 中国 DNS 部分作为 `ip_lan_chndns` 可关"。无新增 dbus key |
+| **Y4 注释标注** | [ss_rule_update.sh:9](../../fancyss/scripts/ss_rule_update.sh#L9) `URL_MAIN="https://raw.githubusercontent.com/hq450/fancyss/3.0/rules_ng"` 加 `# TODO(doge.13)` 注释段（含切换原因 + 候选方案 A/B），**只标注不动逻辑**。实际切换留到 doge.13 |
 | **修文档勘误** | doge.9 的 [asusgo-whitelist-toggle.md](../implementation/asusgo-whitelist-toggle.md) 错误地说 worldtimeapi.org "fancyss 代码无引用"，实际 [ssconfig.sh:264](../../fancyss/ss/ssconfig.sh#L264) 还在调，修文档 |
+| **顺手补丁** | 修复 doge.9 引入的 `ss_basic_direct_asusgo` 漏挂 `params_input` 的 bug（select 改值未写 dbus）——同问题套到 doge.11 新增的两个 select 上一并解决 |
 
 ### 7.2 不在 doge.11 范围内
 
 - **G2 / G3 / G4 / G5 / G7**：这些"硬编码强制走 ipset/代理域名"留给 doge.12 的 Rule 系统消化（自然变成内置预设 Rule 的条目）
 - **Y1 / Y2 / Y3**：海外 DNS / asuscomm 缓存豁免 / 订阅解析硬编码 DNS，推迟（等更明确的需求场景）
-- **任何 UI 重构**：分流模式 UI 整体留给 doge.12
+- **任何 UI 重构**：分流模式 UI 整体留给 doge.12。doge.11 两个新 select 借位放在「黑白名单」tab 紧挨 `ss_basic_direct_asusgo`（与 doge.9 一致）；doge.12 重构 UI 时可再分组到「启动行为」/「附加功能」
 
 ### 7.3 验收标准
 
-- [ ] G1 拆完后，用户禁用 `ss_basic_direct_chinadns` 后访问国内 DNS 时确实经代理（验证方式：`tcpdump -i br0 host 223.5.5.5` 或 chinadns-ng 日志）
+- [ ] G1 拆完后，用户禁用 `ss_basic_direct_chndns` 后访问国内 DNS 时确实经代理（验证方式：`tcpdump -i br0 host 223.5.5.5` 或 chinadns-ng 日志）
 - [ ] G6 在线检测禁用后，`ssconfig.sh restart` 日志里无对 ddnsto / clang / akamai / myip.com 的 curl
 - [ ] 老用户升级无 regression：默认值都为 1，行为完全等价于 doge.10
 - [ ] Y4 注释能 grep 到，方便 doge.13 收尾时定位
+- [ ] UI 切 select 后点「保存&应用」，路由器 SSH 看 `dbus get ss_basic_direct_chndns` / `ss_basic_online_ipcheck` 应该立刻为 0/1（验证 params_input 修复有效，同时回归 doge.9 `ss_basic_direct_asusgo`）
 
 ---
 
@@ -255,8 +259,8 @@
 
 ### 8.2 与 doge.11 的衔接
 
-- doge.11 拆出的 `ss_basic_direct_chinadns` 在 doge.12 中**降级为兼容键**：迁移脚本读它一次，灌入"中国公共 DNS"内置 Rule 的初始 action（=1→direct，=0→default_action）后弃用
-- doge.11 拆出的 `ss_basic_online_check` 在 doge.12 中**保留不变**：在线检测是启动期一次性行为，不进 Rule 系统
+- doge.11 拆出的 `ss_basic_direct_chndns` 在 doge.12 中**降级为兼容键**：迁移脚本读它一次，灌入"中国公共 DNS"内置 Rule 的初始 action（=1→direct，=0→default_action）后弃用
+- doge.11 拆出的 `ss_basic_online_ipcheck` 在 doge.12 中**保留不变**：在线检测是启动期一次性行为，不进 Rule 系统
 - doge.11 标注的 Y4 注释由 doge.13 兑现切换
 
 ### 8.3 验收标准

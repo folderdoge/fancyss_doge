@@ -6,6 +6,14 @@ source /koolshare/scripts/base.sh
 eval $(dbus export ss_basic_)
 alias echo_date='echo 【$(TZ=UTC-8 date -R +%Y%m%d\ %X)】:'
 RULE_FILE=/koolshare/ss/rules/rules.json.js
+# TODO(doge.13): 切换到 fork 自己的 rules_ng 镜像源。
+# 当前仍指向 hq450 上游，与 fork 的「与上游分离」战略冲突（详见 doc/design/protocol-roadmap.md §3 与 §7 doge.11 的 Y4 条目）：
+#   1. 上游若改规则文件结构 / 域名内容，fork 无法独立控制；
+#   2. 上游若停更或失联，规则更新功能直接挂掉。
+# 计划方案（待 doge.13 决议）：
+#   - 选项 A: raw.githubusercontent.com/folderdoge/fancyss_doge/3.0/rules_ng（fork 仓库 raw URL，跟 ss_update.sh 的版本探测同源）
+#   - 选项 B: 独立 release artifact（与 tarball 分开发布，方便频繁更新）
+# 同步策略待定：人工同步 vs CI 跟踪上游 diff vs 完全自维护。
 URL_MAIN="https://raw.githubusercontent.com/hq450/fancyss/3.0/rules_ng"
 
 run(){

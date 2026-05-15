@@ -2180,6 +2180,12 @@ install_now(){
 	# fork toggle（doge.9）：「直连 AsusGo / koolcenter 生态域名」首次安装默认开启
 	# 详见 doc/implementation/asusgo-whitelist-toggle.md
 	[ -z "$(dbus get ss_basic_direct_asusgo)" ] && dbus set ss_basic_direct_asusgo=1
+	# fork toggle（doge.11）：「国内公共 DNS 服务器强制直连」(G1) 首次安装默认开启（向后兼容）
+	# 控制 223.5.5.5/114.114.114.114 等 10 个国内 DNS IP 是否进 ignlist，详见 doc/design/protocol-roadmap.md §7 doge.11 G1
+	[ -z "$(dbus get ss_basic_direct_chndns)" ] && dbus set ss_basic_direct_chndns=1
+	# fork toggle（doge.11）：「启动时联网检测公网 IP/时间」(G6) 首次安装默认开启（向后兼容）
+	# 控制 worldtimeapi/ddnsto/clang/akamai/myip 5 个第三方上送 IP 探测，详见 doc/design/protocol-roadmap.md §7 doge.11 G6
+	[ -z "$(dbus get ss_basic_online_ipcheck)" ] && dbus set ss_basic_online_ipcheck=1
 	[ -z "$(dbus get ss_acl_default_mode)" ] && dbus set ss_acl_default_mode=follow
 	[ -z "$(dbus get ss_acl_default_mode_format)" ] && dbus set ss_acl_default_mode_format=2
 	[ -z "$(dbus get ss_acl_default_udp)" ] && dbus set ss_acl_default_udp=0

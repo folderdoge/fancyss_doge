@@ -7413,7 +7413,11 @@ function save() {
 	  "ss_basic_hy2_dl_speed",
 	  "ss_basic_hy2_tfo_switch",
 	  "ss_basic_hy2_cg_opt",
-	  "ss_basic_shunt_ingress_mode"
+	  "ss_basic_shunt_ingress_mode",
+	  // FORK doge.9 / doge.11: fork toggles 必须挂进 params_input 否则 UI 切值不会写入 dbus
+	  "ss_basic_direct_asusgo",
+	  "ss_basic_direct_chndns",
+	  "ss_basic_online_ipcheck"
 	];
 	var params_check = [
 	  "ss_failover_enable",
@@ -17593,6 +17597,8 @@ function toggleKeyMask(o, show){
 														var ph4 = "# 填入需要强制走代理的域名，一行一个，格式如下：&#10;baidu.com&#10;taobao.com&#10;# 需要清空电脑DNS缓存，才能立即看到效果。";
 														$('#table_wblist').forms([
 															{ title: '直连「梅林软件中心」生态域名', id:'ss_basic_direct_asusgo', type:'select', hint:'202', style:'width:auto', options:[["0", "禁用"], ["1", "开启"]], value:'1'},
+															{ title: '国内公共 DNS 服务器强制直连', id:'ss_basic_direct_chndns', type:'select', hint:'203', style:'width:auto', options:[["0", "禁用"], ["1", "开启"]], value:'1'},
+															{ title: '启动时联网检测公网 IP/时间', id:'ss_basic_online_ipcheck', type:'select', hint:'204', style:'width:auto', options:[["0", "禁用"], ["1", "开启"]], value:'1'},
 															{ title: 'IP/CIDR白名单<br><br><font color="#ffcc00">添加不需要走代理的外网ip地址</font>', id:'ss_wan_white_ip', type:'textarea', hint:'38', rows:'7', ph:ph1},
 															{ title: '域名白名单<br><br><font color="#ffcc00">添加不需要走代理的域名</font>', id:'ss_wan_white_domain', type:'textarea', hint:'39', rows:'7', ph:ph2},
 															{ title: 'IP/CIDR黑名单<br><br><font color="#ffcc00">添加需要强制走代理的外网ip地址</font>', id:'ss_wan_black_ip', type:'textarea', hint:'40', rows:'7', ph:ph3},

@@ -261,18 +261,25 @@ check_time(){
 	# get_time "www.jd.com" debug
 	# get_time "https://nist.time.gov/" debug
 	
-	local RET=$(run curl-fancyss -4sk --connect-timeout 2 --max-time 2 "http://worldtimeapi.org/api/timezone/Asia/Shanghai")
-	if [ -n "${RET}" ];then
-		if [ "${ss_basic_nochnipcheck}" != "1" ];then
-			REMOTE_IP_OUT_SRC="worldtimeapi.org"
-			REMOTE_IP_OUT=$(echo ${RET}|run jq -r '.client_ip')
+	# FORK doge.11: 在线 IP/时间检测开关（ss_basic_online_ipcheck=0 时跳过 worldtimeapi）
+	# worldtimeapi.org 同时返回 unixtime 和 client_ip；关闭后时间检测自动 fallback 到下面 weibo/baidu/qq/taobao/jd/nist.time.gov（纯时间，不上送 IP）
+	# 详见 doc/design/protocol-roadmap.md §7 doge.11 的 G6 条目
+	if [ "${ss_basic_online_ipcheck:-1}" = "1" ]; then
+		local RET=$(run curl-fancyss -4sk --connect-timeout 2 --max-time 2 "http://worldtimeapi.org/api/timezone/Asia/Shanghai")
+		if [ -n "${RET}" ];then
+			if [ "${ss_basic_nochnipcheck}" != "1" ];then
+				REMOTE_IP_OUT_SRC="worldtimeapi.org"
+				REMOTE_IP_OUT=$(echo ${RET}|run jq -r '.client_ip')
+			fi
+			local TIMESTAMP_SOURCE="worldtimeapi.org"
+			local SERVER_TIMESTAMP=$(echo ${RET}|run jq -r '.unixtime')
+			if [ "${SERVER_TIMESTAMP}" == "null" ];then
+				local SERVER_TIMESTAMP=""
+			fi
+			compare_time "worldtimeapi.org" ${SERVER_TIMESTAMP}
 		fi
-		local TIMESTAMP_SOURCE="worldtimeapi.org"
-		local SERVER_TIMESTAMP=$(echo ${RET}|run jq -r '.unixtime')
-		if [ "${SERVER_TIMESTAMP}" == "null" ];then
-			local SERVER_TIMESTAMP=""
-		fi
-		compare_time "worldtimeapi.org" ${SERVER_TIMESTAMP}
+	else
+		echo_date "ℹ️ 在线 IP/时间检测已关闭（ss_basic_online_ipcheck=0），跳过 worldtimeapi.org"
 	fi
 
 	if [ -z "${SERVER_TIMESTAMP}" ];then
@@ -551,37 +558,44 @@ check_chn_public_ip(){
 		REMOTE_IP_OUT_SRC="nvram: wan0_realip_ip"
 	fi
 
-	if [ -z "${REMOTE_IP_OUT}" ];then
+	# FORK doge.11: 4 个在线 IP 检测源（ddnsto/clang/akamai/myip）由 ss_basic_online_ipcheck 统一开关
+	# 详见 doc/design/protocol-roadmap.md §7 doge.11 的 G6 条目
+	if [ -z "${REMOTE_IP_OUT}" ] && [ "${ss_basic_online_ipcheck:-1}" = "1" ];then
 		echo_date "↪ 本地未获取到公网出口IPV4，尝试在线检测：ip.ddnsto.com"
 		REMOTE_IP_OUT_SRC="http://ip.ddnsto.com"
 		REMOTE_IP_OUT=$(detect_ip ${REMOTE_IP_OUT_SRC} 5 0)
 	fi
 
-	if [ -z "${REMOTE_IP_OUT}" ];then
+	if [ -z "${REMOTE_IP_OUT}" ] && [ "${ss_basic_online_ipcheck:-1}" = "1" ];then
 		echo_date "↪ 切换在线检测源：ip.clang.cn"
 		REMOTE_IP_OUT_SRC="https://ip.clang.cn"
 		REMOTE_IP_OUT=$(detect_ip ${REMOTE_IP_OUT_SRC} 5 0)
 	fi
 
-	if [ -z "${REMOTE_IP_OUT}" ];then
+	if [ -z "${REMOTE_IP_OUT}" ] && [ "${ss_basic_online_ipcheck:-1}" = "1" ];then
 		echo_date "↪ 切换在线检测源：whatismyip.akamai.com"
 		REMOTE_IP_OUT_SRC="whatismyip.akamai.com"
 		REMOTE_IP_OUT=$(detect_ip ${REMOTE_IP_OUT_SRC} 5 0)
 	fi
 
-	if [ -z "${REMOTE_IP_OUT}" ];then
+	if [ -z "${REMOTE_IP_OUT}" ] && [ "${ss_basic_online_ipcheck:-1}" = "1" ];then
 		echo_date "↪ 切换在线检测源：api.myip.com"
 		REMOTE_IP_OUT=$(run curl-fancyss -4sk --connect-timeout 2 http://api.myip.com 2>&1 | grep -v "Terminated" | run jq -r '.ip' | grep -Eo "([0-9]{1,3}[\.]){3}[0-9]{1,3}")
 		REMOTE_IP_OUT_SRC="api.myip.com"
 	fi
 
+	# FORK doge.11: 开关关闭时跳过"检测失败"警告 + close_in_five（用户主动选择不上送，不算异常）
 	if [ -z "${REMOTE_IP_OUT}" ];then
-		echo_date "+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++"
-		echo_date "+            经多种方法尝试，均无法检测到本机国内出口IP!               +"
-		echo_date "+                 这可能是路由器DNS不通造成的!                      +"
-		echo_date "+                请尝试更正此问题后重新启动插件！                    +"
-		echo_date "+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++"
-		close_in_five flag
+		if [ "${ss_basic_online_ipcheck:-1}" != "1" ];then
+			echo_date "ℹ️ 在线 IP 检测已关闭（ss_basic_online_ipcheck=0），跳过公网出口 IP 属地判断"
+		else
+			echo_date "+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++"
+			echo_date "+            经多种方法尝试，均无法检测到本机国内出口IP!               +"
+			echo_date "+                 这可能是路由器DNS不通造成的!                      +"
+			echo_date "+                请尝试更正此问题后重新启动插件！                    +"
+			echo_date "+++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++"
+			close_in_five flag
+		fi
 	fi
 
 	# 5.2 检测路由器WAN口IPV4地址
@@ -619,41 +633,46 @@ check_chn_public_ip(){
 	fi
 	
 	# 5.3 判断
-	local ISCHN_OUT=$(awk -F'[./]' -v ip=${REMOTE_IP_OUT} '{for (i=1;i<=int($NF/8);i++){a=a$i"."} if (index(ip, a)==1){split( ip, A, ".");b=int($NF/8);if (A[b+1]<($(NF+b-4)+2^(8-$NF%8))&&A[b+1]>=$(NF+b-4)) print ip,"belongs to",$0} a=""}' /koolshare/ss/rules/chnroute.txt)
-	if [ -n "${ISCHN_OUT}" ];then
-		# 大陆地址
-		echo_date "公网出口IPV4地址：${REMOTE_IP_OUT}，属地：大陆，来源：${REMOTE_IP_OUT_SRC}"
-	else
-		# 海外地址
-		# 为日志输出标准，此处属地海外表示的是：中国外且包含港澳台地址，后同，并没有任何分裂国家的表达意思。
-		echo_date "公网出口IPV4地址：${REMOTE_IP_OUT}，属地：海外，来源：${REMOTE_IP_OUT_SRC}"
-	fi
+	# FORK doge.11: REMOTE_IP_OUT 为空时（ss_basic_online_ipcheck=0 且 nvram 也没值）跳过属地判断与 5.4 ROUTER==REMOTE 比较，避免输出 "属地：海外" 误导日志
+	if [ -n "${REMOTE_IP_OUT}" ];then
+		local ISCHN_OUT=$(awk -F'[./]' -v ip=${REMOTE_IP_OUT} '{for (i=1;i<=int($NF/8);i++){a=a$i"."} if (index(ip, a)==1){split( ip, A, ".");b=int($NF/8);if (A[b+1]<($(NF+b-4)+2^(8-$NF%8))&&A[b+1]>=$(NF+b-4)) print ip,"belongs to",$0} a=""}' /koolshare/ss/rules/chnroute.txt)
+		if [ -n "${ISCHN_OUT}" ];then
+			# 大陆地址
+			echo_date "公网出口IPV4地址：${REMOTE_IP_OUT}，属地：大陆，来源：${REMOTE_IP_OUT_SRC}"
+		else
+			# 海外地址
+			# 为日志输出标准，此处属地海外表示的是：中国外且包含港澳台地址，后同，并没有任何分裂国家的表达意思。
+			echo_date "公网出口IPV4地址：${REMOTE_IP_OUT}，属地：海外，来源：${REMOTE_IP_OUT_SRC}"
+		fi
 
-	if [ "${ROUTER_IP_WAN}" == "${REMOTE_IP_OUT}" ];then
-		if [ -z "${ISCHN_OUT}" ];then
-			echo_date "路由WAN IPV4地址：${ROUTER_IP_WAN}，和公网出口地址相同，为海外公网IPV4地址！"
-			if [ "${ss_basic_mode}" != "6" ];then
-				echo_date "检测到路由器公网出口IPV4地址为海外地址，可能是以下情况："
-				echo_date "-------------------------------"
-				echo_date "1. 检测到路由器使用环境在海外，如果确实是这种情况，建议使用回国代理 + 回国模式"
-				echo_date "2. 可能你身在大陆，但是chnroute.txt没有收录你的公网出口IPV4地址，你可以自行将该IPV4地址加入到IP/CIDR黑名单"
-				echo_date "-------------------------------"
+		if [ "${ROUTER_IP_WAN}" == "${REMOTE_IP_OUT}" ];then
+			if [ -z "${ISCHN_OUT}" ];then
+				echo_date "路由WAN IPV4地址：${ROUTER_IP_WAN}，和公网出口地址相同，为海外公网IPV4地址！"
+				if [ "${ss_basic_mode}" != "6" ];then
+					echo_date "检测到路由器公网出口IPV4地址为海外地址，可能是以下情况："
+					echo_date "-------------------------------"
+					echo_date "1. 检测到路由器使用环境在海外，如果确实是这种情况，建议使用回国代理 + 回国模式"
+					echo_date "2. 可能你身在大陆，但是chnroute.txt没有收录你的公网出口IPV4地址，你可以自行将该IPV4地址加入到IP/CIDR黑名单"
+					echo_date "-------------------------------"
+				fi
+			else
+				echo_date "路由WAN IPV4地址：${ROUTER_IP_WAN}，和公网出口地址相同，为大陆公网IPV4地址！"
 			fi
 		else
-			echo_date "路由WAN IPV4地址：${ROUTER_IP_WAN}，和公网出口地址相同，为大陆公网IPV4地址！"
-		fi
-	else
-		echo_date "路由WAN IPV4地址：${ROUTER_IP_WAN}，和公网出口地址不同，为私网（局域网）IPV4地址"
-		if [ -z "${ISCHN_OUT}" ];then
-			if [ "${ss_basic_mode}" != "6" ];then
-				echo_date "检测到路由器公网出口IPV4地址为海外地址，可能是以下情况："
-				echo_date "-------------------------------"
-				echo_date "1. 可能你身在大陆，但是你的网络经过了多层代理，请检查是否有上游路由器开启了代理，特别是全局代理"
-				echo_date "2. 可能你身在海外，如果是这种情况，建议使用回国代理 + 回国模式"
-				echo_date "3. 可能你身在大陆，但是chnroute.txt没有收录你的公网出口IPV4地址，你可以自行将该IPV4地址加入到IP/CIDR黑名单"
-				echo_date "-------------------------------"
+			echo_date "路由WAN IPV4地址：${ROUTER_IP_WAN}，和公网出口地址不同，为私网（局域网）IPV4地址"
+			if [ -z "${ISCHN_OUT}" ];then
+				if [ "${ss_basic_mode}" != "6" ];then
+					echo_date "检测到路由器公网出口IPV4地址为海外地址，可能是以下情况："
+					echo_date "-------------------------------"
+					echo_date "1. 可能你身在大陆，但是你的网络经过了多层代理，请检查是否有上游路由器开启了代理，特别是全局代理"
+					echo_date "2. 可能你身在海外，如果是这种情况，建议使用回国代理 + 回国模式"
+					echo_date "3. 可能你身在大陆，但是chnroute.txt没有收录你的公网出口IPV4地址，你可以自行将该IPV4地址加入到IP/CIDR黑名单"
+					echo_date "-------------------------------"
+				fi
 			fi
 		fi
+	else
+		echo_date "路由WAN IPV4地址：${ROUTER_IP_WAN}（公网出口 IP 未检测，属地判断已跳过）"
 	fi
 }
 
@@ -3224,13 +3243,27 @@ add_white_black() {
 	ipset -! add router 149.112.112.11 >/dev/null 2>&1
 	ipset -! add router 149.112.112.10 >/dev/null 2>&1
 
-	# {ignlist},ip: reserve ip
-	local ip_lan="0.0.0.0/8 10.0.0.0/8 100.64.0.0/10 127.0.0.0/8 169.254.0.0/16 172.16.0.0/12 192.168.0.0/16 192.18.0.0/15 224.0.0.0/4 240.0.0.0/4 223.5.5.5 223.6.6.6 114.114.114.114 114.114.115.115 1.2.4.8 210.2.4.8 117.50.11.11 117.50.22.22 180.76.76.76 119.29.29.29"
-	echo_date "应用ignlist"
-	for ip in ${ip_lan}
+	# {ignlist},ip: 保留 IP 段（RFC1918 / loopback / link-local / multicast / etc，必须直连）
+	# FORK doge.11: 拆 R1（保留段）与 G1（中国公共 DNS），G1 受 ss_basic_direct_chndns 开关控制
+	# 详见 doc/design/protocol-roadmap.md §7 doge.11 的 G1/R1 条目
+	local ip_lan_reserve="0.0.0.0/8 10.0.0.0/8 100.64.0.0/10 127.0.0.0/8 169.254.0.0/16 172.16.0.0/12 192.168.0.0/16 192.18.0.0/15 224.0.0.0/4 240.0.0.0/4"
+	# FORK doge.11: 中国公共 DNS（223.5/223.6 阿里 / 114.114 / 1.2.4.8 dnspod / 117.50.* onedns / 180.76 百度 / 119.29 腾讯）
+	local ip_lan_chndns="223.5.5.5 223.6.6.6 114.114.114.114 114.114.115.115 1.2.4.8 210.2.4.8 117.50.11.11 117.50.22.22 180.76.76.76 119.29.29.29"
+	echo_date "应用ignlist（保留 IP 段）"
+	for ip in ${ip_lan_reserve}
 	do
 		ipset -! add ignlist $ip >/dev/null 2>&1
 	done
+	# FORK doge.11: 默认开启（向后兼容），用户可关
+	if [ "${ss_basic_direct_chndns:-1}" = "1" ]; then
+		echo_date "应用ignlist（国内公共 DNS 强制直连）"
+		for ip in ${ip_lan_chndns}
+		do
+			ipset -! add ignlist $ip >/dev/null 2>&1
+		done
+	else
+		echo_date "ℹ️ 国内公共 DNS 强制直连已关闭（ss_basic_direct_chndns=0），223.5.5.5/114.114.114.114 等不再加入 ignlist"
+	fi
 
 	ipset -! add ignlist6 ::1/128 >/dev/null 2>&1
 	ipset -! add ignlist6 fe80::/10 >/dev/null 2>&1

@@ -70,11 +70,17 @@ done
 - `group-dnl` 后缀匹配特性：`dns.msftncsi.com` 只能匹配 `dns.msftncsi.com` 自己和其子域，**不会**匹配 `www.msftncsi.com`（后者不是 `dns.msftncsi.com` 的子域）
 - 结论：上游写错了子域，本规则**对真正需要保护的 HTTP 步骤完全覆盖不到**，DNS 步骤又不需要保护 → 净效果为零
 
-#### `worldtimeapi.org` —— **代码无引用且 anycast 反而慢**
+#### `worldtimeapi.org` —— **代码有引用但失败可优雅 fallback**
 
-- `grep -r worldtimeapi.org fancyss/` → fancyss 代码无任何引用（NTP 时间检测用的是 `time.nist.gov / time.windows.com / time.apple.com`，参见 [ssconfig.sh:208 附近](../../fancyss/ss/ssconfig.sh#L208)）
-- 域名本身是 Cloudflare anycast，国内 ISP 路由经常劣化；走代理（日本节点）反而稳定
-- 强制直连不一定快，且没有应用层逻辑会用到它 → **无意义**
+> **勘误（doge.11，2026-05-15）**：本节早期版本（doge.9）错误地写"`grep -r worldtimeapi.org fancyss/` → fancyss 代码无任何引用 / NTP 时间检测用的是 `time.nist.gov / time.windows.com / time.apple.com`"。**这是错的**——worldtimeapi.org 实际在 [ssconfig.sh:264](../../fancyss/ss/ssconfig.sh#L264) 被用作时间+IP 同源检测的首选；`time.windows.com / time.apple.com` 完全不存在于 fancyss 代码；`nist.time.gov` 只在最末尾 fallback 节点（line 316）被用作纯时间源。下方为修订内容。
+>
+> 删 `worldtimeapi.org` 出 white_list 占位符的决策**仍然成立**（理由见下），但**理由不再是"代码无引用"**。
+
+- **实际代码引用**：[ssconfig.sh:264](../../fancyss/ss/ssconfig.sh#L264) 在路由器启动期通过 `curl-fancyss` 拉取 `http://worldtimeapi.org/api/timezone/Asia/Shanghai`，同时获取 `unixtime`（时间检测）和 `client_ip`（公网出口 IP 检测）
+- **失败 fallback 设计**：worldtimeapi 拉取失败时，fancyss 自动 fallback 到 [ssconfig.sh:285-319](../../fancyss/ss/ssconfig.sh#L285) 的时间源链 `www.weibo.com → www.baidu.com → www.qq.com → www.taobao.com → www.jd.com → https://nist.time.gov/`（这些只查时间不上送 IP）；IP 检测则 fallback 到 [ssconfig.sh:554-576](../../fancyss/ss/ssconfig.sh#L554) 的 `ip.ddnsto.com → ip.clang.cn → whatismyip.akamai.com → api.myip.com`
+- **anycast 直连未必快**：worldtimeapi.org 本身是 Cloudflare anycast，国内 ISP 路由经常劣化；走代理（日本节点）反而可能更稳
+- **结论**：保留 `worldtimeapi.org` 到 white_list 占位符没有强收益（fancyss 已设计 fallback 容错；anycast 直连不见得快）。**删除不影响功能**——失败后下一个时间源会接管。
+- **doge.11 后续动作**：doge.11 引入 `ss_basic_online_ipcheck` 开关（dbus key，默认 1）让用户**彻底关闭** worldtimeapi + ddnsto/clang/akamai/myip 这一整组"启动期上送公网 IP" 的探测，不需要靠 white_list 拼凑控制。对应 hint id 204；细节参见 [ssconfig.sh:264](../../fancyss/ss/ssconfig.sh#L264) 与 [ssconfig.sh:554-576](../../fancyss/ss/ssconfig.sh#L554)。
 
 ### 2.2 总结表
 
@@ -83,7 +89,7 @@ done
 | `apple.com` | chnlist 抢走，GLO 模式完全失效 | ❌ 删 |
 | `microsoft.com` | 半失效，行为不可预测 | ❌ 删 |
 | `dns.msftncsi.com` | 覆盖错域，净效果为零 | ❌ 删 |
-| `worldtimeapi.org` | 代码无引用，anycast 直连不快 | ❌ 删 |
+| `worldtimeapi.org` | 代码有引用但失败可优雅 fallback；anycast 直连未必快；doge.11 已加专属开关 | ❌ 删 |
 
 ---
 

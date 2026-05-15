@@ -1097,6 +1097,32 @@ function openssHint(itemNum, flag) {
 		statusmenu += "<b>关闭后</b>这 4 个域名仍可通过下方「域名白名单」手动添加。<br /><br />";
 		statusmenu += "<font color='#888888'>技术细节：本开关控制 fancyss 在 /tmp/white_list.txt 的硬编码追加（ssconfig.sh:3310）。已验证 4 个域名都不在 chnlist / gfwlist，white_list 规则真正生效。详见 fork 文档 asusgo-whitelist-toggle.md。</font>";
 		_caption = "直连「梅林软件中心」生态域名";
+	} else if (itemNum == 203) {
+		width = "560px";
+		statusmenu = "<b>开启后，下列 10 个国内公共 DNS IP 会被强制直连（加入 ignlist，不走代理）：</b><br /><br />";
+		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• <font color='#669900'>223.5.5.5 / 223.6.6.6</font>（阿里 AliDNS）<br />";
+		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• <font color='#669900'>114.114.114.114 / 114.114.115.115</font>（114DNS）<br />";
+		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• <font color='#669900'>1.2.4.8 / 210.2.4.8</font>（CNNIC SDNS）<br />";
+		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• <font color='#669900'>117.50.11.11 / 117.50.22.22</font>（OneDNS）<br />";
+		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• <font color='#669900'>180.76.76.76</font>（百度 DNS）<br />";
+		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• <font color='#669900'>119.29.29.29</font>（DNSPod / 腾讯 DNS）<br /><br />";
+		statusmenu += "<b><font color='#CC0066'>用途：</font></b>fancyss 默认行为——这些 DNS IP 即使用户配置走代理也强制直连，避免国内 DNS 流量被代理拖慢。<br /><br />";
+		statusmenu += "<b><font color='#CC0066'>何时关闭：</font></b>你不使用上述任何一个国内公共 DNS、或希望所有 DNS 流量都走代理（全局模式严格执行）时。<br /><br />";
+		statusmenu += "<font color='#888888'>技术细节：本开关控制 fancyss 在 ssconfig.sh:3251（ip_lan_chndns 变量定义）处对 ignlist ipset 的硬编码添加。RFC1918 / loopback / 组播段（127.0.0.0/8 / 224.0.0.0/4 等）由独立保留段控制，不受此开关影响。详见 fork 文档 doc/design/protocol-roadmap.md §7 doge.11 的 G1 条目。修改后需点击「保存&应用」并重启代理才能生效。</font>";
+		_caption = "国内公共 DNS 服务器强制直连";
+	} else if (itemNum == 204) {
+		width = "560px";
+		statusmenu = "<b>开启后，fancyss 启动时会联网到下列第三方拿公网出口 IPV4 地址：</b><br /><br />";
+		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• <font color='#669900'>worldtimeapi.org</font>（时间 + IP 同源，优先尝试）<br />";
+		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• <font color='#669900'>ip.ddnsto.com</font><br />";
+		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• <font color='#669900'>ip.clang.cn</font><br />";
+		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• <font color='#669900'>whatismyip.akamai.com</font><br />";
+		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• <font color='#669900'>api.myip.com</font><br /><br />";
+		statusmenu += "<b><font color='#CC0066'>用途：</font></b>判断路由器公网出口属于大陆还是海外，影响启动日志显示与告警。<br /><br />";
+		statusmenu += "<b><font color='#CC0066'>何时关闭：</font></b>不希望路由器启动时把出口 IP 暴露给第三方时；或处于无外网/纯内网环境时（避免启动慢）。<br /><br />";
+		statusmenu += "<b>关闭后</b>：启动时只用本地 nvram 查路由器 WAN IP；时间检测自动 fallback 到 weibo/baidu/qq/taobao/jd/nist.time.gov（这些只查时间不上送 IP）；公网出口属地判断会被跳过（启动日志不再输出'属地：大陆/海外'行）。<br /><br />";
+		statusmenu += "<font color='#888888'>技术细节：控制 ssconfig.sh:264（worldtimeapi）+ 554-576（4 个 IP 检测源）。关闭时 close_in_five 告警也被跳过（用户主动选择，不算异常）。详见 fork 文档 doc/design/protocol-roadmap.md §7 doge.11 的 G6 条目。修改后需点击「保存&应用」并重启代理才能生效。</font>";
+		_caption = "启动时联网检测公网 IP/时间";
 	}
 	return overlib(statusmenu, OFFSETX, 30, OFFSETY, 10, RIGHT, STICKY, WIDTH, 'width', CAPTION, _caption, CLOSETITLE, '');
 
