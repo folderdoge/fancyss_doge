@@ -1,5 +1,12 @@
 fancyss Changelog
 
+3.5.28-doge.12-alpha.3（20260517）
+   - fix	doge.12-alpha hotfix：升级到 alpha.1/alpha.2 时 `install.sh::migrate_split_routing_v1` 卡在"内置 Rule 1: 大陆白名单_常用"长达 9-15 分钟的 bug（alpha.2 实测用户反馈）。
+   - note	根因：[install.sh:552](fancyss/install.sh#L552) 的 `count_rule_entries` 帮手函数用 `while IFS= read -r line; do echo "${line}" | grep -qE ...; done < "${rfile}"` 逐行判断 IP/域名，对 chnlist.gz 解压后约 7 万行的输入要 fork ~14 万次子进程。AX86U 上每次 fork 约 5-10ms，单是 Rule 1 就要 9-15 分钟；Rule 2 (gfwlist ~6000 行) 再卡几十秒。
+   - update	改成 awk 单次扫描，O(n) C 级速度，几十毫秒完事。pattern 沿用原版的 IP 启发式（`^[0-9a-fA-F:.]+(/[0-9]+)?$` 兼容 v4/v6 + CIDR），dn/ip 计数语义不变。
+   - note	幂等性：迁移函数仍然由 `fss_split_migrated_v1` 标志保护，卡在中途没置 flag 的用户重装 alpha.3 会从头跑 Rule 1（`write_rule_header` 用 `>` 覆盖式重置 rule_<id>.txt），不会有半写状态。
+   - note	卡在 alpha.2 安装中的用户：可直接重启路由器（reboot 会中断 install.sh）→ 重新进 Web UI 检查更新拿 alpha.3 重装；或者耐心等 alpha.2 自己跑完（约 10-15 分钟）后再升 alpha.3。
+
 3.5.28-doge.12-alpha.2（20260517）
    - fix	订阅 profile 添加/移除 UI 慢一拍 bug。原版 [ss_subscribe_profile.sh](fancyss/scripts/ss_subscribe_profile.sh) 的 save/delete/migrate_legacy 把 `http_response` 放在 `profile_save/delete` 完成之后才发，profile_delete 在 node-tool fallback 时会逐个 `dbus remove fss_node_<id>` 清节点，~100 节点要 1-2 分钟，AJAX 必定超时弹"删除订阅配置失败"，1-2 分钟后才真正删掉。
    - update	delete / migrate_legacy 改 fire-first 模式：set_lock → http_response → 实际工作，对齐 [ss_node_subscribe.sh](fancyss/scripts/ss_node_subscribe.sh) case 0/1/2/3/4 的现有模式，前端立即返回，节点清理在后台异步跑。

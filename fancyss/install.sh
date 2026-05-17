@@ -549,26 +549,22 @@ write_rule_header(){
 
 # helper: 统计 rule 文件的 domain / ip 行数（跳过头注释 / 空行）
 # 输出：echo "<domains> <ips>"
+# fork (doge.12-alpha.3 hotfix)：原版 while-read + echo|grep 在 chnlist.gz 解压后约 7 万行的输入上
+# 要 fork 14 万次子进程，AX86U 上估算 9-15 分钟，用户看到的"卡在 Rule 1: 大陆白名单_常用"
+# 就是这条热循环（alpha.2 用户报）。改 awk 单次扫描，几十毫秒完事。
 count_rule_entries(){
 	local rfile="$1"
 	if [ ! -f "${rfile}" ]; then
 		echo "0 0"
 		return
 	fi
-	# IP 行特征：包含 ':' (v6) 或 至少 3 个 '.' (v4)；其余非注释非空行算 domain
-	local dn=0 ip=0
-	while IFS= read -r line; do
-		case "${line}" in
-			''|'#'*) continue ;;
-		esac
-		# 粗略 IP/CIDR 检测：包含 ':' 或者全是 数字.数字.数字 等
-		if echo "${line}" | grep -qE '^[0-9a-fA-F:.]+(/[0-9]+)?$'; then
-			ip=$((ip+1))
-		else
-			dn=$((dn+1))
-		fi
-	done < "${rfile}"
-	echo "${dn} ${ip}"
+	awk '
+		/^[[:space:]]*$/ { next }
+		/^#/             { next }
+		/^[0-9a-fA-F:.]+(\/[0-9]+)?$/ { ip++; next }
+		{ dn++ }
+		END { printf "%d %d\n", dn+0, ip+0 }
+	' "${rfile}"
 }
 
 # helper: 创建 rules_user 目录
