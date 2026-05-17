@@ -1341,9 +1341,26 @@ sub_validate_downloaded_payload_legacy(){
 	local payload_file="${DIR}/sub_file_encode_${short_hash}.txt"
 	local wrong=""
 	local jump=""
+	local payload_size=0
+	local html_head=""
 
 	[ -f "${payload_file}" ] || return 1
 	SUB_PAYLOAD_KIND=""
+
+	# fork (doge.12-alpha.2)：与 sub_prepare_decoded_file 对齐的解码前防御。
+	# 注意 1389 行的 `dec64 $(cat ${payload_file})` 会把整个文件作为 argv 喂进去——
+	# 1-2MB 的恶意响应不一定踩 ARG_MAX，就直接进 base64 -d 满吃 CPU。
+	payload_size=$(wc -c < "${payload_file}" 2>/dev/null | tr -d ' ')
+	[ -n "${payload_size}" ] || payload_size=0
+	if [ "${payload_size}" -gt "2097152" ]; then
+		echo_date "⚠️订阅响应过大（${payload_size} 字节，>2MB），疑似机场返回了错误页/反爬虫页！已跳过验证。"
+		return 1
+	fi
+	html_head=$(head -c 256 "${payload_file}" 2>/dev/null | tr -d '\r\n\t \357\273\277' | grep -Eio '^(<!DOCTYPE|<html|<head|<\?xml|<HTML|<HEAD)' | head -n1)
+	if [ -n "${html_head}" ]; then
+		echo_date "⚠️订阅响应是 HTML/XML 文档（不是 base64 编码的节点列表），疑似机场返回了登录页/错误页/反爬虫页！已跳过验证。"
+		return 1
+	fi
 
 	if [ "${download_mode}" = "curl" ];then
 		jump=$(grep -Eo "Redirecting|301" "${payload_file}")
@@ -1386,7 +1403,9 @@ sub_validate_downloaded_payload_legacy(){
 		return 1
 	fi
 
-	dec64 $(cat "${payload_file}") >/dev/null 2>&1
+	# fork (doge.12-alpha.2)：原版把整个 payload 作为 argv 喂给 dec64，2MB 内容就能让 base64 -d 满吃 CPU 几十秒。
+	# 验证 "是不是合法 base64" 实际只需要看前 64KB（base64 结构在头几行就能确定），用 head -c 截断既防 ARG_MAX 也防 CPU 灾难。
+	dec64 "$(head -c 65536 "${payload_file}")" >/dev/null 2>&1
 	if [ "$?" != "0" ];then
 		echo_date "⚠️解析错误！原因：该订阅链接获取的内容并非正确的base64编码内容！"
 		echo_date "⚠️请尝试将用浏览器打开订阅链接，看内容是否正常！"
@@ -2110,6 +2129,8 @@ sub_prepare_decoded_file(){
 	local encoded_file="${DIR}/sub_file_encode_${short_hash}.txt"
 	local decoded_file="${DIR}/sub_file_decode_${short_hash}.txt"
 	local head_count="0"
+	local encoded_size=0
+	local html_head=""
 
 	[ -f "${encoded_file}" ] || return 1
 	if [ "${SUB_PAYLOAD_KIND}" = "clash-yaml" ];then
@@ -2121,6 +2142,22 @@ sub_prepare_decoded_file(){
 		echo_date "📄检测到明文的订阅格式，无需解码，继续！"
 		cp -f "${encoded_file}" "${decoded_file}"
 	else
+		# fork (doge.12-alpha.2)：进入 base64 -d 前的双层防御。
+		# 触发场景：某些机场对 v2rayN UA 不友好，会返回 HTML 错误页/反爬虫页/验证码页/二进制垃圾。
+		# 若直接灌进 `tr | sed | sed | base64 -d`，busybox base64 在 AX86U 上会单核 25% CPU 跑很久，
+		# 用户看到的就是"添加这个订阅后就卡死"的现象。curl 那一层已经有 --max-filesize 5MB 兜底，
+		# 这里把阈值降到 2MB（典型订阅 < 100KB，大型机场 < 500KB，2MB 已是 4 倍 headroom）。
+		encoded_size=$(wc -c < "${encoded_file}" 2>/dev/null | tr -d ' ')
+		[ -n "${encoded_size}" ] || encoded_size=0
+		if [ "${encoded_size}" -gt "2097152" ] 2>/dev/null;then
+			echo_date "⚠️订阅响应过大（${encoded_size} 字节，>2MB），疑似机场返回了错误页/重定向页/反爬虫页！已跳过解码，请检查订阅链接。"
+			return 1
+		fi
+		html_head=$(head -c 256 "${encoded_file}" 2>/dev/null | tr -d '\r\n\t \357\273\277' | grep -Eio '^(<!DOCTYPE|<html|<head|<\?xml|<HTML|<HEAD)' | head -n1)
+		if [ -n "${html_head}" ];then
+			echo_date "⚠️订阅响应是 HTML/XML 文档（不是 base64 编码的节点列表），疑似机场返回了登录页/错误页/反爬虫页！已跳过解码，请确认订阅链接正确或更换订阅 UA 后重试。"
+			return 1
+		fi
 		tr -d '\n' < "${encoded_file}" | sed 's/-/+/g;s/_/\//g' | sed 's/$/===/' | base64 -d > "${decoded_file}"
 		if [ "$?" != "0" ];then
 			echo_date "⚠️解析错误！原因：解析后检测到乱码！请检查你的订阅地址！"
@@ -7266,7 +7303,8 @@ download_by_curl(){
 		SUB_LAST_DOWNLOAD_MODE="direct"
 		echo_date "➡️通过本地网络直连下载订阅..."
 		rm -f "${header_file}" >/dev/null 2>&1
-		run /tmp/curl-subscribe -sSk -L ${UA_ARG} -D "${header_file}" --connect-timeout 5 -m 5 --retry 3 --retry-delay 1 "${url_encode}" 2>/dev/null >${DIR}/sub_file_encode_${SUB_LINK_HASH:0:4}.txt
+		# fork (doge.12-alpha.2)：--max-filesize 5MB 限制单条订阅响应大小，防止机场错误页/反爬虫页/二进制垃圾让后续 base64 -d 满吃 CPU。
+		run /tmp/curl-subscribe -sSk -L ${UA_ARG} -D "${header_file}" --connect-timeout 5 -m 5 --max-filesize 5242880 --retry 3 --retry-delay 1 "${url_encode}" 2>/dev/null >${DIR}/sub_file_encode_${SUB_LINK_HASH:0:4}.txt
 		if [ "$?" == "0" ]; then
 			return 0
 		fi
@@ -7278,7 +7316,7 @@ download_by_curl(){
 			SUB_LAST_DOWNLOAD_MODE="proxy"
 			echo_date "✈️使用当前$(get_type_name "$(sub_get_node_field_plain "${CURR_NODE}" type)")节点：[$(sub_get_node_field_plain "${CURR_NODE}" name)]提供的网络下载..."
 			rm -f "${header_file}" >/dev/null 2>&1
-			run /tmp/curl-subscribe -sSk -L ${UA_ARG} -D "${header_file}" --connect-timeout 5 -m 5 -x socks5h://127.0.0.1:23456 --retry 3 --retry-delay 1 "${url_encode}" 2>/dev/null >${DIR}/sub_file_encode_${SUB_LINK_HASH:0:4}.txt
+			run /tmp/curl-subscribe -sSk -L ${UA_ARG} -D "${header_file}" --connect-timeout 5 -m 5 --max-filesize 5242880 -x socks5h://127.0.0.1:23456 --retry 3 --retry-delay 1 "${url_encode}" 2>/dev/null >${DIR}/sub_file_encode_${SUB_LINK_HASH:0:4}.txt
 			return $?
 		else
 			echo_date "⚠️当前$(get_type_name "$(sub_get_node_field_plain "${CURR_NODE}" type)")节点工作异常，结束curl订阅下载！"
@@ -7292,7 +7330,7 @@ download_by_curl(){
 			SUB_LAST_DOWNLOAD_MODE="proxy"
 			echo_date "✈️使用当前$(get_type_name "$(sub_get_node_field_plain "${CURR_NODE}" type)")节点：[$(sub_get_node_field_plain "${CURR_NODE}" name)]提供的网络下载..."
 			rm -f "${header_file}" >/dev/null 2>&1
-			run /tmp/curl-subscribe -sSk -L ${UA_ARG} -D "${header_file}" --connect-timeout 5 -m 5 -x socks5h://127.0.0.1:23456 --retry 3 --retry-delay 1 "${url_encode}" 2>/dev/null >${DIR}/sub_file_encode_${SUB_LINK_HASH:0:4}.txt
+			run /tmp/curl-subscribe -sSk -L ${UA_ARG} -D "${header_file}" --connect-timeout 5 -m 5 --max-filesize 5242880 -x socks5h://127.0.0.1:23456 --retry 3 --retry-delay 1 "${url_encode}" 2>/dev/null >${DIR}/sub_file_encode_${SUB_LINK_HASH:0:4}.txt
 			return $?
 		else
 			local EXT_ARG=""
@@ -7304,7 +7342,7 @@ download_by_curl(){
 		SUB_LAST_DOWNLOAD_MODE="direct"
 		echo_date "⬇️使用常规网络下载..."
 		rm -f "${header_file}" >/dev/null 2>&1
-		run /tmp/curl-subscribe -sSk -L ${UA_ARG} -D "${header_file}" --connect-timeout 5 -m 5 --retry 3 --retry-delay 1 "${url_encode}" 2>/dev/null >${DIR}/sub_file_encode_${SUB_LINK_HASH:0:4}.txt
+		run /tmp/curl-subscribe -sSk -L ${UA_ARG} -D "${header_file}" --connect-timeout 5 -m 5 --max-filesize 5242880 --retry 3 --retry-delay 1 "${url_encode}" 2>/dev/null >${DIR}/sub_file_encode_${SUB_LINK_HASH:0:4}.txt
 		return $?
 	fi
 }

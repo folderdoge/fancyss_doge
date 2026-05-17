@@ -1,5 +1,34 @@
 fancyss Changelog
 
+3.5.28-doge.12-alpha.2（20260517）
+   - fix	订阅 profile 添加/移除 UI 慢一拍 bug。原版 [ss_subscribe_profile.sh](fancyss/scripts/ss_subscribe_profile.sh) 的 save/delete/migrate_legacy 把 `http_response` 放在 `profile_save/delete` 完成之后才发，profile_delete 在 node-tool fallback 时会逐个 `dbus remove fss_node_<id>` 清节点，~100 节点要 1-2 分钟，AJAX 必定超时弹"删除订阅配置失败"，1-2 分钟后才真正删掉。
+   - update	delete / migrate_legacy 改 fire-first 模式：set_lock → http_response → 实际工作，对齐 [ss_node_subscribe.sh](fancyss/scripts/ss_node_subscribe.sh) case 0/1/2/3/4 的现有模式，前端立即返回，节点清理在后台异步跑。
+   - update	save 保留同步语义（payload 缺失/URL 重复/URL 非法等同步快速失败必须前置反馈），但拆分 `subprof_rebuild_cron_jobs` 到 case 块（http_response 之后）跑，让 cron 重建不阻塞 AJAX。
+   - fix	某些机场订阅链接让 base64 -d 进程长期占 25% CPU "卡死" bug。根因：[ss_node_subscribe.sh:2124](fancyss/scripts/ss_node_subscribe.sh) `sub_prepare_decoded_file` + [ss_node_subscribe.sh:1389](fancyss/scripts/ss_node_subscribe.sh) `sub_validate_downloaded_payload_legacy` 把 curl 拉到的整个 payload 文件灌给 `base64 -d`/`dec64`，机场返回 HTML 错误页/反爬虫页/验证码页/二进制垃圾时（v2rayN UA 不被识别等场景），busybox base64 单核满吃 CPU 跑数十秒至数分钟。
+   - update	curl 4 处下载（直连/代理/混合模式）全部加 `--max-filesize 5242880`（5MB），与典型订阅 < 100KB 比有 50 倍 headroom，5MB 之上直接 curl 拒绝。
+   - update	`sub_prepare_decoded_file` 入 base64 -d 前加 2MB size 闸门 + HTML/XML magic-byte 检测（覆盖 `<!DOCTYPE` / `<html` / `<head` / `<?xml` 大小写各两套 + UTF-8 BOM 兼容），疑似错误页直接 return 1 + echo_date 友好错误。
+   - update	`sub_validate_downloaded_payload_legacy` 顶部加同样的 2MB + HTML 检测；line 1389 `dec64 $(cat ${payload_file})` 改为 `dec64 "$(head -c 65536 ${payload_file})"`，验证 base64 合法性只看头 64KB 既防 ARG_MAX 也防 CPU 灾难。
+   - test	所有改动通过 4 轮 subagent reviewer（3 个并行 + 1 个端到端），覆盖 10 个端到端场景：正常订阅 / 大 clash-yaml / 极大订阅被 reject / HTML 错误页被拦 / UTF-8 BOM+HTML / URL 重复添加 / 正常添加 / 删除 100 节点 profile / curl 大文件被中断 / 4MB 二进制垃圾被 reject。
+   - note	（背景）本次 fix 与 doge.12-alpha.1 的分流架构骨架代码同包发布，分流功能默认 `ss_split_enabled=0` 仍走旧路由，老用户零感知；只想拿到上面两个 bug fix 的用户可放心升级。
+
+3.5.28-doge.12-alpha.1（20260515）
+   - note	doge.12 分流架构骨架落地（alpha 测试版，默认未启用）。设计定稿见 [doc/design/split-routing-architecture.md](doc/design/split-routing-architecture.md)，实施合同见 [doc/implementation/split-routing-implementation.md](doc/implementation/split-routing-implementation.md)。核心策略 fork-not-replace：所有路由层函数（start_xray / start_chinadns_ng / flush_ipset / load_iptables / apply_ss）入口加 `if [ "${ss_split_enabled}" = "1" ]; then ...新路径...; else ...旧路径...; fi`，旧路径 byte-for-byte 保留。alpha 用户主动 opt-in 测试。
+   - update	[install.sh](fancyss/install.sh) +328 行 `migrate_split_routing_v1`：写入 8 个内置 Rule（白名单/CN直连/IP直连等）+ 2 个内置 Mode（"上游 fancyss 默认"+"小白模式"）+ dbus key 迁移（旧 ssconf_basic_node / ssconf_basic_node_front 不删，仅旁路新 split key）。
+   - update	[ssconfig.sh](fancyss/ss/ssconfig.sh) +997 行：chinadns-ng 双轨生成器（per-Rule tag + chnlist/gfwlist 优先级保留）/ xray sniffing-based 路由生成器 / load_iptables_split / flush_ipset_split / 7 个 fork 注入点。
+   - update	[Module_shadowsocks.asp](fancyss/webs/Module_shadowsocks.asp) +282 行：show_btn11 + tablet_11 实验性 tab + 4 个 section（总开关/Rule 列表/Mode 列表/per-User 绑定）。
+   - update	新脚本 [fss_rules_update.sh](fancyss/scripts/fss_rules_update.sh) +411 行：cron 自动更新内置 Rule + 锁防并发 + batched restart。
+   - update	[ss-menu.js](fancyss/res/ss-menu.js) hint 210-218 占用（doge.13+ 起新 hint 从 220 开始）。
+   - note	实施过程：4 个 opus subagent 并行落地 + 4 轮 opus 审查 + 3 个 BLOCKER 修复（索引 1-indexed 写 vs 0-indexed 读 / xray-test 失败不回滚 / dnsmasq 让位 65355 未接线降级 WARN）。
+   - note	已知 alpha 限制：per-rule 链式代理回退主节点 outbound / 编辑/删除 Mode/Rule 无 UI 弹窗（需 SSH + dbus）/ 分流 DNS upstream 文本框暂不接线 / LAN hostname 解析在 split 模式可能静默失败。
+   - test	`bash -n` 通过所有改动 shell 脚本；fork 注入点 grep 验证旧路径 byte-for-byte 保留。
+
+3.5.28-doge.11（20260516）
+   - update	G1+R1: 拆 [ssconfig.sh](fancyss/ss/ssconfig.sh) 中 `ip_lan` 为 `ip_lan_reserve`（RFC1918/保留段，硬编码必留）+ `ip_lan_chndns`（10 个国内公共 DNS IP，受新 dbus key `ss_basic_direct_chndns` 开关控制，默认 1 = 直连）。
+   - update	G6: worldtimeapi / ddnsto / clang / akamai / myip 5 个第三方 IP 检测源由新 dbus key `ss_basic_online_ipcheck` 统一开关（默认 1 = 启用）；关闭时跳过 `close_in_five` 警告 + 5.3/5.4 属地判断 nil-guard。
+   - fix	doge.9 残留 bug：`ss_basic_direct_asusgo` / `ss_basic_direct_chndns` / `ss_basic_online_ipcheck` 三个 select 控件之前未挂到 asp `params_input` 数组，导致 UI 切换值不写 dbus（asusgo 自 doge.9 发布以来一直没工作过——用户切了开关但后端读到的永远是默认值）。已 CLAUDE.md 立硬规则：新加 asp select 必须挂 `params_input`。
+   - update	Y4: [ss_rule_update.sh](fancyss/scripts/ss_rule_update.sh) 加 TODO 注释，标记 doge.13 切换到 fork 自建 rules_ng 镜像（避免依赖上游 hq450 的 GitHub 仓库节奏）。
+   - update	文档勘误：[doc/implementation/asusgo-whitelist-toggle.md](doc/implementation/asusgo-whitelist-toggle.md) 修正关于 worldtimeapi.org "代码无引用"的错误（实际 ssconfig.sh:264 在用）+ 补 doge.11 的 ss_basic_online_ipcheck 专属开关说明；[doc/design/protocol-roadmap.md](doc/design/protocol-roadmap.md) §7 对齐实际实现（dbus key 名 chinadns→chndns / online_check→online_ipcheck / 变量名 _reserved/_china_dns→_reserve/_chndns / UI 位置）。
+
 3.5.28-doge.10.1（20260515）
    - fix	hotfix：修复 doge.10 升级后「添加节点」/「编辑节点」按钮无响应弹窗的问题。doge.10 砍 SSR/Naïve/Tuic 时把 `<td id="ssrTitle"/"naiveTitle"/"tuicTitle">` 三个 tab 用 HTML 注释包掉，但 [Module_shadowsocks.asp](fancyss/webs/Module_shadowsocks.asp) 中 `tabclickhandler()` 和 `node_edit_btn` 的 click handler 仍有 24 处 `E('ssrTitle').className = ...` / `.style.display = ...` 引用——`E()` 返回 `null`、`null.property = ...` 抛 `TypeError` 中断弹窗逻辑。修补：在 [Module_shadowsocks.asp:9089](fancyss/webs/Module_shadowsocks.asp#L9089) 注入一段 DOM stub，DOM ready 时为 3 个被删 id 创建隐形 `<span>` 占位元素，所有遗留 `E()` 引用静默生效。一处修复 24 个崩点。
 

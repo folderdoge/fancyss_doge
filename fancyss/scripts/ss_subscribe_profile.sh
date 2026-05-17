@@ -151,6 +151,8 @@ profile_remove_bound_nodes() {
 }
 
 profile_save() {
+	# fork (doge.12-alpha.2)：拆出 cron 重建。save 分支需要同步返回成败（URL 重复/payload 缺失等
+	# 必须即时反馈给前端），但 cron 重建慢且不影响用户感知，调用方负责在 http_response 之后再跑。
 	local payload_json=""
 	local profile_id=""
 
@@ -163,7 +165,6 @@ profile_save() {
 		profile_log "保存订阅配置失败，请检查别名和订阅链接。"
 		return 1
 	fi
-	subprof_rebuild_cron_jobs >/dev/null 2>&1 || true
 	profile_log "订阅配置已保存：${profile_id}"
 	return 0
 }
@@ -209,9 +210,12 @@ fi
 
 case "${ACTION}" in
 save)
+	# fork (doge.12-alpha.2)：profile_save 同步跑（payload/URL/dedup 校验 + dbus 写入），失败 exit 1 让前端
+	# 立即弹"保存订阅配置失败"。成功后 fire http_response，cron 重建放后面跑（前端 AJAX 已返回）。
 	true > "${LOG_FILE}"
 	if profile_save >> "${LOG_FILE}" 2>&1; then
 		[ "${WEB_ACTION}" = "1" ] && http_response "$1"
+		subprof_rebuild_cron_jobs >/dev/null 2>&1 || true
 		echo XU6J03M6 >> "${LOG_FILE}"
 	else
 		echo XU6J03M6 >> "${LOG_FILE}"
@@ -221,9 +225,11 @@ save)
 	profile_cleanup_tmp_keys
 	;;
 delete)
+	# fork (doge.12-alpha.2)：http_response 前置。profile_remove_bound_nodes 在 node-tool fallback 时
+	# 会逐个 dbus remove fss_node_<id>，~100 节点要数十秒到 1-2 分钟，原先 AJAX 必超时弹"删除订阅配置失败"。
 	true > "${LOG_FILE}"
+	[ "${WEB_ACTION}" = "1" ] && http_response "$1"
 	if profile_delete >> "${LOG_FILE}" 2>&1; then
-		[ "${WEB_ACTION}" = "1" ] && http_response "$1"
 		echo XU6J03M6 >> "${LOG_FILE}"
 	else
 		echo XU6J03M6 >> "${LOG_FILE}"
@@ -233,9 +239,10 @@ delete)
 	profile_cleanup_tmp_keys
 	;;
 migrate_legacy)
+	# fork (doge.12-alpha.2)：http_response 前置，与 save/delete 保持一致的 fire-first 模式。
 	true > "${LOG_FILE}"
+	[ "${WEB_ACTION}" = "1" ] && http_response "$1"
 	if profile_migrate_legacy >> "${LOG_FILE}" 2>&1; then
-		[ "${WEB_ACTION}" = "1" ] && http_response "$1"
 		echo XU6J03M6 >> "${LOG_FILE}"
 	else
 		echo XU6J03M6 >> "${LOG_FILE}"
