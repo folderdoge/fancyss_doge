@@ -1334,6 +1334,25 @@ sub_validate_downloaded_payload_with_tool(){
 	esac
 }
 
+sub_payload_looks_like_base64(){
+	# fork (doge.12-alpha.9)：base64 字母表纯度闸门。
+	# 触发场景：alpha.2 已经堵住"HTML / XML 错误页"和"≥2MB 二进制垃圾"两类输入，
+	# 但仍有一类机场会返回纯 UTF-8 中文提示文本（如"请登录系统网站后台..."），
+	# 161 字节 / Content-Type: text/html / 无任何 HTML 标签——双重防御全部漏过，
+	# 紧接着 `busybox base64 -d` 收到带高位字节的"伪 base64"输入后单核 25% CPU 死循环
+	# （实测 v1.25.1 ARMv7 + 161 字节中文输入 > 4 秒不退出，0 字节产出）。
+	# 这里强制要求：前 8KB 采样，剥掉 RFC 4648 base64 字母表 + URL-safe 别名 + 填充 +
+	# 空白后，必须不剩任何字符；剩任何字节（高位 UTF-8、控制字符、汉字、标点等）
+	# 都直接判定为"不是 base64"，跳过解码。
+	# 采 8KB 而不是整文件：典型订阅 < 100KB，开头 8KB 已经足够判断纯度；扫整文件浪费 CPU。
+	local file="$1"
+	local sample_size=8192
+	local non_b64
+	[ -f "${file}" ] || return 1
+	non_b64=$(head -c "${sample_size}" "${file}" 2>/dev/null | LC_ALL=C tr -d 'A-Za-z0-9+/=\-_\r\n\t ')
+	[ -z "${non_b64}" ]
+}
+
 sub_validate_downloaded_payload_legacy(){
 	local sub_link="$1"
 	local short_hash="$2"
@@ -1359,6 +1378,10 @@ sub_validate_downloaded_payload_legacy(){
 	html_head=$(head -c 256 "${payload_file}" 2>/dev/null | tr -d '\r\n\t \357\273\277' | grep -Eio '^(<!DOCTYPE|<html|<head|<\?xml|<HTML|<HEAD)' | head -n1)
 	if [ -n "${html_head}" ]; then
 		echo_date "⚠️订阅响应是 HTML/XML 文档（不是 base64 编码的节点列表），疑似机场返回了登录页/错误页/反爬虫页！已跳过验证。"
+		return 1
+	fi
+	if ! sub_payload_looks_like_base64 "${payload_file}"; then
+		echo_date "⚠️订阅响应包含非 base64 字符（疑似机场返回了纯文本错误提示/登录提示/反爬虫文本），已跳过验证。"
 		return 1
 	fi
 
@@ -2156,6 +2179,12 @@ sub_prepare_decoded_file(){
 		html_head=$(head -c 256 "${encoded_file}" 2>/dev/null | tr -d '\r\n\t \357\273\277' | grep -Eio '^(<!DOCTYPE|<html|<head|<\?xml|<HTML|<HEAD)' | head -n1)
 		if [ -n "${html_head}" ];then
 			echo_date "⚠️订阅响应是 HTML/XML 文档（不是 base64 编码的节点列表），疑似机场返回了登录页/错误页/反爬虫页！已跳过解码，请确认订阅链接正确或更换订阅 UA 后重试。"
+			return 1
+		fi
+		# fork (doge.12-alpha.9)：与 sub_validate_downloaded_payload_legacy 对齐的第三道闸门——base64 字母表纯度检查。
+		# 见 sub_payload_looks_like_base64 函数顶部注释；这里捕获验证器没识别（kind=unknown）然后透传到解码阶段的纯文本错误页。
+		if ! sub_payload_looks_like_base64 "${encoded_file}";then
+			echo_date "⚠️订阅响应包含非 base64 字符（疑似机场返回了纯文本错误提示/登录提示/反爬虫文本），已跳过解码。"
 			return 1
 		fi
 		tr -d '\n' < "${encoded_file}" | sed 's/-/+/g;s/_/\//g' | sed 's/$/===/' | base64 -d > "${decoded_file}"
