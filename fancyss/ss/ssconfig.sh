@@ -2255,7 +2255,8 @@ generate_chinadns_split_conf() {
 		bind-port ${SS_SPLIT_DNS_SPLIT_PORT}@udp
 
 		proxy-server socks5://127.0.0.1:23456
-		proxy-group gfw,black,router
+		# 只让 gfw 一档走代理（split 路径下未定义 black/router 这俩 user group）
+		proxy-group gfw
 		proxy-protocol tcp,tls
 
 		# 国内上游
@@ -2289,6 +2290,17 @@ generate_chinadns_split_conf() {
 		[ -n "${ld}" ] && echo "${ld}"
 	} > /tmp/fss_split_lan_dnl.txt
 
+	# 节点服务器域名直连解析（避免 trust-dns 鸡生蛋：trust-dns 走 xray socks5，
+	# 而 xray 起来需要先解析节点域名 → 死锁。沿用老 chinadns_ng.conf 的 group node 模式）
+	if [ -s /tmp/ss_node_domains.txt ]; then
+		cat >> "${conf}" <<-EOF
+			group node
+			group-dnl /tmp/ss_node_domains.txt
+			group-upstream ${CDNS_LINE}
+
+		EOF
+	fi
+
 	# reject group（动态收集 dns_mode=split 中 reject 动作的域名）
 	local reject_file="/tmp/fss_split_reject_dnl.txt"
 	ss_split_collect_reject_domains > "${reject_file}" 2>/dev/null
@@ -2318,8 +2330,9 @@ generate_chinadns_split_conf() {
 		# 过滤 dns
 		filter-qtype 64,65
 
-		# hosts
-		hosts /etc/hosts
+		# 不挂 hosts /etc/hosts：路由器 /etc/hosts 经常出现下划线/末尾点等
+		# 非 RFC 1035 主机名（如华硕 TUF-AX3000_V2-48E0），chinadns-ng 严格解析
+		# 会 invalid domain 报错并退出。LAN 名字解析交给 group lan → dnsmasq。
 
 		# dns 缓存
 		cache 8192
@@ -2360,14 +2373,17 @@ generate_chinadns_global_conf() {
 		bind-port ${SS_SPLIT_DNS_GLOBAL_PORT}@udp
 
 		proxy-server socks5://127.0.0.1:23456
-		proxy-group trust
+		# global 模式：所有未匹配域名 → tag=gfw → trust-dns（走代理）
+		# 不能写 proxy-group trust——chinadns-ng 里没有 trust 这个 tag/group
+		proxy-group gfw
 		proxy-protocol tcp,tls
 
 		# 单一海外可信上游（通过代理走）
 		trust-dns ${FDNS_LINE}
 
-		# 不挂 chnlist/gfwlist，所有域名默认走 trust（除 LAN/reject）
-		default-tag none
+		# 全局代理：所有未匹配域名打 gfw tag，全部交给 trust-dns 走代理
+		# （default-tag none 是"同时查 china+trust"，并非"全走 trust"，语义不对）
+		default-tag gfw
 
 		# LAN 域名 → dnsmasq fallback
 		group lan
@@ -2389,7 +2405,7 @@ generate_chinadns_global_conf() {
 
 	cat >> "${conf}" <<-EOF
 		filter-qtype 64,65
-		hosts /etc/hosts
+		# 不挂 hosts /etc/hosts：理由同 generate_chinadns_split_conf
 		cache 4096
 		cache-stale 86400
 		verdict-cache 4096
@@ -2416,18 +2432,32 @@ start_chinadns_ng_split() {
 		return 1
 	fi
 	echo_date "⚡️ 启动分流 chinadns-ng 实例 @127.0.0.1:${SS_SPLIT_DNS_SPLIT_PORT} ..."
-	env -i PATH=${PATH} chinadns-ng -C /tmp/chinadns_ng_split.conf >/dev/null 2>&1 &
+	rm -f /tmp/chinadns_split_err.log /tmp/chinadns_global_err.log >/dev/null 2>&1
+	env -i PATH=${PATH} chinadns-ng -C /tmp/chinadns_ng_split.conf >/tmp/chinadns_split_err.log 2>&1 &
 	echo_date "⚡️ 启动全局 chinadns-ng 实例 @127.0.0.1:${SS_SPLIT_DNS_GLOBAL_PORT} ..."
-	env -i PATH=${PATH} chinadns-ng -C /tmp/chinadns_ng_global.conf >/dev/null 2>&1 &
+	env -i PATH=${PATH} chinadns-ng -C /tmp/chinadns_ng_global.conf >/tmp/chinadns_global_err.log 2>&1 &
 	sleep 1
-	if pidof chinadns-ng >/dev/null 2>&1; then
+	# alpha 诊断：分别检查两个端口是否在 LISTEN，而不是只看 pidof（pidof 任一活着都会过）
+	local split_up=0 global_up=0
+	netstat -lnup 2>/dev/null | grep -q ":${SS_SPLIT_DNS_SPLIT_PORT}\b" && split_up=1
+	netstat -lnup 2>/dev/null | grep -q ":${SS_SPLIT_DNS_GLOBAL_PORT}\b" && global_up=1
+	if [ "${split_up}" = "1" ] && [ "${global_up}" = "1" ]; then
 		dbus set ss_split_dns_split_status="ok"
 		dbus set ss_split_dns_global_status="ok"
 		echo_date "🆗 chinadns-ng 双实例启动完成。"
 	else
-		dbus set ss_split_dns_split_status="down"
-		dbus set ss_split_dns_global_status="down"
-		echo_date "❌ chinadns-ng 双实例启动失败！"
+		[ "${split_up}" = "1" ] && dbus set ss_split_dns_split_status="ok" || dbus set ss_split_dns_split_status="down"
+		[ "${global_up}" = "1" ] && dbus set ss_split_dns_global_status="ok" || dbus set ss_split_dns_global_status="down"
+		echo_date "❌ chinadns-ng 双实例启动失败！(split=${split_up} global=${global_up})"
+		# alpha 诊断：把 stderr 内容回显到 WebUI 日志，方便定位配置错
+		if [ -s /tmp/chinadns_split_err.log ]; then
+			echo_date "--- 分流实例错误输出 ---"
+			while IFS= read -r line; do echo_date "  ${line}"; done < /tmp/chinadns_split_err.log
+		fi
+		if [ -s /tmp/chinadns_global_err.log ]; then
+			echo_date "--- 全局实例错误输出 ---"
+			while IFS= read -r line; do echo_date "  ${line}"; done < /tmp/chinadns_global_err.log
+		fi
 	fi
 	echo_date "------------------------------------------------------------------"
 }
@@ -5171,6 +5201,7 @@ generate_xray_json_split() {
 		sniff_blocks="${sniff_blocks}$(cat <<EOF
 {
   "tag": "mode_${mid}",
+  "listen": "0.0.0.0",
   "port": ${port},
   "protocol": "dokodemo-door",
   "settings": { "network": "${network}", "followRedirect": true },
@@ -5222,10 +5253,15 @@ EOF
 		esac
 
 		# §4.4 #1: RFC1918 / loopback → out_direct
+		# 注意：不能用 "geoip:private"——xray 加载该标记需要 geoip.dat 文件存在于
+		# /data/geoip.dat 或 XRAY_LOCATION_ASSET 指定的目录，fancyss 默认包没带这个
+		# 文件，所以 xray -test 会以 "failed to open file: geoip.dat" 失败 → split
+		# 改造整体回滚到老路径 → LAN 客户端 TCP/UDP 全废。alpha.8 实地踩到这个坑。
+		# 改用显式 RFC1918 + RFC6598(CGNAT) + RFC3927(link-local) 等 CIDR。
 		__split_emit_rule "$(jq -n --arg tag "mode_${mid}" '{
 			type: "field",
 			inboundTag: [$tag],
-			ip: ["geoip:private","127.0.0.0/8","169.254.0.0/16","224.0.0.0/4","240.0.0.0/4"],
+			ip: ["10.0.0.0/8","172.16.0.0/12","192.168.0.0/16","100.64.0.0/10","127.0.0.0/8","169.254.0.0/16","224.0.0.0/4","240.0.0.0/4","0.0.0.0/8"],
 			outboundTag: "out_direct"
 		}')"
 
@@ -5293,9 +5329,14 @@ EOF
 	         --argjson appendOb "${outb_appends}" \
 	         --slurpfile rules "${routing_rules_file}" \
 	         '
-	           # 保留 socks-inbound (port 23456) 与 DNS-relay 入站，替换 dokodemo-door
+	           # 只删除新生成器自己写的 dokodemo-door 入站（tag 以 mode_ 开头），
+	           # 保留基线 xray.json 已有的其他入站（socks:23456 + dns_udp_1055
+	           # DNS-relay 入站等）。旧代码靠 "port==23456" 白名单太狭窄——
+	           # dns_udp_1055 也是 dokodemo-door 但 port=1055，会被误删，
+	           # 导致 chinadns-ng 的 trust-dns 第一个上游 udp://127.0.0.1#1055
+	           # 拿不到响应 → LAN 客户端 DNS 全超时（alpha.8 实地踩到）。
 	           .inbounds = (
-	             [ .inbounds[] | select(.protocol != "dokodemo-door" or (.port // 0) == 23456) ]
+	             [ .inbounds[] | select(.protocol != "dokodemo-door" or ((.tag // "") | startswith("mode_") | not)) ]
 	             + $sniff
 	           )
 	           # 给主 outbound (originally outbounds[0]) 改 tag 为 out_main
@@ -5365,7 +5406,17 @@ start_xray() {
 		fi
 	fi
 	# FORK doge.12 alpha: 在 split 路径下用新生成器改造基线 xray.json
-	if [ "${ss_split_enabled}" = "1" ] && [ -d /koolshare/ss/rules_user ]; then
+	# rules_user 目录不存在时自动 mkdir 兜底——install.sh 的 seed_rules_user_dir
+	# 是 install-time 一次性，被 migrate_split_routing_v1 的 idempotent 守卫保护，
+	# 若用户在路由器上误删目录（或 jffs 出问题），dbus 标志位仍是 1，迁移不再重跑
+	# 会让 split 整段静默跳过。alpha.8 实地踩过这个坑。
+	# mode 内 rule_count=0 时不需要任何 rule 文件，所以目录存在即可，无需重 seed。
+	if [ "${ss_split_enabled}" = "1" ]; then
+		if [ ! -d /koolshare/ss/rules_user ]; then
+			echo_date "⚠️ split: /koolshare/ss/rules_user 目录不存在，自动创建（若曾装过 doge.12，install.sh 应该建过；可能是被误删或文件系统问题）"
+			mkdir -p /koolshare/ss/rules_user 2>/dev/null
+			chmod 755 /koolshare/ss/rules_user 2>/dev/null
+		fi
 		if ! generate_xray_json_split; then
 			echo_date "⚠️ split: 新生成器失败，回退到基线 xray.json + 旧链式注入。"
 		fi
@@ -7043,6 +7094,17 @@ load_iptables_split() {
 
 	# 主 SHADOWSOCKS chain (mangle, TPROXY 路径)
 	ensure_chain mangle SHADOWSOCKS
+	# TPROXY 必备的 socket-match 豁免：已被本地 xray socket 接管的连接的后续包
+	# 必须打 fwmark 走 table 310 → lo 走完本地协议栈，不能再被 mangle PREROUTING
+	# 重新 TPROXY 重定向（否则 TCP 三次握手的 SYN-ACK 又被抓回 TPROXY，新 socket
+	# 找不到对应连接 → 握手永远不完成）。
+	# 老 fancyss 路径 TCP 走 NAT REDIRECT 不需要这条，所以历史代码里没有；
+	# split 路径让 xray 自己 TPROXY listen TCP+UDP，缺这条 LAN TCP/UDP 全废。
+	ensure_chain mangle SHADOWSOCKS_DIVERT
+	append_if_not_exists mangle -A SHADOWSOCKS_DIVERT -j MARK --set-xmark 0x07/0x07
+	append_if_not_exists mangle -A SHADOWSOCKS_DIVERT -j ACCEPT
+	append_if_not_exists mangle -A SHADOWSOCKS -p tcp -m socket -j SHADOWSOCKS_DIVERT
+	append_if_not_exists mangle -A SHADOWSOCKS -p udp -m socket -j SHADOWSOCKS_DIVERT
 	# 提前 RETURN：保留 IP 段
 	append_if_not_exists mangle -A SHADOWSOCKS -m set --match-set ignlist_minimal dst -j RETURN
 	append_if_not_exists mangle -A SHADOWSOCKS -p udp --dport 123 -j RETURN  # NTP 例外，避免时间同步被代理
@@ -7083,8 +7145,12 @@ load_iptables_split() {
 
 	# DNS 劫持：per-MAC DNAT 到对应 mode 的 chinadns 实例端口
 	if [ "${ss_basic_dns_hijack}" = "1" ]; then
+		# DNAT 到 127.0.0.1 必须开 route_localnet，否则内核当 martian 丢弃 LAN 进来的包。
+		# 老路径 DNAT 到 br 接口 IP（不是环回）所以不需要这条；split 直接 DNAT 到 127.0.0.1。
+		echo 1 >/proc/sys/net/ipv4/conf/all/route_localnet 2>/dev/null
 		for VLAN_INDEX in $VLAN_INDEXS
 		do
+			echo 1 >/proc/sys/net/ipv4/conf/br${VLAN_INDEX}/route_localnet 2>/dev/null
 			ensure_chain nat SHADOWSOCKS_DNS_${VLAN_INDEX}
 		done
 
@@ -8257,6 +8323,22 @@ apply_ss() {
 	check_status
 	if [ "${ss_basic_mode}" = "7" ] && [ "${ss_basic_shunt_hot_reload}" = "1" ] && [ -x "/koolshare/scripts/ss_shunt_hot_reload.sh" ]; then
 		sh /koolshare/scripts/ss_shunt_hot_reload.sh seed >/dev/null 2>&1 || true
+	fi
+	# split 路径诊断（alpha 阶段保留，doge.13 转默认开启时移除或加开关守护）：
+	# xray inbound TPROXY 端口是否真在 listen，方便实机定位 "iptables TPROXY 计数有但客户端不通"。
+	if [ "${ss_split_enabled}" = "1" ]; then
+		sleep 1
+		local _split_listen=$(netstat -lntup 2>/dev/null | grep -E "[: ](13333|13334|13335|13336|23456)\b" | head -10)
+		if [ -n "${_split_listen}" ]; then
+			echo_date "🔎 split 诊断: xray 监听端口 ↓"
+			echo "${_split_listen}" | while IFS= read -r _line; do echo_date "    ${_line}"; done
+		else
+			echo_date "⚠️ split 诊断: 未探测到 xray 在 13333~13336/23456 上 listen，xray 可能 inbound 启动失败"
+			if [ -f /tmp/upload/xray.log ]; then
+				echo_date "    /tmp/upload/xray.log 尾部 ↓"
+				tail -8 /tmp/upload/xray.log 2>/dev/null | while IFS= read -r _line; do echo_date "    ${_line}"; done
+			fi
+		fi
 	fi
 	# store current status
 	dbus set ss_basic_status="1"

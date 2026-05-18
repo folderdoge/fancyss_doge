@@ -6816,7 +6816,8 @@ function split_v2_b64_decode(v) {
 	try { return Base64.decode(v); } catch (e) { return ''; }
 }
 function render_split_enabled_state() {
-	var v = db_ss['ss_split_enabled'] || '0';
+	// 优先读 DOM 当前值（用户刚切但还没保存），DOM 不存在再 fall back 到 db_ss 快照
+	var v = (E('ss_split_enabled') && E('ss_split_enabled').value) || db_ss['ss_split_enabled'] || '0';
 	var $s = $('#ss_split_enabled_state');
 	if (v == '1') {
 		$s.html("<span style='color:#22ab39;'>● 新架构已启用（重启代理后生效）</span>");
@@ -6934,7 +6935,9 @@ function refresh_split_status_only() {
 function render_split_runtime_status() {
 	var $el = $('#ss_split_runtime_status');
 	if (!$el.length) return;
-	var enabled = db_ss['ss_split_enabled'] == '1';
+	// 优先读 DOM 当前值，理由同 render_split_enabled_state
+	var enabledVal = (E('ss_split_enabled') && E('ss_split_enabled').value) || db_ss['ss_split_enabled'] || '0';
+	var enabled = enabledVal == '1';
 	if (!enabled) {
 		$el.html('<span style="color:#888;">(新架构未启用)</span>');
 		return;
@@ -6986,7 +6989,9 @@ function split_v2_delete_rule(r) {
 	alert('alpha 第一稿：删除 Rule #' + id + ' (' + name + ') 暂未实现。\\n\\nTODO(doge.12-alpha): 需检查引用计数（如被 Mode 引用则禁止删除）。');
 }
 // 总开关变化时刷新提示行
-$(function(){ $(document).on('change', '#ss_split_enabled', function(){ db_ss['ss_split_enabled'] = $(this).val(); render_split_enabled_state(); render_split_runtime_status(); }); });
+// 注意：绝不能在这里写 db_ss['ss_split_enabled'] = $(this).val()——会污染 save() 的差分基线，
+// 导致 compfilter 认为"没变化"而把这个 key 从 post_dbus 里踢掉（doge.12-alpha.3 的 bug 根因）。
+$(function(){ $(document).on('change', '#ss_split_enabled', function(){ render_split_enabled_state(); render_split_runtime_status(); }); });
 // ============ FORK doge.12 alpha 分流 JS 区块结束 ============
 // ============ 折叠区块：落地节点 / 前置节点 配置展示 ============
 var propsCollapseState = { landing: 1, front: 1 };

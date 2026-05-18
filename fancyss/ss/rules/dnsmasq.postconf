@@ -26,7 +26,14 @@ fancyss_mod(){
 		pc_insert "dhcp-option" "dhcp-option=option:dns-server,0.0.0.0" ${CONFIG}
 	else
 		pc_replace "cache-size=1500" "cache-size=9999" ${CONFIG}
-		pc_insert "no-poll" "server=127.0.0.1#7913" ${CONFIG}
+		# FORK doge.12 alpha: split 架构下 chinadns-ng 监听端口从 7913 改为 65353
+		# （split 实例。global 实例 65354 走 iptables redirect，不是 dnsmasq 上游）。
+		# 不动则 dnsmasq 上游永远指向 7913 → 新架构下无人监听 → 路由器本机解析全炸。
+		if [ "$(dbus get ss_split_enabled)" == "1" ];then
+			pc_insert "no-poll" "server=127.0.0.1#65353" ${CONFIG}
+		else
+			pc_insert "no-poll" "server=127.0.0.1#7913" ${CONFIG}
+		fi
 		pc_insert "no-poll" "no-resolv" ${CONFIG}
 	fi
 }
