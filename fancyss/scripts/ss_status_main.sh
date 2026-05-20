@@ -238,6 +238,8 @@ failover_action(){
 		[ "$FLAG" == "1" ] && LOGM "$LOGTIME1 fancyss：检测到连续$ss_failover_s1个状态故障，重启插件！"
 		[ "$FLAG" == "2" ] && LOGM "$LOGTIME1 fancyss：检测到最近$ss_failover_s2_1个状态中，故障次数超过$ss_failover_s2_2个，重启插件！"
 		[ "$FLAG" == "3" ] && LOGM "$LOGTIME1 fancyss：检测到最近$ss_failover_s3_1个状态平均延迟:$PING超过$ss_failover_s3_2 ms，重启插件！"
+		# alpha.17 修：标记内部 restart，防止 ssconfig.sh 入口清掉 failover combo 的 failed 标志
+		dbus set fss_failover_internal_restart="2"
 		# 重启
 		run start-stop-daemon -S -q -b -x /koolshare/ss/ssconfig.sh -- restart
 	elif [ "$ss_failover_s4_1" == "2" ];then

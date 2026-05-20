@@ -3,6 +3,13 @@
 > **状态**：alpha 骨架实施期文档。**会随实施进度持续更新**。
 > 关联设计：[../design/split-routing-architecture.md](../design/split-routing-architecture.md)
 > 关联路线图：[../design/protocol-roadmap.md §8](../design/protocol-roadmap.md)
+>
+> **冷开必读** —— 历史 alpha 修订与已知漂移在 §6.2（D1-D15）：
+> - D9 = alpha.13/.14 `ss_split_rule_to_json` ARG_MAX + awk O(n²) 双修
+> - D10 = alpha.15 chinadns-ng DNS 层 reject 整套删除（伪语法）
+> - D11 = alpha.16 Mode 级 `block_quic` / `udp_proxy` 接通 iptables 层
+> - **D12-D15** = alpha.17 Agent A 深度审计发现的 4 条 latent issue，alpha 阶段被 out_main collapse 掩盖、doge.13 解除 collapse 时**必须**全部兑现（stale 节点 ID / mode=7 preflight / 订阅删节点未清 split rule action / 空 cur_node 烘焙 trailing colon）
+> 文末「修订记录」按时间倒序列出版本里程碑。
 
 ---
 
@@ -233,9 +240,11 @@ fancyss/                                  # 仓库内
 **ssconfig.sh 路由层**（B）：
 - `proxy_node:X` 当 X 不是当前 `ssconf_basic_node` 时，xray 生成器折回 `out_main`（不构建独立 outbound）。理由：跨节点 outbound 构建要复用所有协议 creat_*_json，alpha 不做。
 - `proxy_chain:Y:X` per-rule 链式 alpha 不支持，回退 `out_main` 并继续走主节点链式 (fss_chain_apply)。
-- `block_quic` Mode 级开关 alpha 在 iptables 层不实现（xray sniffing 已能识别 QUIC SNI 但无 DROP；doge.13 加 `iptables -A SHADOWSOCKS -p udp --dport 443 -j DROP`）。
+- ~~`block_quic` Mode 级开关 alpha 在 iptables 层不实现（xray sniffing 已能识别 QUIC SNI 但无 DROP；doge.13 加 `iptables -A SHADOWSOCKS -p udp --dport 443 -j DROP`）。~~ **alpha.16 已兑现 → 详见 §6.2 D11**；`udp_proxy` Mode 级开关同时兑现。
 - active Mode 判定粗放：alpha 把"内置 Mode + default Mode"都激活，不严格按 acl 引用过滤。
 - 单条 dbus 调用 fork 多个 jq 子进程，50 mode × 10 rule 量级启动 ~3s。alpha 接受。
+- **acl per-Mode 路由层不兑现**（alpha.11 文档化 / 修 C-CRIT-7）：合同 §1.4 定义 `ss_acl_split_mode_<acl_node>` = 每个 acl 行分配的 Mode.id（0 = 不走代理）。`install.sh::migrate_split_routing_v1` 写入、`Module_shadowsocks.asp` 展示并支持删除 Mode 时清零，但 **`ssconfig.sh::load_iptables_split` 完全不读取** —— alpha 阶段所有客户端无差别走 `ss_split_default_mode_id` 指定的 default Mode。后果：访问控制里给每个 MAC 选的 Mode 在 alpha 完全不生效。doge.13 兑现方案：`load_iptables_split` 读 `ss_acl_split_mode_<i>` → per-MAC fwmark → per-Mark iptables 跳转到对应 Mode TPROXY listener。alpha 阶段如需 per-Mode 路由请暂用旧路径 (`ss_split_enabled=0`)。
+- **Mode name 后端 sanitize 缺口**（alpha.11 review D4 + A4 发现 / 文档化）：C-CRIT-6 修复在 Rule 路径双层防御（前端 `split_v2_name_has_forbidden` + 后端 `ss_split_rule_save.sh::case` 兜底），但 **Mode 路径单层** —— Mode CRUD 走 `split_v2_persist` → `dummy_script.sh`（koolshare 通用"只写 dbus"占位脚本），**无任何后端 sanitize**。攻击场景：LAN 内 admin 已认证攻击者绕过前端校验，curl 直 POST `{"method":"dummy_script.sh","fields":{"ss_split_mode_2_name":"bad\"name"}}`，恶意值直接进 dbus，污染 `dbus list ss_split_mode_` 输出 (`key=value` 文本格式)，下游任何 awk `-F=` 切分会错位。alpha 阶段风险评估：**低**（要求 admin auth + LAN 接入；alpha 用户量小且 opt-in），但**不为零**。doge.13 兑现方案：新增 `ss_split_mode_save.sh` helper（同 `ss_split_rule_save.sh` 量级，~200 行），Mode CRUD 改走专用 helper 加同款 case sanitize，把 dummy_script.sh 仅留给真正"只改一两个标量字段"的场景。
 
 **install.sh 迁移层**（A）：
 - 旧 key 物理删除（设计 §14 Step 6 / Step 7.5）alpha 跳过，新旧并存。
@@ -256,6 +265,12 @@ fancyss/                                  # 仓库内
 - busybox ash trap EXIT 在 SIGKILL 下不释放锁——下轮 cron 卡 30 分钟。doge.13 加 stale-lock 检测。
 
 ### 6.2 已知集成漂移（**需要主代理协调 / 由审查 subagent 复查**）
+
+> **关于 dbus 工具语义（避免再踩 D6 那种坑）**：koolshare `dbus` 二进制的 `list` / `remove` 行为**不对称**——
+> - `dbus list KEY` = **前缀匹配**（返回所有以 KEY 开头的 key）
+> - `dbus remove KEY` = **精确匹配**（只删字面 KEY，不删 `KEY_<i>` 之类）
+>
+> 想批量删一组前缀 key 的正确写法是 `dbus list <prefix>_ | cut -d= -f1 | while read k; do dbus remove "$k"; done`（见 [install.sh:491-499](../../fancyss/install.sh#L491) 已有范例）。看到形如 `dbus remove ss_acl_mode` 这种"裸前缀单行调用"不要假设它能删一票子 key，那是上游 no-op 死代码。
 
 #### D1: 分流 DNS upstream 读写两套 key
 - **症状**：C 的 UI 新增 textarea 写入 `ss_split_dns_china_upstream` / `ss_split_dns_overseas_upstream` / `ss_split_dns_global_upstream`，但 B 的 `generate_chinadns_split_conf` / `generate_chinadns_global_conf` 仍从老 key `ss_basic_chng_china_dns_*` / `ss_basic_chng_trust_dns_*` 读取。
@@ -280,14 +295,90 @@ fancyss/                                  # 仓库内
 - **alpha 决议**：**降级为 WARN，留 doge.13 解决**。理由：dnsmasq 让位涉及 fancyss `postscripts/dnsmasq.postconf` + 路由器 nvram 联动，alpha 时间窗口完成风险高；alpha 默认 `ss_split_enabled=0` 不影响老用户；alpha 用户开启时已被 hint 210 警告"LAN hostname 解析可能失败"。
 - **doge.13 解决方案**：在 `start_chinadns_ng_split` 起 chinadns 前通过 `postscripts/dnsmasq.postconf` 追加 `listen-address=127.0.0.1` + `port=65355`，`service restart_dnsmasq`；在 `stop_chinadns_ng_split` 中还原。
 
-#### D6: ACL 清空连带删 ss_acl_split_mode_* （**审查发现 → alpha WARN**）
-- **症状**：现有 `ssconfig.sh::clean_acl()` 有 `dbus remove ss_acl_mode`（前缀匹配），新迁移的 `ss_acl_split_mode_<i>` 在用户点 ACL 清空按钮时会跟着被删。
-- **alpha 决议**：alpha 阶段 ss_split_enabled=0 默认关，影响有限。doge.13 默认开后，把 `clean_acl()` 改为显式 `dbus remove ss_acl_mode_` (加下划线)，避免前缀串到 `ss_acl_split_mode_*`。
+#### D6: ACL 清空连带删 ss_acl_split_mode_* （~~审查发现 → alpha WARN~~ → **2026-05-18 实测为误报，无需修复**）
+- ~~**症状**：现有 `ssconfig.sh::clean_acl()` 有 `dbus remove ss_acl_mode`（前缀匹配），新迁移的 `ss_acl_split_mode_<i>` 在用户点 ACL 清空按钮时会跟着被删。~~
+- ~~**alpha 决议**：alpha 阶段 ss_split_enabled=0 默认关，影响有限。doge.13 默认开后，把 `clean_acl()` 改为显式 `dbus remove ss_acl_mode_` (加下划线)，避免前缀串到 `ss_acl_split_mode_*`。~~
+- **2026-05-18 实测结论**：审查阶段拍脑袋假设错了 `dbus remove` 的语义。**`dbus remove KEY` 是精确匹配，不是前缀匹配**（只有 `dbus list KEY` 是前缀）。测试机对照实验：`dbus set ss_test_dbg_a=foo / ss_test_dbg_b=bar / ss_test_dbg_ab=baz`，`dbus remove ss_test_dbg_a` 只删 `_a`，`dbus remove ss_test_dbg`（无后缀）**什么都没删**。
+- **附带发现**：[ssconfig.sh:6712-6718](../../fancyss/ss/ssconfig.sh#L6712) 那 7 行 `dbus remove ss_acl_ip` / `_mac` / `_name` / `_mode` / `_port` / `_udp` / `_quic` 是上游 fancyss 多年的**死代码 no-op**——试图删字面 key `ss_acl_ip` 等（不存在），真正的 `ss_acl_ip_<i>` 完全不受影响。无害但也无效。alpha 阶段不动它（不在本次工作范围）。
+- **`ss_acl_split_mode_<i>` 双重安全**：(1) `dbus remove` 不是 prefix；(2) 就算它是 prefix，`ss_acl_split_mode_<i>` 也不以 `ss_acl_mode` 开头（中间 `_split` 隔开），不会被串到。
 
 #### D7: fss_chain_apply 与 split 路径下 out_main tag 兼容性（**审查发现 → alpha WARN**）
 - **症状**：B 的 `generate_xray_json_split` 把基线 outbounds[0].tag 改为 `out_main`，但旧 `fss_chain_apply` 历史上按 outbound 索引 / tag 注入 `dialerProxy`。
 - **审查结论**（Reviewer 3）：建议主代理读 fss_chain_apply 源码后判定。**主代理后续验证**：fss_chain_apply 是基于 `tag == "shadowsocks"` 等老 tag 匹配，还是按 outbounds[0] 索引匹配。alpha 路径下 fss_chain_apply 仍被调用，若 tag 不匹配则链式静默失效。
 - **doge.12 后续动作**：实际测试时若链式代理在 ss_split_enabled=1 下失效，把 ssconfig.sh L5366-L5369 处的 fss_chain_apply 调用改为 split 路径专用版本（或直接 skip，让 split 路径由生成器自己处理 chain）。
+
+#### D8: ss_acl_split_mode_<i> per-MAC 路由层基础已兑现 + 真机未验证 + 端口分配有限（**alpha.10 审计交叉 → 基础兑现 + 真机未验证 + 端口分配有限**）
+- **症状**：合同 §1.4 定义 `ss_acl_split_mode_<acl_node>` = 该 acl 行分配的 Mode.id（0=不通过代理）。`install.sh::migrate_split_routing_v1` 写入、`Module_shadowsocks.asp` 读出来在 ACL 表展示、删 Mode 时清零，**路由层** `ssconfig.sh::load_iptables_split` 已加上基础装配：per-MAC TPROXY 段 [ssconfig.sh:7123-7137](../../fancyss/ss/ssconfig.sh#L7123) TCP+UDP 双装、per-MAC DNS DNAT 段 [ssconfig.sh:7162-7168](../../fancyss/ss/ssconfig.sh#L7162) 同样读 `ss_acl_split_mode_<a>` 并通过 `__split_mode_dns_port_by_id` 映射到 mode 专用 chinadns 实例端口。
+- **起因 & 历史校正**：alpha.10 审计报告 [doc/reports/alpha10-deep-audit.md](../reports/alpha10-deep-audit.md) C-CRIT-7 判定"`ssconfig.sh::load_iptables_split` 完全不读 `ss_acl_split_mode_<i>`、写者一人读者 0 人"——**该结论已过时**，基于 alpha.9 骨架快照；alpha.10 加上 per-MAC 装配后审计未刷新。本条 §6.1 line 239 "完全不读取" 那一长条描述同样滞后，**保留不动**（属审计原话），由 D8 在 §6.2 补登"基础已兑现、未真机验证"的当前事实。
+- **真机未验证**：所有 alpha 真机测试场景（alpha.3 → alpha.10）都是单 acl 行或全部走 default Mode，**per-MAC 多分支真机一次都没跑过**。
+- **端口分配限制（新发现）**：`__split_mode_port_by_id` [ssconfig.sh:7021](../../fancyss/ss/ssconfig.sh#L7021) 的循环 gate 是 `if (is_default=1 || builtin=1)`——只对默认 Mode 与内置 Mode 分配 TPROXY/DNS 端口；用户自定义、非内置、非默认的 Mode 在 [ssconfig.sh:7031](../../fancyss/ss/ssconfig.sh#L7031) 兜底回 `SS_SPLIT_PORT_BASE`（默认 Mode 端口），即静默退化为「跟默认 Mode 走同一条路径」。`__split_mode_dns_port_by_id` 同结构同语义。
+- **alpha 决议**：**保留代码不动**。alpha 用户大概率只用内置 Mode#1（全局）/ Mode#2（大陆白名单），不受端口分配 gate 影响；自定义 Mode 静默退化到默认端口属"已知行为"而非崩溃。
+- **doge.13 兑现**：(a) 真机三 MAC 对照测试 ✓ default + ✓ builtin + ✓ user-defined Mode，对照实际出口 IP / 直连命中验证三条路径独立工作；(b) 扩展 `__split_mode_port_by_id` / `__split_mode_dns_port_by_id` 端口分配到用户自定义 Mode（去掉 `is_default || builtin` gate，按 mode 顺序分配端口偏移）；(c) 修任何真机暴露的 bug（iptables 规则顺序 / fallback 链优先级等）→ 删除本条 D8 与 §6.1 line 239 那条对应的"完全不读取"过时描述。
+
+#### D9: `ss_split_rule_to_json` 必须文件中转，不能走 stdout / 变量（**alpha.13 + alpha.14 修订，已落地**）
+- **症状（alpha.13 ARG_MAX）**：alpha.12 修好 hot reseed 后，Rule 1（大陆白名单_常用）文件首次出现真实内容（chnlist 11 万行）。`ss_split_rule_to_json` 把 ~1.6MB JSON 通过 `rdata=$(ss_split_rule_to_json ...)` 灌进 shell 变量，紧接着 [ssconfig.sh:5359-5361](../../fancyss/ss/ssconfig.sh#L5359) 三处消费（`[ -n "${rdata}" ]` / `[ "${rdata}" != "{}" ]` / `printf '%s' "${rdata}" | jq`）全部踩 busybox `[` 内置 ARG_MAX (~128KB) → restart 永久 hang。alpha.11 没爆是因为 Rule 1 文件丢失走 `{}` 短路；alpha.12 hot reseed 修文件 → 暴露这个 latent bug。
+- **症状（alpha.14 性能）**：alpha.13 修好 ARG_MAX 后 awk 处理 chnlist 11 万行 + cn.txt 1 万 IP 单次 37.5s。根因：原 awk END 块用 `ip_buf = ip_buf "..."` 字符串累加，每 append 拷贝整段 buffer → O(n²) 复杂度。用户实测 50s "卡住"的根因。
+- **修法（alpha.13）**：`ss_split_rule_to_json` 加 `outfile` 必传参数（无 stdout fallback），全程文件中转 + 上层用 `jq --slurpfile` 读文件流式输出 routing_rules_file；`ss_split_rule_to_json` 输出 `{}` 而非空时，jq 用 `if length>0 then ... else empty end` 防空 rule 文件 shadow 兜底（V1-reviewer 发现）。
+- **修法（alpha.14）**：awk 内 ip 行 streaming 写到临时文件 `${outfile}.iptmp`，END 块 `close()` 后 `getline` 拼回主输出。Domain 路径无需改（本来就是 streaming printf 不累加）。实测 37.5s → 3.88s（9.7x 提升），用户实测 50s hang → 15s 启动完成。
+- **附带事实（为什么不能 stdout fallback）**：hnd_v8 busybox 1.25 路由器 `/dev/stdout` 不存在（实测）—— 函数若默认 `outfile=/dev/stdout`，空 outfile 参数会被当物理文件路径写到 `/dev/` 下产生垃圾文件。alpha.13 dry-run 实测后写死 outfile 必传，无 fallback。
+- **已落地版本**：alpha.13（文件中转 + jq empty 兜底）/ alpha.14（awk O(n²) → O(n) streaming）。详见 [ssconfig.sh:4960-5024](../../fancyss/ss/ssconfig.sh#L4960) 函数体注释。
+
+#### D10: chinadns-ng `group-tag-noip` 是伪语法，DNS 层 reject 整套删除（**alpha.15 修订，已落地**）
+- **症状**：doge.12 alpha 实施期"凭直觉"给 chinadns-ng 加 `group-tag-noip` 选项来实现 DNS 层 reject（让 reject 域名返回空 IP）。V1-reviewer 拿源码 `zfl9/chinadns-ng/src/opt.zig` 实证 grep 不到该选项 —— 完全是 doge.12 alpha 自己发明的伪语法。一旦用户在 Mode 配 action=reject rule → `reject_file` 非空 → chinadns-ng 启动时遇未知选项 exit(1) → DNS 实例全挂 → 整个分流 DNS 路径瘫痪。
+- **为什么没炸**：默认两个内置 Mode 都没有 reject rule，`[ -s reject_file ]` 守卫短路。这是个潜伏地雷，等第一个 alpha 用户配 reject rule 就触发。
+- **修法**：删 DNS 层 reject 整套（-75 行）：
+  - `ss_split_collect_reject_domains` 函数整删
+  - `generate_chinadns_split_conf` / `generate_chinadns_global_conf` 中 `group reject` 配置块整删
+  - `stop_chinadns_ng_split` 中 `rm /tmp/fss_split_reject_dnl.txt` 整删
+  - [ssconfig.sh:2151-2155](../../fancyss/ss/ssconfig.sh#L2151) / [ssconfig.sh:2256-2259](../../fancyss/ss/ssconfig.sh#L2256) 注释保留"为何删"的实证说明（grep zfl9/chinadns-ng 源码无该选项）
+- **reject 语义改由 xray blackhole outbound 接管**：`generate_xray_json_split` 注册 `out_reject` outbound (blackhole) + routing.rules 中 action=reject → outboundTag=out_reject。该接管路径在 alpha.14 之前就已就位（[ssconfig.sh:5031](../../fancyss/ss/ssconfig.sh#L5031) / [ssconfig.sh:5163](../../fancyss/ss/ssconfig.sh#L5163) / [ssconfig.sh:5239](../../fancyss/ss/ssconfig.sh#L5239)），所以删除 DNS 层 reject **没有功能损失**，只是消除潜伏地雷。
+- **顺手做的事**：[ss_proc_status.sh:264-326](../../fancyss/scripts/ss_proc_status.sh#L264) 加 3 个 helper（`GET_CHAIN_PROXY_STATUS` / `GET_SPLIT_V2_STATUS` / `GET_DIRECT_ASUSGO`）+ `check_status` 加 3 行 echo，方便用户在 Web UI 状态页一眼看到 split V2 是否启用 / 主节点链式状态 / 直连白名单状态。
+- **修正注释**：[ssconfig.sh:5465](../../fancyss/ss/ssconfig.sh#L5465) 链式代理注释（V3-reviewer 发现"split × chain 关系"原描述误导，已改为"split 路径下 generate_xray_json_split 只动主 outbound tag + 追加 direct/reject，不注入链式；链式由 fss_chain_apply 唯一一次注入"）。
+- **已落地版本**：alpha.15。注释保留在 ssconfig.sh 同位置防止后人重蹈覆辙。
+
+#### D11: Mode 级 `block_quic` / `udp_proxy` 写者写满、读者 0 人（**alpha.16 修订，已落地**）
+- **症状**：alpha 实施期 ASP UI 复选框 + dbus key（`ss_split_mode_<m>_block_quic` / `ss_split_mode_<m>_udp_proxy`） + `install.sh::write_builtin_mode_meta` 写入默认值，**全链路写者完整**；但 `ssconfig.sh::load_iptables_split` 装配 per-user TPROXY 时**完全不读这两个 key**。生成 xray inbound 时 [ssconfig.sh:5210](../../fancyss/ss/ssconfig.sh#L5210) 有一行 `local block_quic=$(dbus get ss_split_mode_${mi}_block_quic)` 但变量未使用（dead local），紧跟一行注释"block_quic 不在 inbound 控制；走 iptables 层屏蔽 udp/443" —— 实际从没写过 iptables 层 DROP。
+- **后果**：用户在 Mode 编辑 UI 勾选"屏蔽 QUIC" / 取消"UDP 代理"完全 no-op。QUIC 流量绕过 SNI 嗅探直奔代理；UDP 强制走 TPROXY 无法关闭。
+- **修法**：`load_iptables_split` 加 2 个 helper（[__split_mode_block_quic_by_id](../../fancyss/ss/ssconfig.sh#L7102) / [__split_mode_udp_proxy_by_id](../../fancyss/ss/ssconfig.sh#L7123)）按 mode_id 反查 dbus key。per-user TPROXY 循环之前按 Mode 决定：
+  - `block_quic=1` → 加 `-p udp --dport 443 -m mac --mac-source <mac> -j DROP`（放在该 user 的 TPROXY 之前，iptables 顺序敏感）
+  - `udp_proxy=0` → 跳过该 user 的 UDP TPROXY（UDP 落原生路由 = 直连）
+  - default fallback 同样消费（对未在 acl 表中列出的设备生效）
+- **未删的"占位注释"**：[ssconfig.sh:5210](../../fancyss/ss/ssconfig.sh#L5210) 那行 dead `local block_quic=$(...)` 和注释保留不动 —— 这是 xray inbound 层的"标记我们考虑过 QUIC 但 inbound 不是合适层"的痕迹，删除会丢失这条决策记录。真正的 block_quic 实现在 alpha.16 接到了 iptables 层 ([L7212-7218](../../fancyss/ss/ssconfig.sh#L7212) / [L7232-7237](../../fancyss/ss/ssconfig.sh#L7232))。
+- **alpha 实施期反模式教训**：写者（UI + dbus + install 默认值）写满了，读者（路由层）是空的。alpha 实施期文档化"以后兑现"的占位注释（"走 iptables 层屏蔽" / §6.1 line 236 "doge.13 加 iptables -A SHADOWSOCKS -p udp --dport 443 -j DROP"）而非真正接通。**doge.12-stable 收尾前应该全仓库 grep 一次 `ss_split_mode_*_` / `ss_split_rule_*_` dbus key，检查每个 key 都有真实消费者** — 这次 alpha.16 是 manual 发现的，下次靠工具。
+- **已落地版本**：alpha.16。
+
+#### D12: Split Mode 2 rule actions 烘焙 stale 节点 ID（**alpha.17 Agent A 发现 / 留 doge.13 兑现**）
+- **症状**：`install.sh::migrate_split_routing_v1` 在 [install.sh:649-660](../../fancyss/install.sh#L649) 把当前 `ssconf_basic_node` 编码成 `cur_action="proxy_node:<N>"`（或 `proxy_chain:<front>:<N>`）字符串，然后 [install.sh:682-683](../../fancyss/install.sh#L682) 把这个字符串烘焙进 Mode 2 的 `rule_5_action` (telegram) 和 `rule_6_action` (gfwlist) 持久化进 dbus。后续主节点变更（failover 切换 / 订阅刷新换 id / 用户手动改主节点）**不会**回头刷新这些字符串——dbus 里仍然指向迁移时刻的旧节点 ID。
+- **alpha 安全为什么没炸**：[ssconfig.sh:5177 generate_xray_json_split](../../fancyss/ss/ssconfig.sh#L5177) 在生成 xray.json 时把所有 `out_node_X` / `out_chain_Y_X` outbound 都 collapse 成单一 `out_main`（对应当前主节点），所以即便 dbus 里写的是 stale ID，实际 xray 路由也指向"当前主节点"——stale 字符串被生成器掩盖。
+- **alpha 决议**：保留代码不动。collapse 是 alpha 范围内"per-rule 跨节点 outbound 不构建"的兜底（详见 §6.1 line 240）。
+- **doge.13 必修**：collapse 一旦解除，stale ID 会立刻指向已删除节点或错误节点。两种修法二选一：
+  - **方案 A（sentinel）**：迁移 / 写入时改写 `proxy_main` 字面量，xray 生成器解析到 sentinel 才查 dbus `ssconf_basic_node`；优势是字符串永远新鲜，缺点是引入第三种 action 编码格式。
+  - **方案 B（resync helper）**：新增 `fss_split_actions_resync`，在 failover_action / 订阅刷新 / 主节点变更三个 hook 点遍历所有 `ss_split_mode_*_rule_*_action` 重写指向新主节点；优势是 action 字符串语义不变，缺点是多了一组 hook。
+- 修复时同步删除本条 D12。
+
+#### D13: `fss_chain_apply` 在 `ss_basic_mode=7` 时静默 fallback（**alpha.17 Agent A 发现 / 留 doge.13 兑现**）
+- **症状**：alpha 的 fork-not-replace 策略保留了 `ss_basic_mode=7`（xray 半成品分流，旧路径）。如果用户开启 `ss_split_enabled=1` 时仍保留 `ss_basic_mode=7`，[ssconfig.sh:5500-5503](../../fancyss/ss/ssconfig.sh#L5500) 注释明确说明 `fss_chain_apply` 会在内部检查 `ss_basic_mode=7` 时直接 return 0 并设 `ss_chain_status=fallback`——前置节点链式静默失效。
+- **alpha 决议**：ssconfig.sh 注释已说明"alpha 阶段两键独立，若用户开 split_enabled=1 但保留旧 ss_basic_mode=7 的混合状态，链式会被静默禁用（设计内行为）"。UI 层无任何 preflight 警告——用户唯一感知途径是浏览器 console 查 `db_ss["ss_chain_status"]==="fallback"`，alpha 用户基本不会主动查。
+- **doge.13 必修**：在 ASP Module_shadowsocks.asp 加 preflight：用户尝试启用 `ss_split_enabled=1` 时若 `ss_basic_mode==="7"`，弹 hint 警告说明链式将失效并提示先把 `ss_basic_mode` 切到其他模式（或勾选"自动切换 ss_basic_mode 到 0"自动修）。doge.14 物理移除旧路径后本问题自然消失。
+- 修复时同步删除本条 D13。
+
+#### D14: 订阅删除节点不清理 split rule action 引用（**alpha.17 Agent A 发现 / 留 doge.13 兑现**）
+- **症状**：[Module_shadowsocks.asp:2213 collect_node_reference_delete_impact](../../fancyss/webs/Module_shadowsocks.asp#L2213) 当前扫 `combos`（failover 备用组合）+ `shuntDefault` / `shuntRuleCount`（mode=7 旧路径分流），**不扫** `ss_split_mode_*_rule_*_action` 里的 `proxy_node:<N>` / `proxy_chain:<Y>:<N>` 引用。订阅刷新或手动删节点时该节点 ID 仍残留在 split rule action 字符串里。
+- **alpha 安全为什么没炸**：与 D12 同因——generate_xray_json_split 的 collapse 把所有 `out_node_X` 折回 `out_main`，stale ID 被掩盖。
+- **doge.13 必修**：扩展 `collect_node_reference_delete_impact` 加一个 `splitRules: [{m, r, role}]` 数组，扫所有 `ss_split_mode_*_rule_*_action` 检查 `proxy_node:<被删 id>` 或 `proxy_chain:<被删 id>:*` / `proxy_chain:*:<被删 id>` 模式，命中后 `process_schema2_node_delete_queue` 同步生成清理 fields：
+  - landing 角色被删 → 该 rule action 改成 `direct`（或 fallback `proxy_main`，看 D12 方案）
+  - front 角色被删 → `proxy_chain:Y:Z` 降级为 `proxy_node:Z`
+- 修复时同步删除本条 D14。
+
+#### D15: `cur_node` 空时 install 烘焙 `"proxy_node:"`（trailing colon）（**alpha.17 Agent A 发现 / 留 doge.13 兑现**）
+- **症状**：[install.sh:655-659](../../fancyss/install.sh#L655) 的 cur_action 构造逻辑没有空节点防御——全新安装（用户没任何节点）或迁移触发时 `ssconf_basic_node=""` → 走 else 分支 → `cur_action="proxy_node:"`（trailing colon、id 段为空）。这条字符串被 [install.sh:665 / 677 / 682 / 683](../../fancyss/install.sh#L665) 写进 Mode 1 default_action、Mode 2 default_action、Mode 2 rule_5_action、Mode 2 rule_6_action 四处 dbus key。
+- **alpha 安全为什么没炸**：同 D12 / D14，xray 生成器 collapse + 主节点为空时整条 split 路径退化兜底。但 dbus 里留下了语法上非法的 `proxy_node:` 字符串，下游任何"用 awk -F: 切第二段"的解析（doge.13 可能引入）会得到空 ID 字段。
+- **doge.13 必修**：迁移阶段在 [install.sh:649](../../fancyss/install.sh#L649) 加空节点检测，二选一：
+  - **方案 A**：`[ -z "${cur_node}" ] && cur_action="direct"` —— 兜底直连，与"全新安装 = 暂无代理出口"语义一致。
+  - **方案 B**：检测到空 `cur_node` 时**整段** Step 1.5 + Step 2 跳过，把内置 Mode 的 default_action 写入推迟到首次"保存&应用"时由 ssconfig.sh 触发一次性 backfill。
+- 修复时同步删除本条 D15。
+
+> **D12-D15 共性**：四条 latent issue 都在 alpha 阶段被 generate_xray_json_split 的 `out_main` collapse 掩盖。doge.13 解除 collapse（per-Mode / per-Rule 独立 outbound）的同时必须四条全兑现，否则任何一条单独出现都会变成可见 bug。
 
 ### 6.3 实施期约定的回溯修订
 
@@ -304,3 +395,20 @@ fancyss/                                  # 仓库内
 ## 修订记录
 
 - 2026-05-15 alpha 实施期初稿。
+- 2026-05-20 alpha.13-16 修订汇总：
+  - alpha.13：`ss_split_rule_to_json` ARG_MAX hotfix（1.6MB JSON 灌 shell 变量爆 busybox `[` 内置 → 改文件中转 + jq 流式）。详见 §6.2 D9。
+  - alpha.14：同函数 awk O(n²) 性能优化（chnlist 11 万行 37.5s → 3.88s，9.7x 提升）。同 D9。
+  - alpha.15：chinadns-ng DNS 层 reject 整套删除（`group-tag-noip` 是 doge.12 alpha 自己发明的伪语法，潜伏地雷一旦用户配 reject rule 即触发 chinadns 全挂；reject 语义由 xray blackhole outbound 接管）。详见 §6.2 D10。顺手加 `ss_proc_status.sh` 3 个 helper（split V2 / 链式 / 直连白名单状态） + ssconfig.sh:5465 链式代理注释修正。
+  - alpha.16：Mode 级 `block_quic` / `udp_proxy` 写者写满、读者 0 人 → load_iptables_split 加 2 个 helper 接通 iptables 层 DROP / UDP TPROXY 跳过。详见 §6.2 D11。
+  - §6.1 line 236 "block_quic 留 doge.13" 描述已用删除线标记 → 指向 D11。
+- 2026-05-20 alpha.17 修订汇总（深度审计 + Agent A/B/C/D 平行 review）：
+  - **后端 finding（6 个落地）**：
+    - F-A-01：`fss_failover_internal_restart` 由两状态扩到三状态（`0`/`1`/`2`），新增 [scripts/ss_cron_restart.sh](../../fancyss/scripts/ss_cron_restart.sh) wrapper + 5 处显式 `dbus set fss_failover_internal_restart="2"`（[ss_status_main.sh:241](../../fancyss/scripts/ss_status_main.sh#L241) / [fss_rules_update.sh:331/378](../../fancyss/scripts/fss_rules_update.sh#L331) / [ss_rule_update.sh:258](../../fancyss/scripts/ss_rule_update.sh#L258)）。机制 + 路径清单详见 [failover-combo-implementation.md §4.7](failover-combo-implementation.md#47-cron--非用户路径-restart-wrapperalpha17-新增)。
+    - F-A-02：`fss_export_global_json` / `fss_clear_global_config_storage` / `fss_export_native_backup_v2` 三处备份白名单补 `dbus list fss_split_` 抓取，避免 restore 时旧 `fss_split_migrated_v1` 阻止 install.sh 重新 migrate。
+    - F-A-04：install.sh `migrate_split_routing_v1` 自愈 reseed 由"只查 rule_1/rule_2"扩到"枚举 rule_1~8 全集"，修 D7 同形漏修——Rule 4/5 等小文件被吃掉时无法自动恢复。
+    - 启动日志 10 条 echo_date 增强（ssconfig.sh / install.sh 关键阶段进入/退出标记），便于真机故障复盘。
+    - [ss_proc_status.sh:264-326](../../fancyss/scripts/ss_proc_status.sh#L264) 新加 3 个 helper（`GET_CHAIN_PROXY_STATUS` / `GET_SPLIT_V2_STATUS` / `GET_DIRECT_ASUSGO`）并接入 `check_status`，WebUI 状态页一眼可读 split V2 + 链式 + 直连白名单状态（D10 §6.2 "顺手做的事"在 alpha.15 文档化，alpha.17 实际落地代码）。
+    - ssconfig.sh case start/restart 入口扩到 `[ "${__fofr}" = "1" ] || [ "${__fofr}" = "2" ]` 合并条件分支处理。
+  - **前端 finding（5 个落地）**：Module_shadowsocks.asp 5 处小修（具体改动看 commit）。
+  - **latent issue（4 个文档化，alpha 不修）**：F-A-03 / F-A-05 / F-A-06 / F-A-08 → §6.2 D12 / D13 / D14 / D15，全部因 generate_xray_json_split out_main collapse 掩盖、doge.13 解除 collapse 时必须兑现。
+  - **reviewer PASS**：Agent A 深度审计 + 主代理交叉 review 通过。代码改动量 ~185 行（从 alpha.16 → alpha.17，源码 commit 未发版）。

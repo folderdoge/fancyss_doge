@@ -1136,9 +1136,9 @@ function openssHint(itemNum, flag) {
 		statusmenu += "<b><font color='#CC0066'>切换后操作：</font></b>开关从 0 改到 1（或反向）之后<b>必须</b>点底部「保存&应用」按钮，否则路由层不会切换——dbus 值已写但 ssconfig.sh 未重启。<br /><br />";
 		statusmenu += "<b><font color='#CC0066'>alpha 已知限制：</font></b><br />";
 		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• LAN 内 hostname 解析（如 <code>&lt;asusrouter&gt;</code> / <code>*.lan</code>）可能在新架构下静默失败（dnsmasq 让位未实现，留 doge.13）<br />";
-		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• 编辑/删除 Mode 和 Rule 暂时只能用 SSH + dbus 命令操作（alpha 第一稿无弹窗）<br />";
+		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• Mode/Rule 编辑、删除已通过弹窗实现（alpha.10+）<br />";
 		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• per-rule 链式代理（proxy_chain:Y:X）会被回退为主节点 outbound（alpha 简化）<br />";
-		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• 分流 DNS upstream 设置 alpha 阶段仍读「DNS 设置」老页面的国内/国外服务器配置<br /><br />";
+		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• 双轨 DNS 控件 readonly 占位；alpha 阶段所有 Mode 走 chinadns 单实例 + 主页面 DNS 设置（doge.13 启用 per-Mode 双轨）<br /><br />";
 		statusmenu += "<b><font color='#CC0066'>失败降级：</font></b>新架构启动失败时，ssconfig.sh restart 会兜底回退到旧路径（保留 ss_split_enabled=1 但走旧 ss_basic_mode），日志告警。<br /><br />";
 		statusmenu += "<font color='#888888'>设计：doc/design/split-routing-architecture.md / 实施：doc/implementation/split-routing-implementation.md</font>";
 		_caption = "分流架构 V2 (doge.12 实验性)";
@@ -1245,6 +1245,18 @@ function openssHint(itemNum, flag) {
 		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• 日志输出 <code>[WARN] split routing fallback to legacy</code><br /><br />";
 		statusmenu += "<font color='#888888'>详见 doc/implementation/split-routing-implementation.md §0</font>";
 		_caption = "失败降级";
+	} else if (itemNum == 220) {
+		width = "560px";
+		statusmenu = "<b>分流总开关状态已保存</b>，但<font color='#CC0066'><b>尚未生效</b></font>。<br /><br />";
+		statusmenu += "<b><font color='#669900'>为什么？</font></b><br />";
+		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• <code>ss_split_enabled</code> 是<b>路由层入口决策键</b>，决定包从哪条路径走（新分流 / 旧 ss_basic_mode）<br />";
+		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• 当前只把开关值写进了 dbus，<b>代理服务（xray / chinadns-ng / iptables）尚未重启</b><br />";
+		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• 实际数据包仍走原路径，UI 显示的「已启用 / 已停用」与运行时不一致<br /><br />";
+		statusmenu += "<b><font color='#CC0066'>必须操作：</font></b><br />";
+		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• 滚动到页面<b>底部</b>，点击「<b>保存并应用</b>」按钮触发 <code>ssconfig.sh restart</code><br />";
+		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• 重启完成后路由路径才真正切换<br /><br />";
+		statusmenu += "<font color='#888888'>如不点击「保存并应用」就关闭页面，开关状态会保留在 dbus 但运行时仍在旧路径——这是 doge.12 alpha 已知架构限制，doge.13 计划改造为开关变更即重启代理。</font>";
+		_caption = "分流总开关需重启代理";
 	}
 	return overlib(statusmenu, OFFSETX, 30, OFFSETY, 10, RIGHT, STICKY, WIDTH, 'width', CAPTION, _caption, CLOSETITLE, '');
 

@@ -2533,6 +2533,10 @@ fss_export_global_json() {
 		# 但是仅靠 grep -v 排除 ssconf_basic_/ss_acl_/ssid_ 后还会漏 fss_failover_main_combo_seeded（前面 list 没拿到）。
 		# 这里追加抓一次 fss_failover_，用于覆盖 internal_restart / last_switch_ts / cool_down_sec / migrated_v* 等后端键，确保备份完整。
 		dbus list fss_failover_
+		# alpha.17 修：补抓 fss_split_*（含 fss_split_migrated_v1 等迁移 marker），
+		# 否则备份恢复后 install.sh 会以为没迁移过 → 重新跑 migrate_split_routing_v1
+		# 覆盖用户已改的 Mode/Rule 配置。
+		dbus list fss_split_
 	} | fss_emit_kv_lines | fss_kv_lines_to_json
 }
 
@@ -2551,6 +2555,9 @@ fss_clear_global_config_storage() {
 		# fork 新增：清理 fss_failover_* 后端键（internal_restart / last_switch_ts / migrated_v* 等）；
 		# combo 字段（ss_failover_combo_*）和 ss_failover_main_combo_seeded 已在 dbus list ss 范围内被清理。
 		dbus list fss_failover_ 2>/dev/null | cut -d "=" -f 1
+		# alpha.17 修：fss_split_* 也要在 clear 时一并清掉（fss_split_migrated_v1 等迁移
+		# marker），否则 restore 全局配置时旧 marker 阻止 migrate_split_routing_v1 重新跑。
+		dbus list fss_split_ 2>/dev/null | cut -d "=" -f 1
 	} | while IFS= read -r key
 	do
 		[ -n "${key}" ] || continue
@@ -4087,6 +4094,9 @@ EOF
 			# fork 新增：故障转移后端 fss_failover_* 键（internal_restart / last_switch_ts / migrated_v*）；
 			# combo 字段（ss_failover_combo_*）已在上面 dbus list ss 范围内被导出。
 			dbus list fss_failover_
+			# alpha.17 修：补抓 fss_split_*（含 fss_split_migrated_v1 等迁移 marker），
+			# 详见 fss_export_global_json 同位置注释。
+			dbus list fss_split_
 		} | while IFS= read -r line
 		do
 			[ -z "${line}" ] && continue

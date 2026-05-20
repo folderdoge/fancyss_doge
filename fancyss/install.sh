@@ -599,6 +599,31 @@ migrate_split_routing_v1(){
 	local migrated_flag
 	migrated_flag="$(dbus get fss_split_migrated_v1)"
 	if [ "${migrated_flag}" = "1" ]; then
+		# alpha.12: marker=1 不保证 rule_*.txt 文件存在——某些升级路径下文件被吃掉
+		# （alpha.8 仅修了目录丢失，没管文件本身）。健康检查：枚举内置 Rule 1~8 全集，
+		# 缺一即触发自愈 reseed。
+		# alpha.17 修：原版本只查 rule_1/rule_2，rule_3~8 缺失时假装健康——用户报告
+		# Rule 4/5 等小文件被吃掉时无法自动恢复。改为枚举 1~8。
+		# 详见 doc/implementation/split-routing-implementation.md §6 D7 同形漏修补丁
+		__need_reseed=0
+		for __r in 1 2 3 4 5 6 7 8; do
+			[ ! -s "/koolshare/ss/rules_user/rule_${__r}.txt" ] && __need_reseed=1
+		done
+		unset __r
+		if [ "${__need_reseed}" = "1" ]; then
+			echo_date "⚠️ FORK doge.12 alpha: 迁移 marker=1 但内置 Rule 源文件缺失，触发自愈 reseed"
+			if [ -f /koolshare/scripts/ss_split_rule_seed.sh ]; then
+				. /koolshare/scripts/ss_split_rule_seed.sh
+				if type fancyss_split_seed_rule_files_v1 >/dev/null 2>&1; then
+					fancyss_split_seed_rule_files_v1
+				else
+					echo_date "❌ split-seed: helper 已 source 但 function 不存在，跳过自愈"
+				fi
+			else
+				echo_date "❌ split-seed: /koolshare/scripts/ss_split_rule_seed.sh 不存在，跳过自愈"
+			fi
+		fi
+		unset __need_reseed
 		return 0
 	fi
 
@@ -607,129 +632,17 @@ migrate_split_routing_v1(){
 	# ---------- Step 0: 准备目录 ----------
 	seed_rules_user_dir
 
-	# ---------- Step 1: 写入内置 Rule (id 1~99 预留) ----------
-	local stat_line dn_count ip_count
-	local rfile
-
-	# Rule 1: 大陆白名单_常用 = chnlist.gz 域名 + rules_ng2/ip/cn.txt
-	echo_date "  内置 Rule 1: 大陆白名单_常用"
-	write_rule_header 1 "大陆白名单_常用"
-	rfile="/koolshare/ss/rules_user/rule_1.txt"
-	if [ -f /koolshare/ss/rules/chnlist.gz ]; then
-		zcat /koolshare/ss/rules/chnlist.gz 2>/dev/null | grep -v '^[[:space:]]*$' | grep -v '^#' >> "${rfile}" || { echo_date "  ⚠️ Rule 1: zcat chnlist.gz 失败"; }
+	# ---------- Step 1: 写入内置 Rule (id 1~8) ----------
+	# alpha.12: Step 1 的文件构建 + dbus 元数据写入抽到 helper（ss_split_rule_seed.sh），
+	# 让 ssconfig.sh 也能在 generate_xray_json_split 入口做 hot reseed。
+	# helper 自带"name/source_url/update_hours 缺失才写默认"的自愈保护——这里首次迁移
+	# 所有 key 都不存在，所以全部写入默认值；自愈调用时则保留用户已改的元数据。
+	if [ -f /koolshare/scripts/ss_split_rule_seed.sh ]; then
+		. /koolshare/scripts/ss_split_rule_seed.sh
+		fancyss_split_seed_rule_files_v1
 	else
-		echo_date "  ⚠️ Rule 1: /koolshare/ss/rules/chnlist.gz 不存在，跳过域名灌入"
+		echo_date "❌ split-seed: helper 缺失，无法 seed 内置 Rule"
 	fi
-	if [ -f /koolshare/ss/rules_ng2/ip/cn.txt ]; then
-		cat /koolshare/ss/rules_ng2/ip/cn.txt 2>/dev/null | grep -v '^[[:space:]]*$' | grep -v '^#' >> "${rfile}" || { echo_date "  ⚠️ Rule 1: cat ip/cn.txt 失败"; }
-	else
-		echo_date "  ⚠️ Rule 1: /koolshare/ss/rules_ng2/ip/cn.txt 不存在，跳过 IP 灌入"
-	fi
-	stat_line="$(count_rule_entries "${rfile}")"
-	dn_count="${stat_line% *}"
-	ip_count="${stat_line#* }"
-	write_builtin_rule_meta 1 "大陆白名单_常用" "" 0 "${dn_count}" "${ip_count}"
-
-	# Rule 2: GFW列表_常用 = gfwlist.gz
-	echo_date "  内置 Rule 2: GFW列表_常用"
-	write_rule_header 2 "GFW列表_常用"
-	rfile="/koolshare/ss/rules_user/rule_2.txt"
-	if [ -f /koolshare/ss/rules/gfwlist.gz ]; then
-		zcat /koolshare/ss/rules/gfwlist.gz 2>/dev/null | grep -v '^[[:space:]]*$' | grep -v '^#' >> "${rfile}" || { echo_date "  ⚠️ Rule 2: zcat gfwlist.gz 失败"; }
-	else
-		echo_date "  ⚠️ Rule 2: /koolshare/ss/rules/gfwlist.gz 不存在，跳过域名灌入"
-	fi
-	stat_line="$(count_rule_entries "${rfile}")"
-	dn_count="${stat_line% *}"
-	ip_count="${stat_line#* }"
-	write_builtin_rule_meta 2 "GFW列表_常用" "" 0 "${dn_count}" "${ip_count}"
-
-	# Rule 3: 中国公共DNS = 硬编码 10 IP（沿用 ssconfig.sh ip_lan_chndns）
-	echo_date "  内置 Rule 3: 中国公共DNS"
-	write_rule_header 3 "中国公共DNS"
-	rfile="/koolshare/ss/rules_user/rule_3.txt"
-	{
-		echo "223.5.5.5"
-		echo "223.6.6.6"
-		echo "114.114.114.114"
-		echo "114.114.115.115"
-		echo "1.2.4.8"
-		echo "210.2.4.8"
-		echo "117.50.11.11"
-		echo "117.50.22.22"
-		echo "180.76.76.76"
-		echo "119.29.29.29"
-	} >> "${rfile}"
-	write_builtin_rule_meta 3 "中国公共DNS" "" 0 0 10
-
-	# Rule 4: 广告统计屏蔽 = adslist.gz（若存在）
-	echo_date "  内置 Rule 4: 广告统计屏蔽"
-	write_rule_header 4 "广告统计屏蔽"
-	rfile="/koolshare/ss/rules_user/rule_4.txt"
-	if [ -f /koolshare/ss/rules/adslist.gz ]; then
-		zcat /koolshare/ss/rules/adslist.gz 2>/dev/null | grep -v '^[[:space:]]*$' | grep -v '^#' >> "${rfile}" || { echo_date "  ⚠️ Rule 4: zcat adslist.gz 失败"; }
-	else
-		echo_date "  ℹ️ Rule 4: adslist.gz 不存在，保留空规则文件"
-	fi
-	stat_line="$(count_rule_entries "${rfile}")"
-	dn_count="${stat_line% *}"
-	ip_count="${stat_line#* }"
-	write_builtin_rule_meta 4 "广告统计屏蔽" "" 0 "${dn_count}" "${ip_count}"
-
-	# Rule 5: Telegram 加速 = rules_ng2/site/telegram.txt + ip/telegram.txt
-	echo_date "  内置 Rule 5: Telegram 加速"
-	write_rule_header 5 "Telegram 加速"
-	rfile="/koolshare/ss/rules_user/rule_5.txt"
-	if [ -f /koolshare/ss/rules_ng2/site/telegram.txt ]; then
-		cat /koolshare/ss/rules_ng2/site/telegram.txt 2>/dev/null | grep -v '^[[:space:]]*$' | grep -v '^#' >> "${rfile}" || { echo_date "  ⚠️ Rule 5: cat site/telegram.txt 失败"; }
-	fi
-	if [ -f /koolshare/ss/rules_ng2/ip/telegram.txt ]; then
-		cat /koolshare/ss/rules_ng2/ip/telegram.txt 2>/dev/null | grep -v '^[[:space:]]*$' | grep -v '^#' >> "${rfile}" || { echo_date "  ⚠️ Rule 5: cat ip/telegram.txt 失败"; }
-	fi
-	stat_line="$(count_rule_entries "${rfile}")"
-	dn_count="${stat_line% *}"
-	ip_count="${stat_line#* }"
-	write_builtin_rule_meta 5 "Telegram 加速" "" 0 "${dn_count}" "${ip_count}"
-
-	# Rule 6: 在线状态检测站 = 硬编码 5 项（沿用 ssconfig.sh ss_basic_online_ipcheck 5 源）
-	echo_date "  内置 Rule 6: 在线状态检测站"
-	write_rule_header 6 "在线状态检测站"
-	rfile="/koolshare/ss/rules_user/rule_6.txt"
-	{
-		echo "worldtimeapi.org"
-		echo "ip.ddnsto.com"
-		echo "ip.clang.cn"
-		echo "whatismyip.akamai.com"
-		echo "api.myip.com"
-	} >> "${rfile}"
-	write_builtin_rule_meta 6 "在线状态检测站" "" 0 5 0
-
-	# Rule 7: 查IP常用站 = 从 rules/rotlist.txt 抓"查 IP"类（9 项）
-	# 内容沿用 rotlist.txt 中实际属于"查 IP"语义的条目（api.skk.moe / icanhazip / ifconfig.me /
-	# ip-api / ip.sb / ip.skk.moe / ipecho.net / ipinfo.io / us.ip111.cn）。其余 rotlist 条目
-	# （github、google 等）不属于"查 IP"语义，未纳入。
-	echo_date "  内置 Rule 7: 查IP常用站"
-	write_rule_header 7 "查IP常用站"
-	rfile="/koolshare/ss/rules_user/rule_7.txt"
-	{
-		echo "api.skk.moe"
-		echo "icanhazip.com"
-		echo "ifconfig.me"
-		echo "ip-api.com"
-		echo "ip.sb"
-		echo "ip.skk.moe"
-		echo "ipecho.net"
-		echo "ipinfo.io"
-		echo "us.ip111.cn"
-	} >> "${rfile}"
-	write_builtin_rule_meta 7 "查IP常用站" "" 0 9 0
-
-	# Rule 8: Bing 加速 = 单行 bing.com
-	echo_date "  内置 Rule 8: Bing 加速"
-	write_rule_header 8 "Bing 加速"
-	rfile="/koolshare/ss/rules_user/rule_8.txt"
-	echo "bing.com" >> "${rfile}"
-	write_builtin_rule_meta 8 "Bing 加速" "" 0 1 0
 
 	dbus set ss_split_rule_count="8"
 

@@ -748,7 +748,10 @@ prepare_system() {
 	
 	# 检查端口占用情况
 	# 3333 3334 23456 7913 1051 1052 1055-1070 2055 2056 1091 1092 1093
-	echo_date "准备工作：检查冲突端口占用..."
+	# alpha.17 P1-3: 在 kill_used_port 前打印占用端口的具体进程，便于诊断端口冲突
+	echo_date "准备工作：检查冲突端口占用 (3333/3334/23456/7913/1051-1093/2055-2056)..."
+	local _occupied=$(netstat -lntup 2>/dev/null | awk 'NR>2 {split($4,a,":"); p=a[length(a)]} p~/^(3333|3334|23456|7913|1051|1052|2055|2056|1091|1092|1093)$/ {print $4"→"$7}' | tr '\n' ' ')
+	[ -n "${_occupied}" ] && echo_date "⚠️ 检测到目标端口已被占用: ${_occupied} 将尝试释放"
 	kill_used_port
 
 	# 3. internet detect
@@ -1576,6 +1579,9 @@ dbus_eset(){
 }
 
 start_dns_x(){
+	# alpha.17 P2-1: DNS 服务启动 banner——明确告诉用户当前走的是哪条 DNS 方案
+	echo_date "------------------------- 启动 DNS 服务 -----------------------------"
+	echo_date "DNS 方案: plan=${ss_basic_dns_plan:-1}（1=chinadns-ng / 2=smartdns） serverx=${ss_basic_dns_serverx:-0}"
 	fss_require_base_dns >/dev/null 2>&1 || true
 	set_default "ss_basic_dns_plan" "1"
 	set_default "ss_basic_dns_serverx" "0"
@@ -1666,6 +1672,8 @@ start_dns_x(){
 		echo_date "start smartdns"
 		start_smartdns ${ss_basic_smrt}
 	fi
+	# alpha.17 P2-1: DNS 服务启动尾部 banner
+	echo_date "DNS 服务启动完毕。"
 }
 
 smartdns_format_addr() {
@@ -2148,64 +2156,16 @@ start_smartdns(){
 #   全局实例 chinadns-ng @127.0.0.1:65354 → 服务 dns_mode=global 的 Mode
 # ============================================================================
 
-# 收集所有 dns_mode=split 的 Mode 中 action=reject 的 rule_id 引用，
-# 把对应 rule 文件中的"非 +exact 前缀"的域名输出到 stdout（去重）
-ss_split_collect_reject_domains() {
-	# 注意：mode/rule 索引按 1-based（与 install.sh::migrate_split_routing_v1 一致）。
-	# 详见 doc/implementation/split-routing-implementation.md §1.5 索引规范。
-	local mode_count=$(dbus get ss_split_mode_count 2>/dev/null)
-	[ -z "${mode_count}" ] && mode_count=0
-	local m=1
-	local tmp_collect="/tmp/fss_split_reject.$$"
-	: > "${tmp_collect}"
-	while [ "${m}" -le "${mode_count}" ]; do
-		local dns_mode=$(dbus get ss_split_mode_${m}_dns_mode 2>/dev/null)
-		if [ "${dns_mode}" = "split" ]; then
-			local rcnt=$(dbus get ss_split_mode_${m}_rule_count 2>/dev/null)
-			[ -z "${rcnt}" ] && rcnt=0
-			local r=1
-			while [ "${r}" -le "${rcnt}" ]; do
-				local action=$(dbus get ss_split_mode_${m}_rule_${r}_action 2>/dev/null)
-				if [ "${action}" = "reject" ]; then
-					local rid=$(dbus get ss_split_mode_${m}_rule_${r}_rid 2>/dev/null)
-					local rfile="/koolshare/ss/rules_user/rule_${rid}.txt"
-					if [ -n "${rid}" ] && [ -f "${rfile}" ]; then
-						# 取域名行（忽略注释 / 空行 / IP / CIDR），
-						# +exact 前缀的精确域名转回普通域名；suffix 域名保持原样
-						awk '
-							/^[[:space:]]*#/ { next }
-							{ sub(/#.*/, ""); gsub(/[[:space:]]+/, ""); }
-							!$0 { next }
-							/\// { next }                # CIDR 跳过
-							/^[0-9.]+$/ { next }         # IPv4 单 IP 跳过
-							/^[0-9a-fA-F:]+$/ { next }   # IPv6 单 IP 跳过
-							/^\+/ { print substr($0,2); next }
-							{ print }
-						' "${rfile}" >> "${tmp_collect}" 2>/dev/null
-					fi
-				fi
-				r=$((r + 1))
-			done
-		fi
-		m=$((m + 1))
-	done
-	# 去重输出（保持稳定性，sort -u 即可）
-	if [ -s "${tmp_collect}" ]; then
-		sort -u "${tmp_collect}"
-	fi
-	rm -f "${tmp_collect}" >/dev/null 2>&1
-}
-
-# 收集所有 dns_mode=split 的 Mode 中所有 rule 关联的"应当走代理 (proxy_*)"的
-# rule_id，用于把这些 rule 文件喂给分流 chinadns-ng 实例的 gfwlist tag
-# （alpha 简化：默认 chnlist/gfwlist 维持原 /koolshare/ss/rules/*.gz；
-#  Rule 文件本身将由 xray sniffing 在路由层兜起来。这里仅生成 reject group。）
-# 留作未来扩展占位（doge.13+ 加聚合 chn/gfw tag 数据时启用）
+# alpha.15: 原 ss_split_collect_reject_domains() 函数已删除——chinadns-ng 不识别
+# group-tag-noip 语法（V1-reviewer 实证 zfl9/chinadns-ng/src/opt.zig 找不到该选项），
+# 该函数收集的 reject 域名喂给非法语法的 group 块会让 chinadns-ng 进程 exit(1)，
+# 是潜伏地雷（用户一旦在 Mode 配 action=reject rule，DNS 全挂）。
+# reject 语义由 xray blackhole outbound 完成（detail 见 generate_xray_json_split）。
 
 # 生成分流 chinadns-ng 实例配置：/tmp/chinadns_ng_split.conf @ 端口 65353
 # - 国内 / 国外 upstream 取自现有用户配置（ss_basic_chng_china_* / trust_*）
 # - 不写 ipset（去掉 add-tagchn-ip / add-taggfw-ip / add-tagignore-ip）
-# - reject group 动态收集
+# - reject 由 xray blackhole outbound 完成（alpha.15 移除原 DNS 层 group reject）
 # - LAN 域名 → 127.0.0.1:65355 (dnsmasq let-port，由 split 路径在 start_dns_x
 #   阶段配合 ss_basic_dns_serverx=1 把 dnsmasq 让到该端口)
 # alpha 简化：本函数复用 start_chinadns_ng() 内部已构造的 CDNS_LINE / FDNS_LINE
@@ -2301,20 +2261,10 @@ generate_chinadns_split_conf() {
 		EOF
 	fi
 
-	# reject group（动态收集 dns_mode=split 中 reject 动作的域名）
-	local reject_file="/tmp/fss_split_reject_dnl.txt"
-	ss_split_collect_reject_domains > "${reject_file}" 2>/dev/null
-	if [ -s "${reject_file}" ]; then
-		cat >> "${conf}" <<-EOF
-			# reject 组：返回 NXDOMAIN（CLAUDE.md 硬规则 #11：chnlist/gfwlist tag
-			# 优先级问题留给 xray blackhole outbound 作终态屏蔽——本组只是 DNS 层快速失败）
-			group reject
-			group-dnl ${reject_file}
-			group-upstream 127.0.0.1#65353
-			group-tag-noip reject
-
-		EOF
-	fi
+	# reject 语义由 xray blackhole outbound 完成（详见 generate_xray_json_split
+	# 注册的 out_reject outbound + routing.rules 中 action=reject → outboundTag=out_reject）。
+	# DNS 层不参与 reject——alpha.15 移除原 group reject 配置块（chinadns-ng 不识别
+	# group-tag-noip 语法，一旦 reject_file 非空 chinadns-ng 进程会 exit(1)，是潜伏地雷）。
 
 	# IPv6 行为（沿用现有用户偏好）
 	if [ "${ss_basic_chng_ipv6_drop_direc:-0}" = "0" ] && [ "${ss_basic_chng_ipv6_drop_proxy:-1}" = "1" ]; then
@@ -2392,17 +2342,6 @@ generate_chinadns_global_conf() {
 
 	EOF
 
-	# reject group 复用分流实例生成的 reject 清单文件（若存在）
-	if [ -s "/tmp/fss_split_reject_dnl.txt" ]; then
-		cat >> "${conf}" <<-EOF
-			group reject
-			group-dnl /tmp/fss_split_reject_dnl.txt
-			group-upstream 127.0.0.1#65354
-			group-tag-noip reject
-
-		EOF
-	fi
-
 	cat >> "${conf}" <<-EOF
 		filter-qtype 64,65
 		# 不挂 hosts /etc/hosts：理由同 generate_chinadns_split_conf
@@ -2466,7 +2405,6 @@ start_chinadns_ng_split() {
 stop_chinadns_ng_split() {
 	killall chinadns-ng >/dev/null 2>&1
 	rm -f /tmp/chinadns_ng_split.conf /tmp/chinadns_ng_global.conf >/dev/null 2>&1
-	rm -f /tmp/fss_split_reject_dnl.txt >/dev/null 2>&1
 	dbus set ss_split_dns_split_status="down"
 	dbus set ss_split_dns_global_status="down"
 }
@@ -3136,6 +3074,16 @@ start_chinadns_ng(){
 	fi
 	
 	detect_running_status chinadns-ng
+	# alpha.17 P1-4: chinadns-ng 启动结果实地探测（detect_running_status 内部已 sleep，
+	# 这里再补一次 pid/port 检查给出明确成败回执）
+	sleep 1
+	local _cdns_pid=$(pidof chinadns-ng | awk '{print $1}')
+	local _cdns_port=$(netstat -lnup 2>/dev/null | grep chinadns-ng | grep -Eo ':[0-9]+' | head -1 | tr -d ':')
+	if [ -n "${_cdns_pid}" ] && [ -n "${_cdns_port}" ]; then
+		echo_date "✅ chinadns-ng 启动完成 pid=${_cdns_pid} listen=127.0.0.1:${_cdns_port}"
+	else
+		echo_date "❌ chinadns-ng 启动失败！pid=${_cdns_pid:-N/A} listen=${_cdns_port:-未探测到}"
+	fi
 	echo_date "---------------------------------------------------------"
 }
 
@@ -5027,27 +4975,48 @@ creat_shunt_json() {
 # ============================================================================
 
 # 把 rule 文件解析为 jq 友好的 JSON 数组（domains + ip_v4 + ip_v6）
+# 用法：ss_split_rule_to_json <rfile> <outfile>
+#   - outfile 必传——rule_1.txt 可能 11 万行 chnlist (~1.6MB JSON)，灌进 shell 变量
+#     必爆 busybox `[` 内置 ARG_MAX ~128KB（alpha.12 实地踩坑）。
+#   - 不留 stdout fallback：hnd_v8 busybox 1.25 路由器 `/dev/stdout` 不存在，
+#     默认值会被当物理文件路径写垃圾到 /dev/ 下（alpha.13 dry-run 实测）。
 ss_split_rule_to_json() {
 	local rfile="$1"
-	[ -f "${rfile}" ] || { echo "{}"; return 0; }
-	awk '
+	local outfile="$2"
+	if [ -z "${outfile}" ]; then
+		echo "ss_split_rule_to_json: missing outfile arg" >&2
+		return 1
+	fi
+	if [ ! -f "${rfile}" ]; then
+		echo "{}" > "${outfile}"
+		return 0
+	fi
+	# alpha.14 性能优化：原 awk 用 `ip_buf = ip_buf "..."` 字符串累加，每次拷贝整段
+	# buffer，10k+ ip 行触发 O(n²) → 处理 11 万行 chnlist+cn.txt 单次 37.5s
+	# （user 报 50s hang 的主因）。改为：ip 行 streaming 写到临时文件 ip_tmp，
+	# END 阶段先关闭 fd flush 再 getline 拼回主输出。实测 37.5s → 3.88s（9.7x）。
+	# Domain 路径无需改（一直是 streaming printf，没累加）。
+	local ip_tmp="${outfile}.iptmp"
+	awk -v ip_out="${ip_tmp}" '
 		BEGIN { print "{"; print "  \"domains\": ["; first_d = 1; first_i = 1; }
-		END   { print ""; print "  ], \"ips\": ["; if (any_ip) print ip_buf; print "  ] }"; }
 		/^[[:space:]]*#/ { next }
 		{ sub(/#.*/, ""); gsub(/[[:space:]]+/, ""); }
 		!$0 { next }
 		/\// {
 			# CIDR
-			if (any_ip) ip_buf = ip_buf ",\n"; ip_buf = ip_buf "    \"" $0 "\"";
-			any_ip = 1; next;
+			if (first_i) first_i = 0; else print "," > ip_out
+			print "    \"" $0 "\"" > ip_out
+			next
 		}
 		/^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/ {
-			if (any_ip) ip_buf = ip_buf ",\n"; ip_buf = ip_buf "    \"" $0 "/32\"";
-			any_ip = 1; next;
+			if (first_i) first_i = 0; else print "," > ip_out
+			print "    \"" $0 "/32\"" > ip_out
+			next
 		}
 		/^[0-9a-fA-F:]+$/ {
-			if (any_ip) ip_buf = ip_buf ",\n"; ip_buf = ip_buf "    \"" $0 "/128\"";
-			any_ip = 1; next;
+			if (first_i) first_i = 0; else print "," > ip_out
+			print "    \"" $0 "/128\"" > ip_out
+			next
 		}
 		/^\+/ {
 			d = substr($0, 2);
@@ -5059,7 +5028,17 @@ ss_split_rule_to_json() {
 			if (first_d) first_d = 0; else printf(",\n");
 			printf("    \"domain:%s\"", $0);
 		}
-	' "${rfile}"
+		END {
+			print ""
+			print "  ], \"ips\": ["
+			# 关 fd 让 buffered write 落盘，再从同一文件 getline 拼回主输出
+			# 完全没有 ip 行时 ip_out 文件不存在，getline 直接返回 0，输出空 ips 数组
+			close(ip_out)
+			while ((getline line < ip_out) > 0) print line
+			print "  ] }"
+		}
+	' "${rfile}" > "${outfile}"
+	rm -f "${ip_tmp}"
 }
 
 # 从 action 字符串导出 canonical tag（与 §4.3 算法对齐）
@@ -5103,6 +5082,58 @@ generate_xray_json_split() {
 
 	echo_date "----------- 开始生成 xray 分流配置 (doge.12 alpha) -----------"
 
+	# alpha.12: 运行时健康检查 + hot reseed（同形漏修补丁，详见 install.sh::migrate_split_routing_v1）
+	# 老路径：rule_<rid>.txt 缺失时 line 5305 `[ -n "${rid}" ] && [ -f "${rfile}" ]` 守卫静默跳过，
+	# 没 warn 没 error，整条 Mode 只剩兜底规则 → 所有流量走 default_action（用户报"全代理"现象）。
+	# 修：xray 生成前枚举 ss_split_rule_<i>_id，对每个 Rule 检查 rule_${rid}.txt 是否存在且非空；
+	#     缺失则 source helper 触发 reseed，再验证一遍。
+	# CLAUDE.md 硬规则 #13 1-indexed：用 `while [ $rcheck -le ${rule_count_total} ]`。
+	local rule_count_total=$(dbus get ss_split_rule_count 2>/dev/null)
+	rule_count_total=${rule_count_total:-0}
+	local missing_rule_files=""
+	local rcheck=1
+	while [ "${rcheck}" -le "${rule_count_total}" ]; do
+		local rid_check=$(dbus get ss_split_rule_${rcheck}_id 2>/dev/null)
+		if [ -n "${rid_check}" ] && [ ! -s "/koolshare/ss/rules_user/rule_${rid_check}.txt" ]; then
+			missing_rule_files="${missing_rule_files} rule_${rid_check}.txt"
+		fi
+		rcheck=$((rcheck + 1))
+	done
+
+	if [ -n "${missing_rule_files}" ]; then
+		echo_date "⚠️ split: 检测到 Rule 源文件缺失:${missing_rule_files}，触发自愈"
+		dbus set fss_split_xray_warn="rule_files_missing_autoseed"
+		if [ -f /koolshare/scripts/ss_split_rule_seed.sh ]; then
+			. /koolshare/scripts/ss_split_rule_seed.sh
+			if type fancyss_split_seed_rule_files_v1 >/dev/null 2>&1; then
+				fancyss_split_seed_rule_files_v1
+				# 再次验证
+				local still_missing=""
+				local rrecheck=1
+				while [ "${rrecheck}" -le "${rule_count_total}" ]; do
+					local rid_recheck=$(dbus get ss_split_rule_${rrecheck}_id 2>/dev/null)
+					if [ -n "${rid_recheck}" ] && [ ! -s "/koolshare/ss/rules_user/rule_${rid_recheck}.txt" ]; then
+						still_missing="${still_missing} rule_${rid_recheck}.txt"
+					fi
+					rrecheck=$((rrecheck + 1))
+				done
+				if [ -z "${still_missing}" ]; then
+					echo_date "✅ split: Rule 源文件自愈完成"
+					dbus set fss_split_xray_warn=""
+				else
+					echo_date "❌ split: 自愈失败仍缺:${still_missing}"
+					dbus set fss_split_xray_warn="rule_files_reseed_failed"
+				fi
+			else
+				echo_date "❌ split: helper 已 source 但 function 不存在"
+				dbus set fss_split_xray_warn="reseed_helper_function_missing"
+			fi
+		else
+			echo_date "❌ split: helper /koolshare/scripts/ss_split_rule_seed.sh 不存在"
+			dbus set fss_split_xray_warn="reseed_helper_file_missing"
+		fi
+	fi
+
 	# 1. 扫描 Mode 元数据
 	local mode_count=$(dbus get ss_split_mode_count 2>/dev/null)
 	[ -z "${mode_count}" ] && mode_count=0
@@ -5134,6 +5165,16 @@ generate_xray_json_split() {
 		return 1
 	fi
 	echo_date "ℹ️ split: 检测到 ${active_count} 个 active Mode（共 ${mode_count}）"
+	# alpha.17 P2-2: 列出每个 Mode 的名字和 rule 数,默认 Mode 用 # 标识
+	local _mode_names=""
+	local _midx=1
+	while [ "${_midx}" -le "${mode_count}" ]; do
+		local _mname=$(dbus get ss_split_mode_${_midx}_name 2>/dev/null)
+		local _mrcnt=$(dbus get ss_split_mode_${_midx}_rule_count 2>/dev/null)
+		_mode_names="${_mode_names} #${_midx}=${_mname:-未命名}(${_mrcnt:-0}规则)"
+		_midx=$((_midx + 1))
+	done
+	echo_date "    Mode 列表:${_mode_names}; 默认 Mode=#${default_mode_id}"
 
 	# 2. 收集所有 unique action（去重）
 	local actions_seen=""
@@ -5303,15 +5344,36 @@ EOF
 			esac
 			local rfile="${rules_user_dir}/rule_${rid}.txt"
 			if [ -n "${rid}" ] && [ -f "${rfile}" ]; then
-				# 解析 rule 文件为 domains + ips
-				local rdata=$(ss_split_rule_to_json "${rfile}")
-				if [ -n "${rdata}" ] && [ "${rdata}" != "{}" ]; then
-					__split_emit_rule "$(printf '%s' "${rdata}" | jq --arg tag "mode_${mid}" --arg ob "${rtag}" '
-						{ type: "field", inboundTag: [$tag], outboundTag: $ob }
-						+ (if (.domains | length) > 0 then { domain: .domains } else {} end)
-						+ (if (.ips | length) > 0 then { ip: .ips } else {} end)
-					' 2>/dev/null)"
+				# alpha.13: rule 文件可能 11 万行 chnlist（~1.6MB JSON）—— 不能灌进
+				# shell 变量。busybox `[ "${X}" ]` 内置 ARG_MAX ~128KB 必爆，alpha.12
+				# 实地踩坑（41s hang + Mode 2 大文件 rule 静默吞掉）。
+				# 改用文件中转：ss_split_rule_to_json 直接写文件，jq 读文件、输出
+				# 写另一文件，最后 cat 流式 append 到 routing_rules_file —— 全程不经 argv。
+				local rdata_file="/tmp/fss_split_rdata.$$.${mi}.${r}.json"
+				local emit_tmp="/tmp/fss_split_emit.$$.${mi}.${r}.json"
+				ss_split_rule_to_json "${rfile}" "${rdata_file}"
+				if [ -s "${rdata_file}" ]; then
+					# jq filter：空 rule 文件（仅 header 或 reseed 半失败）会产出
+					# {"domains":[],"ips":[]}，若直接生成 routing rule 就是"只有 inboundTag
+					# 没 domain/ip"的 field rule → xray 当全匹配 → 抢在兜底前命中 → 整 Mode
+					# 流量被这条空 rule 吞掉。所以用 `if length>0 then ... else empty end`
+					# 包一层，让空 rule 文件不产 routing 条目，让兜底接管（行为更安全）。
+					if jq --arg tag "mode_${mid}" --arg ob "${rtag}" '
+						if (.domains | length) > 0 or (.ips | length) > 0 then
+							{ type: "field", inboundTag: [$tag], outboundTag: $ob }
+							+ (if (.domains | length) > 0 then { domain: .domains } else {} end)
+							+ (if (.ips | length) > 0 then { ip: .ips } else {} end)
+						else empty end
+					' "${rdata_file}" > "${emit_tmp}" 2>/dev/null && [ -s "${emit_tmp}" ]; then
+						if [ "${first_rule}" = "1" ]; then
+							first_rule=0
+						else
+							echo "," >> "${routing_rules_file}"
+						fi
+						cat "${emit_tmp}" >> "${routing_rules_file}"
+					fi
 				fi
+				rm -f "${rdata_file}" "${emit_tmp}"
 			fi
 			r=$((r + 1))
 		done
@@ -5428,14 +5490,20 @@ start_xray() {
 	if [ "$(get_runtime_proxy_mode)" = "7" ] && type fss_shunt_xray_asset_dir >/dev/null 2>&1; then
 		xray_asset_dir="$(fss_shunt_xray_asset_dir 2>/dev/null || true)"
 	fi
-	# 链式代理（前置节点）注入：split 路径下若 generate_xray_json_split 成功
-	# 已经把链式注入到 out_main 上层（fss_chain_apply 仍可二次叠加 dialerProxy；
-	# 但 alpha 不重复绑定——交给 fss_chain_apply 仍然写一次，jq 自带 idempotent
-	# 守卫即可避免重复）。
+	# 链式代理（前置节点）注入：
+	# split 路径下 generate_xray_json_split 只动主 outbound tag（→ out_main）和追加
+	# direct/reject 两个 outbound，**不注入链式 outbound**。链式由 fss_chain_apply
+	# 唯一一次注入——在 split 产物的 out_main 上覆盖 streamSettings.sockopt.dialerProxy
+	# 并追加 proxy_front outbound（其 tag 在 xray.json 此前不存在），无 duplicate tag
+	# 冲突。alpha.14 validation 确认无回归（用户实测 outbound=3+chain=4 启动成功）。
+	# split=0/1 两条分支调用一致，差异仅在 generate_xray_json_split 是否跑过。
+	# 注：fss_chain_apply 内部检查 ss_basic_mode=7 (xray分流模式) 时直接 return 0
+	# 并设 ss_chain_status=fallback。alpha 阶段两键独立，若用户开 split_enabled=1
+	# 但保留旧 ss_basic_mode=7 的混合状态，链式会被静默禁用（设计内行为，doge.13
+	# UI 引导会避免该组合）。
 	if [ "${ss_split_enabled}" != "1" ]; then
 		type fss_chain_apply >/dev/null 2>&1 && fss_chain_apply /koolshare/ss/xray.json
 	else
-		# split 模式下：alpha 简化——仍调用 fss_chain_apply 让它处理主节点链式
 		type fss_chain_apply >/dev/null 2>&1 && fss_chain_apply /koolshare/ss/xray.json
 	fi
 	if [ -n "${xray_asset_dir}" ]; then
@@ -5443,7 +5511,11 @@ start_xray() {
 	else
 		run_bg /koolshare/bin/xray run -c /koolshare/ss/xray.json
 	fi
-	detect_running_status3 xray 23456 0 force
+	# alpha.17 P1-2: VERBOSE=1 让 detect_running_status3 打印探测结果；启动后探 pid/监听端口
+	detect_running_status3 xray 23456 1 force
+	local _xray_pid=$(pidof xray | awk '{print $1}')
+	local _xray_listen=$(netstat -lntup 2>/dev/null | grep -E "xray" | awk '{print $4}' | sort -u | tr '\n' ' ')
+	echo_date "✅ Xray 启动完成 pid=${_xray_pid:-N/A} 监听端口=${_xray_listen:-无}"
 }
 
 creat_trojan_json(){
@@ -6102,6 +6174,8 @@ EOF
 
 # FORK doge.12 alpha: 极简化 ipset flush（只清 ignlist_minimal / 6）
 flush_ipset_split() {
+	# alpha.17 P2-4: split 路径 ipset 清理日志
+	echo_date "清除 split 路径 ignlist_minimal ipset..."
 	local existing_sets=$(ipset list -name 2>/dev/null)
 	if [ -n "${existing_sets}" ]; then
 		echo "${existing_sets}" | while IFS= read -r set_name; do
@@ -6948,7 +7022,11 @@ load_iptables() {
 	# creat_ipset
 	# add_white_black
 	if ! _start_iptables; then
-		echo_date "错误：写入iptables透明代理规则失败，正在回滚..."
+		# alpha.17 P1-5: 失败时先 dump iptables nat/mangle 链残留状态再回滚，便于诊断
+		echo_date "❌ 错误：写入iptables透明代理规则失败！当前 iptables nat/mangle 残留状态："
+		iptables -t nat -L SHADOWSOCKS -n --line-numbers 2>&1 | head -20 | while IFS= read -r _l; do echo_date "    ${_l}"; done
+		iptables -t mangle -L SHADOWSOCKS -n --line-numbers 2>&1 | head -10 | while IFS= read -r _l; do echo_date "    ${_l}"; done
+		echo_date "正在回滚..."
 		flush_iptables
 		flush_ipset
 		close_in_five flag
@@ -7028,6 +7106,8 @@ __split_mode_port_by_id() {
 		m=$((m + 1))
 	done
 	# 没找到 → 兜底默认 mode 的端口
+	# alpha.17 W2 修：兜底前打 warn 日志（>&2 走 stderr，避免污染 $(...) 捕获的 stdout）。
+	echo_date "⚠️ split: __split_mode_port_by_id 找不到 mode_id=${target_mid}，兜底返回 ${SS_SPLIT_PORT_BASE}" >&2
 	echo "${SS_SPLIT_PORT_BASE}"
 	return 1
 }
@@ -7053,7 +7133,55 @@ __split_mode_dns_port_by_id() {
 		m=$((m + 1))
 	done
 	# 兜底
+	# alpha.17 W2 修：兜底前打 warn 日志（>&2 走 stderr，避免污染 $(...) 捕获的 stdout）。
+	echo_date "⚠️ split: __split_mode_dns_port_by_id 找不到 mode_id=${target_mid}，兜底返回 ${SS_SPLIT_DNS_SPLIT_PORT}" >&2
 	echo "${SS_SPLIT_DNS_SPLIT_PORT}"
+	return 1
+}
+
+# alpha.16: 根据 mode_id 返回 block_quic（0/1），未设置默认 0
+# Mode 管理 UI 里"屏蔽 QUIC"复选框 → ss_split_mode_<m>_block_quic dbus key
+__split_mode_block_quic_by_id() {
+	local target_mid="$1"
+	local mode_count=$(dbus get ss_split_mode_count 2>/dev/null)
+	[ -z "${mode_count}" ] && mode_count=0
+	local m=1
+	while [ "${m}" -le "${mode_count}" ]; do
+		local mid=$(dbus get ss_split_mode_${m}_id 2>/dev/null)
+		if [ "${mid}" = "${target_mid}" ]; then
+			local v=$(dbus get ss_split_mode_${m}_block_quic 2>/dev/null)
+			[ -z "${v}" ] && v=0
+			echo "${v}"
+			return 0
+		fi
+		m=$((m + 1))
+	done
+	# alpha.17 W2 修：兜底前打 warn 日志（>&2 走 stderr，避免污染 $(...) 捕获的 stdout）。
+	echo_date "⚠️ split: __split_mode_block_quic_by_id 找不到 mode_id=${target_mid}，兜底返回 0" >&2
+	echo 0
+	return 1
+}
+
+# alpha.16: 根据 mode_id 返回 udp_proxy（0/1），未设置默认 1（启用 UDP 代理）
+# Mode 管理 UI 里"UDP 代理"复选框 → ss_split_mode_<m>_udp_proxy dbus key
+__split_mode_udp_proxy_by_id() {
+	local target_mid="$1"
+	local mode_count=$(dbus get ss_split_mode_count 2>/dev/null)
+	[ -z "${mode_count}" ] && mode_count=0
+	local m=1
+	while [ "${m}" -le "${mode_count}" ]; do
+		local mid=$(dbus get ss_split_mode_${m}_id 2>/dev/null)
+		if [ "${mid}" = "${target_mid}" ]; then
+			local v=$(dbus get ss_split_mode_${m}_udp_proxy 2>/dev/null)
+			[ -z "${v}" ] && v=1
+			echo "${v}"
+			return 0
+		fi
+		m=$((m + 1))
+	done
+	# alpha.17 W2 修：兜底前打 warn 日志（>&2 走 stderr，避免污染 $(...) 捕获的 stdout）。
+	echo_date "⚠️ split: __split_mode_udp_proxy_by_id 找不到 mode_id=${target_mid}，兜底返回 1" >&2
+	echo 1
 	return 1
 }
 
@@ -7127,18 +7255,39 @@ load_iptables_split() {
 				append_if_not_exists mangle -A SHADOWSOCKS -m mac --mac-source "${mac}" -j RETURN
 			else
 				local user_port=$(__split_mode_port_by_id "${user_mode}")
+				local user_block_quic=$(__split_mode_block_quic_by_id "${user_mode}")
+				local user_udp_proxy=$(__split_mode_udp_proxy_by_id "${user_mode}")
+				# alpha.16: block_quic=1 时 UDP/443 不进代理直接 DROP（HTTP/3 回退 TCP）。
+				# 必须放在该 user 的 TPROXY 规则之前——iptables 顺序敏感，先 DROP 后 TPROXY。
+				if [ "${user_block_quic}" = "1" ]; then
+					append_if_not_exists mangle -A SHADOWSOCKS -p udp --dport 443 -m mac --mac-source "${mac}" -j DROP
+				fi
 				# TCP 走 TPROXY (mangle)
 				append_if_not_exists mangle -A SHADOWSOCKS -p tcp -m mac --mac-source "${mac}" -j TPROXY --tproxy-mark 0x07/0x07 --on-port "${user_port}"
-				# UDP 同样走 TPROXY (新架构 TCP+UDP 统一 TPROXY)
-				append_if_not_exists mangle -A SHADOWSOCKS -p udp -m mac --mac-source "${mac}" -j TPROXY --tproxy-mark 0x07/0x07 --on-port "${user_port}"
+				# alpha.16: UDP TPROXY 仅在 udp_proxy=1 时加。udp_proxy=0 时该 user 的 UDP
+				# 流量未被任何 SHADOWSOCKS 规则命中 → 走原生路由（直连，不代理 UDP）。
+				if [ "${user_udp_proxy}" = "1" ]; then
+					append_if_not_exists mangle -A SHADOWSOCKS -p udp -m mac --mac-source "${mac}" -j TPROXY --tproxy-mark 0x07/0x07 --on-port "${user_port}"
+				fi
 			fi
 		fi
 		a=$((a + 1))
 	done
+	# alpha.17 P2-3: per-user TPROXY 装配后报告激活 ACL 行数,便于诊断"为什么某个 user 没走 per-Mode 端口"
+	local _acl_active=$(dbus list ss_acl_enable_ 2>/dev/null | grep '=1$' | wc -l)
+	echo_date "    已激活 ACL 行: ${_acl_active}/${acl_count} 个用户绑定到 per-Mode 端口"
 
 	# 默认（未在 acl 表中列出的设备）走默认 Mode
+	local default_block_quic=$(__split_mode_block_quic_by_id "${default_mid}")
+	local default_udp_proxy=$(__split_mode_udp_proxy_by_id "${default_mid}")
+	# alpha.16: 默认 Mode 的 block_quic / udp_proxy 同样消费（fallback 设备走这条）
+	if [ "${default_block_quic}" = "1" ]; then
+		append_if_not_exists mangle -A SHADOWSOCKS -p udp --dport 443 -j DROP
+	fi
 	append_if_not_exists mangle -A SHADOWSOCKS -p tcp -j TPROXY --tproxy-mark 0x07/0x07 --on-port "${default_port}"
-	append_if_not_exists mangle -A SHADOWSOCKS -p udp -j TPROXY --tproxy-mark 0x07/0x07 --on-port "${default_port}"
+	if [ "${default_udp_proxy}" = "1" ]; then
+		append_if_not_exists mangle -A SHADOWSOCKS -p udp -j TPROXY --tproxy-mark 0x07/0x07 --on-port "${default_port}"
+	fi
 
 	# 挂到 PREROUTING (mangle)
 	append_if_not_exists mangle -A PREROUTING -i "${default_iface}" -j SHADOWSOCKS
@@ -7896,28 +8045,28 @@ set_ss_reboot_job() {
 		remove_ss_reboot_job
 	elif [[ "${ss_reboot_check}" == "1" ]]; then
 		echo_date "【科学上网】：设置每天${ss_basic_time_hour}时${ss_basic_time_min}分重启插件..."
-		cru a ss_reboot ${ss_basic_time_min} ${ss_basic_time_hour}" * * * /bin/sh /koolshare/ss/ssconfig.sh restart"
+		cru a ss_reboot ${ss_basic_time_min} ${ss_basic_time_hour}" * * * /bin/sh /koolshare/scripts/ss_cron_restart.sh"
 	elif [[ "${ss_reboot_check}" == "2" ]]; then
 		echo_date "【科学上网】：设置每周${ss_basic_week}的${ss_basic_time_hour}时${ss_basic_time_min}分重启插件..."
-		cru a ss_reboot ${ss_basic_time_min} ${ss_basic_time_hour}" * * "${ss_basic_week}" /bin/sh /koolshare/ss/ssconfig.sh restart"
+		cru a ss_reboot ${ss_basic_time_min} ${ss_basic_time_hour}" * * "${ss_basic_week}" /bin/sh /koolshare/scripts/ss_cron_restart.sh"
 	elif [[ "${ss_reboot_check}" == "3" ]]; then
 		echo_date "【科学上网】：设置每月${ss_basic_day}日${ss_basic_time_hour}时${ss_basic_time_min}分重启插件..."
-		cru a ss_reboot ${ss_basic_time_min} ${ss_basic_time_hour} ${ss_basic_day}" * * /bin/sh /koolshare/ss/ssconfig.sh restart"
+		cru a ss_reboot ${ss_basic_time_min} ${ss_basic_time_hour} ${ss_basic_day}" * * /bin/sh /koolshare/scripts/ss_cron_restart.sh"
 	elif [[ "${ss_reboot_check}" == "4" ]]; then
 		if [[ "${ss_basic_inter_pre}" == "1" ]]; then
 			echo_date "【科学上网】：设置每隔${ss_basic_inter_min}分钟重启插件..."
-			cru a ss_reboot "*/"${ss_basic_inter_min}" * * * * /bin/sh /koolshare/ss/ssconfig.sh restart"
+			cru a ss_reboot "*/"${ss_basic_inter_min}" * * * * /bin/sh /koolshare/scripts/ss_cron_restart.sh"
 		elif [[ "${ss_basic_inter_pre}" == "2" ]]; then
 			echo_date "【科学上网】：设置每隔${ss_basic_inter_hour}小时重启插件..."
-			cru a ss_reboot "0 */"${ss_basic_inter_hour}" * * * /bin/sh /koolshare/ss/ssconfig.sh restart"
+			cru a ss_reboot "0 */"${ss_basic_inter_hour}" * * * /bin/sh /koolshare/scripts/ss_cron_restart.sh"
 		elif [[ "${ss_basic_inter_pre}" == "3" ]]; then
 			echo_date "【科学上网】：设置每隔${ss_basic_inter_day}天${ss_basic_inter_hour}小时${ss_basic_time_min}分钟重启插件..."
-			cru a ss_reboot ${ss_basic_time_min} ${ss_basic_time_hour}" */"${ss_basic_inter_day} " * * /bin/sh /koolshare/ss/ssconfig.sh restart"
+			cru a ss_reboot ${ss_basic_time_min} ${ss_basic_time_hour}" */"${ss_basic_inter_day} " * * /bin/sh /koolshare/scripts/ss_cron_restart.sh"
 		fi
 	elif [[ "${ss_reboot_check}" == "5" ]]; then
 		check_custom_time=$(echo ss_basic_custom | base64_decode)
 		echo_date "【科学上网】：设置每天${check_custom_time}时的${ss_basic_time_min}分重启插件..."
-		cru a ss_reboot ${ss_basic_time_min} ${check_custom_time}" * * * /bin/sh /koolshare/ss/ssconfig.sh restart"
+		cru a ss_reboot ${ss_basic_time_min} ${check_custom_time}" * * * /bin/sh /koolshare/scripts/ss_cron_restart.sh"
 	fi
 }
 
@@ -8217,6 +8366,8 @@ apply_ss() {
 
 	echo_date ======================= 梅林固件 - 【科学上网】 ========================
 	echo_date
+	# alpha.17 P1-1: 启动时打印运行参数总览（用户最高优先级运维体验改进）
+	echo_date "运行参数: enable=${ss_basic_enable} mode=${ss_basic_mode}(type=${ss_basic_type}) node=${ssconf_basic_node} front=${ssconf_basic_node_front:-(无)} split_enabled=${ss_split_enabled:-0} failover=${ss_failover_enable:-0}"
 	if [ "${ss_basic_status}" == "1" ];then
 		if shunt_hot_restart_eligible; then
 			shunt_prev_xray_json="/tmp/fss_shunt_prev_xray.json.$$"
@@ -8342,6 +8493,8 @@ apply_ss() {
 	fi
 	# store current status
 	dbus set ss_basic_status="1"
+	# alpha.17 P1-6: 启动尾部摘要关键状态，给用户一眼可见的"启动后是否正常"信号
+	echo_date "📋 启动状态摘要: status=1 mode=${ss_basic_mode} dns_plan=${ss_basic_dns_plan:-1} chain_status=$(dbus get ss_chain_status 2>/dev/null || echo disabled) split_xray_warn=$(dbus get fss_split_xray_warn 2>/dev/null || echo OK)"
 	echo_date ------------------------ 【科学上网】 启动完毕 ------------------------
 	FSS_SKIP_XRAY_PORT_CLEANUP=""
 	rm -f "${shunt_prev_xray_json}" >/dev/null 2>&1
@@ -8480,13 +8633,17 @@ stop_ws(){
 case $ACTION in
 start)
 	# 故障转移备用组合：start 入口处理失效标志（fork 新增，详见 doc/design/failover-combo-list-design.md §4.3）
-	if [ "$(dbus get fss_failover_internal_restart)" = "1" ]; then
+	# alpha.17 扩展：flag=1 (failover 自切)、flag=2 (cron / wan-start / legacy 触发，wrapper 设置) 都保留 failed；
+	# 其他值（含空 / 用户主动 restart）才清 failed。
+	__fofr="$(dbus get fss_failover_internal_restart)"
+	if [ "${__fofr}" = "1" ] || [ "${__fofr}" = "2" ]; then
 		# 故障转移内部触发的 restart，不清失效标志，但要重置 internal_restart 防止遗留
 		dbus set fss_failover_internal_restart="0"
 	else
 		# 用户主动操作，清空所有 combo 的 failed 标志（同时清切换时戳解除冷却）
 		fss_failover_clear_all_failed
 	fi
+	unset __fofr
 	# start on wan-start
 	set_lock
 	if [ "$ss_basic_enable" == "1" ]; then
@@ -8511,13 +8668,17 @@ stop)
 	;;
 restart)
 	# 故障转移备用组合：restart 入口处理失效标志（fork 新增，详见 doc/design/failover-combo-list-design.md §4.3）
-	if [ "$(dbus get fss_failover_internal_restart)" = "1" ]; then
+	# alpha.17 扩展：flag=1 (failover 自切)、flag=2 (cron / wan-start / legacy 触发，wrapper 设置) 都保留 failed；
+	# 其他值（含空 / 用户主动 restart）才清 failed。
+	__fofr="$(dbus get fss_failover_internal_restart)"
+	if [ "${__fofr}" = "1" ] || [ "${__fofr}" = "2" ]; then
 		# 故障转移内部触发的 restart，不清失效标志，但要重置 internal_restart 防止遗留
 		dbus set fss_failover_internal_restart="0"
 	else
 		# 用户主动操作，清空所有 combo 的 failed 标志（同时清切换时戳解除冷却）
 		fss_failover_clear_all_failed
 	fi
+	unset __fofr
 	# start/restart by web or user
 	set_lock
 	start_ws

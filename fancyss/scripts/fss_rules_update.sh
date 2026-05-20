@@ -328,6 +328,8 @@ run_cron_mode(){
 	# Batched restart：只有真正拉到新规则才重启
 	if [ "${NEED_RESTART}" = "1" ]; then
 		echo_date "检测到至少 1 条 Rule 实际更新成功，触发 ssconfig.sh restart 以应用新规则。"
+		# alpha.17 修：标记内部 restart，防止 ssconfig.sh 入口清掉 failover combo 的 failed 标志
+		dbus set fss_failover_internal_restart="2"
 		run sh /koolshare/ss/ssconfig.sh restart
 	fi
 }
@@ -373,6 +375,8 @@ run_force_mode(){
 
 	if [ "${NEED_RESTART}" = "1" ]; then
 		echo_date "Rule id=${target_id} 已更新，触发 ssconfig.sh restart 以应用新规则。"
+		# alpha.17 修：标记内部 restart，防止 ssconfig.sh 入口清掉 failover combo 的 failed 标志
+		dbus set fss_failover_internal_restart="2"
 		run sh /koolshare/ss/ssconfig.sh restart
 	fi
 }

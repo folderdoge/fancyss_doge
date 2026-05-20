@@ -6796,16 +6796,10 @@ function refresh_split_v2_panel() {
 		render_split_enabled_state();
 	}
 	// 全局 DNS upstream input
-	if (E('ss_split_dns_global_upstream')) {
-		E('ss_split_dns_global_upstream').value = db_ss['ss_split_dns_global_upstream'] || '';
-	}
-	// 双轨 DNS textarea (base64 编码存储)
-	if (E('ss_split_dns_china_upstream')) {
-		E('ss_split_dns_china_upstream').value = split_v2_b64_decode(db_ss['ss_split_dns_china_upstream']);
-	}
-	if (E('ss_split_dns_overseas_upstream')) {
-		E('ss_split_dns_overseas_upstream').value = split_v2_b64_decode(db_ss['ss_split_dns_overseas_upstream']);
-	}
+	// FORK doge.12 alpha.11 修 C-CRIT-2：3 个 DNS upstream 控件已设 readonly + 占位文案，alpha 阶段不再用 dbus 持久化；强制清空 value 确保 placeholder 显示
+	if (E('ss_split_dns_global_upstream')) { E('ss_split_dns_global_upstream').value = ''; }
+	if (E('ss_split_dns_china_upstream')) { E('ss_split_dns_china_upstream').value = ''; }
+	if (E('ss_split_dns_overseas_upstream')) { E('ss_split_dns_overseas_upstream').value = ''; }
 	render_split_mode_list();
 	render_split_rule_list();
 	render_split_default_mode_select();
@@ -6845,7 +6839,7 @@ function render_split_mode_list() {
 		var ruleCount = db_ss['ss_split_mode_' + m + '_rule_count'] || '0';
 		var defAction = db_ss['ss_split_mode_' + m + '_default_action'] || '(unset)';
 		var tag = builtin ? ' <span style="color:#888;font-size:10px;">[内置]</span>' : '';
-		html += '<tr style="border-bottom:1px solid #ccc;"><td>#' + id + ' ' + name + tag + '</td><td>' + udp + '</td><td>' + quic + '</td><td>' + dnsMode + '</td><td>' + ruleCount + '</td><td><code style="font-size:11px;">' + defAction + '</code></td>';
+		html += '<tr style="border-bottom:1px solid #ccc;"><td>#' + split_v2_html_escape(id) + ' ' + split_v2_html_escape(name) + tag + '</td><td>' + udp + '</td><td>' + quic + '</td><td>' + split_v2_html_escape(dnsMode) + '</td><td>' + split_v2_html_escape(ruleCount) + '</td><td><code style="font-size:11px;">' + split_v2_html_escape(defAction) + '</code></td>';
 		html += '<td><a href="javascript:void(0);" onclick="split_v2_edit_mode(' + m + ');">编辑</a>';
 		if (!builtin) {
 			html += ' | <a href="javascript:void(0);" onclick="split_v2_delete_mode(' + m + ');" style="color:#CC0066;">删除</a>';
@@ -6875,7 +6869,7 @@ function render_split_rule_list() {
 		var hrs = db_ss['ss_split_rule_' + r + '_update_hours'] || '0';
 		var tag = builtin ? ' <span style="color:#888;font-size:10px;">[内置]</span>' : '';
 		var srcShort = src.length > 35 ? src.substr(0,32) + '...' : src;
-		html += '<tr style="border-bottom:1px solid #ccc;"><td>#' + id + ' ' + name + tag + '</td><td>' + statD + '</td><td>' + statI + '</td><td title="' + src + '" style="font-family:monospace;font-size:11px;">' + srcShort + '</td><td>' + (hrs == '0' ? '禁用' : hrs + 'h') + '</td>';
+		html += '<tr style="border-bottom:1px solid #ccc;"><td>#' + split_v2_html_escape(id) + ' ' + split_v2_html_escape(name) + tag + '</td><td>' + split_v2_html_escape(statD) + '</td><td>' + split_v2_html_escape(statI) + '</td><td title="' + split_v2_html_escape(src) + '" style="font-family:monospace;font-size:11px;">' + split_v2_html_escape(srcShort) + '</td><td>' + (hrs == '0' ? '禁用' : split_v2_html_escape(hrs) + 'h') + '</td>';
 		html += '<td><a href="javascript:void(0);" onclick="split_v2_edit_rule(' + r + ');">编辑</a>';
 		if (!builtin) {
 			html += ' | <a href="javascript:void(0);" onclick="split_v2_delete_rule(' + r + ');" style="color:#CC0066;">删除</a>';
@@ -6961,37 +6955,716 @@ function start_split_status_polling() {
 function stop_split_status_polling() {
 	if (_splitStatusPollTimer) { clearInterval(_splitStatusPollTimer); _splitStatusPollTimer = null; }
 }
-// 占位编辑/新建（alpha 第一稿用 alert 提示——doge.13 起改为弹窗）
+// ============ FORK doge.12 modal 框架（splitDlg）+ Mode/Rule 弹窗实现 ============
+// 替换了 alpha 第一稿的 6 个 alert() 占位函数。
+// 持久化路径：
+//   Mode CRUD：走 dummy_script.sh fields（前端处理 slot shift）
+//   Rule CRUD：走 ss_split_rule_save.sh（后端处理文件 + slot shift）
+var splitDlg = {
+	el: null,
+	cb: null,
+	init: function() {
+		if (this.el) return;
+		var $body = $('body');
+		$body.append('<style id="split_dlg_style">' +
+			'#split_dlg_overlay { display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5); z-index:9999; }' +
+			'#split_dlg_box { position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); background:#fff; border:1px solid #888; border-radius:6px; padding:0; min-width:540px; max-width:760px; max-height:85vh; overflow:auto; box-shadow:0 4px 20px rgba(0,0,0,0.4); }' +
+			'#split_dlg_head { background:#445; color:#fff; padding:8px 12px; font-weight:bold; }' +
+			'#split_dlg_body { padding:12px; color:#000; background:#fff; }' +
+			'#split_dlg_body table { width:100%; }' +
+			'#split_dlg_body th { text-align:left; padding:5px 8px; vertical-align:top; font-weight:normal; color:#333; width:38%; }' +
+			'#split_dlg_body td { padding:5px 8px; color:#000; }' +
+			'#split_dlg_body input[type=text], #split_dlg_body input[type=number], #split_dlg_body textarea { box-sizing:border-box; width:95%; }' +
+			'#split_dlg_body select { max-width:95%; }' +
+			'#split_dlg_foot { padding:8px 12px; text-align:right; border-top:1px solid #ddd; background:#f6f6f6; }' +
+			'#split_dlg_foot button { margin-left:8px; padding:4px 16px; cursor:pointer; }' +
+			'.split_dlg_err { color:#CC0066; font-size:11px; padding-right:8px; }' +
+			'#mode_dlg_rules_list { border:1px solid #ccc; border-radius:4px; max-height:240px; overflow-y:auto; background:#fafafa; }' +
+			'#mode_dlg_rules_list .rules_row { padding:4px 6px; border-bottom:1px solid #eee; }' +
+			'#mode_dlg_rules_list .rules_row:last-child { border-bottom:none; }' +
+			'</style>');
+		$body.append('<div id="split_dlg_overlay"><div id="split_dlg_box">' +
+			'<div id="split_dlg_head"><span id="split_dlg_title">弹窗</span></div>' +
+			'<div id="split_dlg_body"></div>' +
+			'<div id="split_dlg_foot"><span id="split_dlg_err" class="split_dlg_err"></span><button type="button" onclick="splitDlg.cancel();">取消</button><button type="button" onclick="splitDlg.ok();" id="split_dlg_ok_btn">确定</button></div>' +
+			'</div></div>');
+		this.el = $('#split_dlg_overlay');
+		this.el.on('click', function(e) { if (e.target === this) splitDlg.cancel(); });
+	},
+	open: function(title, bodyHtml, onOk) {
+		this.init();
+		$('#split_dlg_title').text(title);
+		$('#split_dlg_body').html(bodyHtml);
+		$('#split_dlg_err').text('');
+		$('#split_dlg_ok_btn').prop('disabled', false);
+		this.cb = onOk;
+		this.el.show();
+	},
+	close: function() {
+		if (this.el) this.el.hide();
+		this.cb = null;
+	},
+	cancel: function() { this.close(); },
+	ok: function() {
+		if (typeof this.cb === 'function') {
+			var keepOpen = this.cb();
+			if (!keepOpen) this.close();
+		} else {
+			this.close();
+		}
+	},
+	error: function(msg) {
+		$('#split_dlg_err').text(msg || '');
+	}
+};
+
+// ============ 通用 dbus persist（fields-only, 不重启代理）============
+function split_v2_persist(fields, cb) {
+	var id = parseInt(Math.random() * 1e8);
+	$.ajax({
+		type: 'POST', cache: false, url: '/_api/',
+		data: JSON.stringify({"id": id, "method": "dummy_script.sh", "params":[], "fields": fields}),
+		dataType: 'json',
+		success: function() {
+			for (var k in fields) if (Object.prototype.hasOwnProperty.call(fields, k)) db_ss[k] = fields[k];
+			if (typeof cb === 'function') cb(true);
+		},
+		error: function() { if (typeof cb === 'function') cb(false); }
+	});
+}
+
+// 仅刷新 ss_split_* 区，避免触发全页面 reload
+function split_v2_refresh_dbss(cb) {
+	$.ajax({
+		type: 'GET', url: '/_api/ss', dataType: 'json', cache: false,
+		success: function(data) {
+			if (!data || !data.result || !data.result[0]) { if (typeof cb === 'function') cb(false); return; }
+			var fresh = data.result[0];
+			for (var k in fresh) {
+				if (Object.prototype.hasOwnProperty.call(fresh, k) && k.indexOf('ss_split_') === 0) {
+					db_ss[k] = fresh[k];
+				}
+			}
+			if (typeof cb === 'function') cb(true);
+		},
+		error: function() { if (typeof cb === 'function') cb(false); }
+	});
+}
+
+// Rule 持久化（域名/IP 文件 → ss_split_rule_save.sh）
+function split_v2_rule_persist(op, ruleId, name, sourceUrl, updateHours, payloadB64, cb) {
+	var fields = {
+		ss_split_rule_save_op: op,
+		ss_split_rule_save_id: String(ruleId),
+		ss_split_rule_save_name: name || '',
+		ss_split_rule_save_source_url: sourceUrl || '',
+		ss_split_rule_save_update_hours: String(updateHours || 0),
+		ss_split_rule_save_payload_b64: payloadB64 || ''
+	};
+	var reqId = parseInt(Math.random() * 1e8);
+	$.ajax({
+		type: 'POST', cache: false, url: '/_api/',
+		data: JSON.stringify({"id": reqId, "method": "ss_split_rule_save.sh", "params":[], "fields": fields}),
+		dataType: 'json',
+		success: function() {
+			// 后端写 _result / _error；延时 500ms 取（让 dbus 落盘）
+			setTimeout(function() {
+				$.ajax({
+					type: 'GET', url: '/_api/ss', dataType: 'json', cache: false,
+					success: function(data) {
+						if (!data || !data.result || !data.result[0]) { if (typeof cb === 'function') cb(false, 'no response'); return; }
+						var fresh = data.result[0];
+						var r = fresh.ss_split_rule_save_result || '';
+						var err = fresh.ss_split_rule_save_error || '';
+						if (r === 'ok') {
+							split_v2_refresh_dbss(function() {
+								render_split_rule_list();
+								render_split_mode_list();
+								render_split_default_mode_select();
+								if (typeof cb === 'function') cb(true, '');
+							});
+						} else {
+							if (typeof cb === 'function') cb(false, err || 'unknown error');
+						}
+					},
+					error: function() { if (typeof cb === 'function') cb(false, 'polling failed'); }
+				});
+			}, 500);
+		},
+		error: function() { if (typeof cb === 'function') cb(false, 'network error'); }
+	});
+}
+
+// ============ 引用检查 + ID 分配 helpers ============
+function split_v2_mode_users(modeId) {
+	var users = [];
+	var defId = String(db_ss['ss_split_default_mode_id'] || '');
+	if (String(modeId) === defId) users.push({key: 'ss_split_default_mode_id', role: 'default'});
+	for (var k in db_ss) {
+		if (Object.prototype.hasOwnProperty.call(db_ss, k) && k.indexOf('ss_acl_split_mode_') === 0) {
+			if (String(db_ss[k]) === String(modeId)) users.push({key: k, role: 'acl'});
+		}
+	}
+	return users;
+}
+
+function split_v2_rule_usedby(ruleId) {
+	var hits = [];
+	var modeN = parseInt(db_ss['ss_split_mode_count'] || '0', 10);
+	if (isNaN(modeN) || modeN <= 0) return hits;
+	for (var m = 1; m <= modeN; m++) {
+		var rN = parseInt(db_ss['ss_split_mode_' + m + '_rule_count'] || '0', 10);
+		for (var r = 1; r <= rN; r++) {
+			var rid = db_ss['ss_split_mode_' + m + '_rule_' + r + '_rid'];
+			if (rid && String(rid) === String(ruleId)) {
+				hits.push({modeSlot: m, modeName: db_ss['ss_split_mode_' + m + '_name'] || '(unnamed)', ruleIdx: r});
+			}
+		}
+	}
+	return hits;
+}
+
+function split_v2_next_mode_id() {
+	var n = parseInt(db_ss['ss_split_mode_count'] || '0', 10);
+	var maxId = 99;
+	for (var m = 1; m <= n; m++) {
+		var id = parseInt(db_ss['ss_split_mode_' + m + '_id'] || '0', 10);
+		if (!isNaN(id) && id > maxId) maxId = id;
+	}
+	return maxId + 1;
+}
+
+function split_v2_next_rule_id() {
+	var n = parseInt(db_ss['ss_split_rule_count'] || '0', 10);
+	var maxId = 99;
+	for (var r = 1; r <= n; r++) {
+		var id = parseInt(db_ss['ss_split_rule_' + r + '_id'] || '0', 10);
+		if (!isNaN(id) && id > maxId) maxId = id;
+	}
+	return maxId + 1;
+}
+
+function split_v2_html_escape(s) {
+	return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+// FORK doge.12 alpha.11 修 C-CRIT-6：name 字段禁用 dbus 文本格式破坏字符（" ` $ \ = 换行）。
+// 后端 ss_split_rule_save.sh / dummy_script.sh 共用兜底校验；前端先拦截避免 round-trip。
+function split_v2_name_has_forbidden(name) {
+	return /["`$=\\\r\n]/.test(String(name == null ? '' : name));
+}
+
+// ============ Action 编码 select（direct / reject / proxy_node:X / proxy_chain:Y:X）============
+// idPrefix = HTML id 前缀（如 "mode_dlg_default_action" 或 "mode_dlg_rule_action_0"）
+function split_v2_build_action_html(idPrefix, value, includeReject) {
+	var html = '<select id="' + idPrefix + '_type" onchange="split_v2_action_type_changed(\'' + idPrefix + '\');">';
+	html += '<option value="direct">直连</option>';
+	if (includeReject !== false) html += '<option value="reject">屏蔽</option>';
+	html += '<option value="proxy_node">代理(节点)</option>';
+	html += '<option value="proxy_chain">代理(链式)</option>';
+	html += '</select>';
+	html += ' <select id="' + idPrefix + '_node" style="display:none;max-width:200px;"></select>';
+	html += ' <select id="' + idPrefix + '_front" style="display:none;max-width:200px;"></select>';
+	return html;
+}
+
+function split_v2_action_type_changed(idPrefix) {
+	var t = $('#' + idPrefix + '_type').val();
+	var $n = $('#' + idPrefix + '_node');
+	var $f = $('#' + idPrefix + '_front');
+	if (t === 'proxy_node') { $n.show(); $f.hide(); }
+	else if (t === 'proxy_chain') { $n.show(); $f.show(); }
+	else { $n.hide(); $f.hide(); }
+}
+
+function split_v2_populate_action_selects(idPrefix, value) {
+	var v = value || 'direct';
+	var type = 'direct', nodeId = '', frontId = '';
+	if (v === 'reject') type = 'reject';
+	else if (v.indexOf('proxy_chain:') === 0) {
+		type = 'proxy_chain';
+		var pp = v.substring(12).split(':');
+		frontId = pp[0] || '';
+		nodeId = pp[1] || '';
+	} else if (v.indexOf('proxy_node:') === 0) {
+		type = 'proxy_node';
+		nodeId = v.substring(11);
+	}
+	var $t = $('#' + idPrefix + '_type');
+	var $n = $('#' + idPrefix + '_node');
+	var $f = $('#' + idPrefix + '_front');
+	if (!$t.length) return;
+	$n.empty();
+	if (typeof ss_nodes !== 'undefined') {
+		for (var i = 0; i < ss_nodes.length; i++) {
+			var field = ss_nodes[i];
+			var c = (typeof confs !== 'undefined') ? confs[field] : null;
+			if (!c) continue;
+			$n.append($('<option>', {value: field, text: failover_combo_node_label(field)}));
+		}
+	}
+	if (nodeId && $n.find('option[value="' + nodeId + '"]').length === 0) {
+		$n.append($('<option>', {value: nodeId, text: '⚠️ 节点缺失 #' + nodeId, 'data-stale': '1'}));
+	}
+	$f.empty();
+	$f.append('<option value="">(无前置)</option>');
+	if (typeof ss_nodes !== 'undefined') {
+		for (var j = 0; j < ss_nodes.length; j++) {
+			var ff = ss_nodes[j];
+			var cc = (typeof confs !== 'undefined') ? confs[ff] : null;
+			if (!cc) continue;
+			var ok = (cc.type == '0' || cc.type == '3' || cc.type == '4' || cc.type == '5' || cc.type == '8');
+			if (ok) {
+				if (cc.type == '0' && cc.ss_obfs && cc.ss_obfs != '0') ok = false;
+				if (cc.type == '3' && cc.v2ray_use_json == '1') ok = false;
+				if (cc.type == '4' && cc.xray_use_json == '1') ok = false;
+				if (cc.type == '8' && cc.hy2_obfs == '1') ok = false;
+			}
+			if (!ok) continue;
+			$f.append($('<option>', {value: ff, text: failover_combo_node_label(ff)}));
+		}
+	}
+	if (frontId && $f.find('option[value="' + frontId + '"]').length === 0) {
+		$f.append($('<option>', {value: frontId, text: '⚠️ 前置缺失 #' + frontId, 'data-stale': '1'}));
+	}
+	$t.val(type);
+	if (nodeId) $n.val(nodeId);
+	if (frontId) $f.val(frontId);
+	split_v2_action_type_changed(idPrefix);
+}
+
+function split_v2_collect_action(idPrefix) {
+	var t = $('#' + idPrefix + '_type').val();
+	if (t === 'direct' || t === 'reject') return t;
+	if (t === 'proxy_node') return 'proxy_node:' + ($('#' + idPrefix + '_node').val() || '');
+	if (t === 'proxy_chain') {
+		var f = $('#' + idPrefix + '_front').val() || '';
+		var n = $('#' + idPrefix + '_node').val() || '';
+		return 'proxy_chain:' + f + ':' + n;
+	}
+	return 'direct';
+}
+
+// ============ Mode 弹窗 ============
+var _modeDlgState = {editSlot: null, builtin: false, rules: [], modeId: 0};
+
 function split_v2_new_mode() {
-	alert('alpha 第一稿：新建 Mode 暂未实现。\\n\\n请先用 Subagent A 的 install.sh::migrate_split_routing_v1 种子内置 Mode #1/#2，再回此页面查看列表。\\n\\nTODO(doge.12-alpha): 完整编辑对话框留待 doge.13。');
+	var modeId = split_v2_next_mode_id();
+	split_v2_open_mode_dialog(null, {
+		id: modeId, name: '新 Mode ' + modeId, builtin: '0',
+		udp_proxy: '1', block_quic: '0', apply_blackwhite: '1',
+		dns_mode: 'split', default_action: 'direct', rules: []
+	});
 }
+
 function split_v2_edit_mode(m) {
-	var id = db_ss['ss_split_mode_' + m + '_id'] || '?';
-	var name = db_ss['ss_split_mode_' + m + '_name'] || '(unnamed)';
-	alert('alpha 第一稿：编辑 Mode #' + id + ' (' + name + ') 暂未实现。\\n\\n临时方案：通过 dbus_set 命令直接修改 ss_split_mode_' + m + '_* 各字段。\\n\\nTODO(doge.12-alpha): 完整编辑对话框留待 doge.13。');
+	var rules = [];
+	var rN = parseInt(db_ss['ss_split_mode_' + m + '_rule_count'] || '0', 10);
+	for (var r = 1; r <= rN; r++) {
+		var rid = db_ss['ss_split_mode_' + m + '_rule_' + r + '_rid'];
+		if (rid === '' || rid == null) continue; // 软删的空槽位跳过
+		rules.push({
+			rid: rid,
+			action: db_ss['ss_split_mode_' + m + '_rule_' + r + '_action'] || 'direct'
+		});
+	}
+	split_v2_open_mode_dialog(m, {
+		id: db_ss['ss_split_mode_' + m + '_id'] || '',
+		name: db_ss['ss_split_mode_' + m + '_name'] || '',
+		builtin: db_ss['ss_split_mode_' + m + '_builtin'] || '0',
+		udp_proxy: db_ss['ss_split_mode_' + m + '_udp_proxy'] || '0',
+		block_quic: db_ss['ss_split_mode_' + m + '_block_quic'] || '0',
+		apply_blackwhite: db_ss['ss_split_mode_' + m + '_apply_blackwhite'] || '0',
+		dns_mode: db_ss['ss_split_mode_' + m + '_dns_mode'] || 'split',
+		default_action: db_ss['ss_split_mode_' + m + '_default_action'] || 'direct',
+		rules: rules
+	});
 }
+
+function split_v2_open_mode_dialog(slot, data) {
+	_modeDlgState.editSlot = slot;
+	_modeDlgState.builtin = (data.builtin == '1');
+	_modeDlgState.modeId = parseInt(data.id, 10) || split_v2_next_mode_id();
+	_modeDlgState.rules = data.rules.slice();
+	var title = (slot == null) ? '新建 Mode' : ('编辑 Mode #' + data.id + (_modeDlgState.builtin ? ' [内置]' : ''));
+	var dis = _modeDlgState.builtin ? ' disabled' : '';
+	var html = '<table>';
+	html += '<tr><th>ID</th><td><b>' + split_v2_html_escape(data.id) + '</b><span style="color:#888;font-size:11px;">&nbsp;(自动分配, 不可改)</span></td></tr>';
+	html += '<tr><th>名称</th><td><input type="text" id="mode_dlg_name" value="' + split_v2_html_escape(data.name) + '" maxlength="40"' + dis + ' /></td></tr>';
+	html += '<tr><th>UDP 代理</th><td><label><input type="checkbox" id="mode_dlg_udp_proxy"' + (data.udp_proxy == '1' ? ' checked' : '') + dis + '/> 启用 UDP 代理</label></td></tr>';
+	html += '<tr><th>屏蔽 QUIC</th><td><label><input type="checkbox" id="mode_dlg_block_quic"' + (data.block_quic == '1' ? ' checked' : '') + dis + '/> 屏蔽 UDP/443，HTTP/3 回退 TCP</label></td></tr>';
+	html += '<tr><th>受全局黑白名单影响</th><td><label><input type="checkbox" id="mode_dlg_apply_blackwhite"' + (data.apply_blackwhite == '1' ? ' checked' : '') + dis + '/> 应用 ss_wan_white_domain / ss_wan_black_domain</label></td></tr>';
+	html += '<tr><th>DNS 模式</th><td><select id="mode_dlg_dns_mode"' + dis + '><option value="split"' + (data.dns_mode === 'split' ? ' selected' : '') + '>split (智能分流, chinadns-ng)</option><option value="global"' + (data.dns_mode === 'global' ? ' selected' : '') + '>global (单一海外 upstream)</option></select></td></tr>';
+	html += '<tr><th>兜底动作 default_action</th><td>' + split_v2_build_action_html('mode_dlg_default_action', data.default_action, false) + '<div style="color:#888;font-size:11px;padding-top:2px;">不能是「屏蔽」(避免所有流量被屏蔽的死锁)</div></td></tr>';
+	html += '<tr><th>规则列表<br><span style="color:#888;font-size:11px;font-weight:normal;">按顺序逐条匹配<br>首条命中决定动作</span></th><td><div id="mode_dlg_rules_list"></div>' + (_modeDlgState.builtin ? '' : '<input type="button" class="ss_btn" style="margin-top:6px;cursor:pointer;" onclick="split_v2_mode_dlg_rule_add();" value="+ 添加规则" />') + '</td></tr>';
+	html += '</table>';
+	splitDlg.open(title, html, function() { return split_v2_save_mode_dialog(); });
+	split_v2_populate_action_selects('mode_dlg_default_action', data.default_action);
+	split_v2_render_mode_dlg_rules();
+	// FORK doge.12 alpha.17 F-B-7: builtin Mode default_action 控件也要 disable
+	if (_modeDlgState.builtin) {
+		$('#mode_dlg_default_action_type, #mode_dlg_default_action_node, #mode_dlg_default_action_front').prop('disabled', true);
+	}
+}
+
+function split_v2_render_mode_dlg_rules() {
+	var rules = _modeDlgState.rules;
+	var html = '';
+	if (rules.length === 0) {
+		html = '<div style="color:#888;padding:8px;">暂无规则——点 "+ 添加规则" 添加</div>';
+	} else {
+		for (var i = 0; i < rules.length; i++) {
+			var r = rules[i];
+			var idPrefix = 'mode_dlg_rule_action_' + i;
+			html += '<div class="rules_row" data-idx="' + i + '">';
+			html += '<span style="display:inline-block;width:26px;text-align:right;color:#888;">#' + (i + 1) + '</span>&nbsp;';
+			var ridDis = _modeDlgState.builtin ? ' disabled' : '';
+			html += '<select class="mode_dlg_rule_rid" data-idx="' + i + '" style="max-width:200px;"' + ridDis + '>' + split_v2_build_rule_options(r.rid) + '</select>';
+			html += '&nbsp;→&nbsp;' + split_v2_build_action_html(idPrefix, r.action, true);
+			if (!_modeDlgState.builtin) {
+				html += '&nbsp;<a href="javascript:void(0);" onclick="split_v2_mode_dlg_rule_up(' + i + ');" title="上移">↑</a>';
+				html += '&nbsp;<a href="javascript:void(0);" onclick="split_v2_mode_dlg_rule_down(' + i + ');" title="下移">↓</a>';
+				html += '&nbsp;<a href="javascript:void(0);" onclick="split_v2_mode_dlg_rule_remove(' + i + ');" style="color:#CC0066;" title="删除">×</a>';
+			}
+			html += '</div>';
+		}
+	}
+	$('#mode_dlg_rules_list').html(html);
+	for (var j = 0; j < rules.length; j++) {
+		split_v2_populate_action_selects('mode_dlg_rule_action_' + j, rules[j].action);
+		// FORK doge.12 alpha.17 F-B-7: builtin Mode 的 rule action select 也禁用
+		if (_modeDlgState.builtin) {
+			$('#mode_dlg_rule_action_' + j + '_type, #mode_dlg_rule_action_' + j + '_node, #mode_dlg_rule_action_' + j + '_front').prop('disabled', true);
+		}
+	}
+}
+
+function split_v2_build_rule_options(selectedRid) {
+	var html = '';
+	var rN = parseInt(db_ss['ss_split_rule_count'] || '0', 10);
+	var foundSelected = false;
+	for (var r = 1; r <= rN; r++) {
+		var rid = db_ss['ss_split_rule_' + r + '_id'] || '';
+		if (!rid) continue;
+		var name = db_ss['ss_split_rule_' + r + '_name'] || '(unnamed)';
+		var sel = (String(rid) === String(selectedRid)) ? ' selected' : '';
+		if (sel) foundSelected = true;
+		html += '<option value="' + split_v2_html_escape(rid) + '"' + sel + '>#' + split_v2_html_escape(rid) + ' ' + split_v2_html_escape(name) + '</option>';
+	}
+	if (selectedRid && !foundSelected) {
+		html += '<option value="' + split_v2_html_escape(selectedRid) + '" selected data-stale="1">⚠️ Rule 缺失 #' + split_v2_html_escape(selectedRid) + '</option>';
+	}
+	return html;
+}
+
+function split_v2_collect_mode_dlg_rules() {
+	var rules = [];
+	$('#mode_dlg_rules_list .rules_row').each(function() {
+		var idx = parseInt($(this).attr('data-idx'), 10);
+		var rid = $(this).find('.mode_dlg_rule_rid').val();
+		var action = split_v2_collect_action('mode_dlg_rule_action_' + idx);
+		rules.push({rid: rid, action: action});
+	});
+	_modeDlgState.rules = rules;
+}
+
+function split_v2_mode_dlg_rule_add() {
+	split_v2_collect_mode_dlg_rules();
+	var nextRid = '';
+	var rN = parseInt(db_ss['ss_split_rule_count'] || '0', 10);
+	if (rN > 0) nextRid = db_ss['ss_split_rule_1_id'] || '';
+	_modeDlgState.rules.push({rid: nextRid, action: 'direct'});
+	split_v2_render_mode_dlg_rules();
+}
+
+function split_v2_mode_dlg_rule_remove(i) {
+	split_v2_collect_mode_dlg_rules();
+	_modeDlgState.rules.splice(i, 1);
+	split_v2_render_mode_dlg_rules();
+}
+
+function split_v2_mode_dlg_rule_up(i) {
+	if (i <= 0) return;
+	split_v2_collect_mode_dlg_rules();
+	var tmp = _modeDlgState.rules[i - 1];
+	_modeDlgState.rules[i - 1] = _modeDlgState.rules[i];
+	_modeDlgState.rules[i] = tmp;
+	split_v2_render_mode_dlg_rules();
+}
+
+function split_v2_mode_dlg_rule_down(i) {
+	split_v2_collect_mode_dlg_rules();
+	if (i >= _modeDlgState.rules.length - 1) return;
+	var tmp = _modeDlgState.rules[i + 1];
+	_modeDlgState.rules[i + 1] = _modeDlgState.rules[i];
+	_modeDlgState.rules[i] = tmp;
+	split_v2_render_mode_dlg_rules();
+}
+
+function split_v2_save_mode_dialog() {
+	var name = $.trim($('#mode_dlg_name').val() || '');
+	if (!name && !_modeDlgState.builtin) {
+		splitDlg.error('名称不能为空');
+		return true;
+	}
+	if (split_v2_name_has_forbidden(name)) {
+		splitDlg.error('名称不能包含 " ` $ \\ = 或换行字符');
+		return true;
+	}
+	var udp = $('#mode_dlg_udp_proxy').is(':checked') ? '1' : '0';
+	var quic = $('#mode_dlg_block_quic').is(':checked') ? '1' : '0';
+	var bw = $('#mode_dlg_apply_blackwhite').is(':checked') ? '1' : '0';
+	var dnsMode = $('#mode_dlg_dns_mode').val() || 'split';
+	var defAction = split_v2_collect_action('mode_dlg_default_action');
+	if (defAction === 'reject') {
+		splitDlg.error('兜底动作不能是「屏蔽」');
+		return true;
+	}
+	split_v2_collect_mode_dlg_rules();
+	var rules = _modeDlgState.rules;
+	var slot = _modeDlgState.editSlot;
+	var fields = {};
+	var prevRuleCount = 0;
+	if (slot == null) {
+		var count = parseInt(db_ss['ss_split_mode_count'] || '0', 10);
+		if (isNaN(count) || count < 0) count = 0;
+		slot = count + 1;
+		fields['ss_split_mode_count'] = String(slot);
+		fields['ss_split_mode_' + slot + '_id'] = String(_modeDlgState.modeId);
+		fields['ss_split_mode_' + slot + '_builtin'] = '0';
+	} else {
+		prevRuleCount = parseInt(db_ss['ss_split_mode_' + slot + '_rule_count'] || '0', 10);
+	}
+	if (!_modeDlgState.builtin) fields['ss_split_mode_' + slot + '_name'] = name;
+	fields['ss_split_mode_' + slot + '_udp_proxy'] = udp;
+	fields['ss_split_mode_' + slot + '_block_quic'] = quic;
+	fields['ss_split_mode_' + slot + '_apply_blackwhite'] = bw;
+	fields['ss_split_mode_' + slot + '_dns_mode'] = dnsMode;
+	fields['ss_split_mode_' + slot + '_default_action'] = defAction;
+	fields['ss_split_mode_' + slot + '_rule_count'] = String(rules.length);
+	for (var r = 0; r < rules.length; r++) {
+		fields['ss_split_mode_' + slot + '_rule_' + (r + 1) + '_rid'] = String(rules[r].rid || '');
+		fields['ss_split_mode_' + slot + '_rule_' + (r + 1) + '_action'] = rules[r].action || 'direct';
+	}
+	// 旧 rule 槽位软删（dbus 不能 delete，set 空字符串 + rule_count 限读取）
+	if (!isNaN(prevRuleCount) && prevRuleCount > rules.length) {
+		for (var k = rules.length + 1; k <= prevRuleCount; k++) {
+			fields['ss_split_mode_' + slot + '_rule_' + k + '_rid'] = '';
+			fields['ss_split_mode_' + slot + '_rule_' + k + '_action'] = '';
+		}
+	}
+	$('#split_dlg_ok_btn').prop('disabled', true);
+	split_v2_persist(fields, function(ok) {
+		$('#split_dlg_ok_btn').prop('disabled', false);
+		if (!ok) { splitDlg.error('保存失败，请稍后重试'); return; }
+		splitDlg.close();
+		render_split_mode_list();
+		render_split_default_mode_select();
+	});
+	return true; // 异步：手动关
+}
+
 function split_v2_delete_mode(m) {
-	var id = db_ss['ss_split_mode_' + m + '_id'] || '?';
+	var builtin = db_ss['ss_split_mode_' + m + '_builtin'] == '1';
+	if (builtin) { alert('不能删除内置 Mode。'); return; }
+	var id = db_ss['ss_split_mode_' + m + '_id'];
 	var name = db_ss['ss_split_mode_' + m + '_name'] || '(unnamed)';
-	alert('alpha 第一稿：删除 Mode #' + id + ' (' + name + ') 暂未实现。\\n\\nTODO(doge.12-alpha): 需检查引用计数（如被 user 引用则禁止删除）。');
+	var users = split_v2_mode_users(id);
+	var msg = '删除 Mode #' + id + ' (' + name + ') ?';
+	if (users.length > 0) {
+		msg += '\n\n警告：以下位置正在使用该 Mode：\n';
+		for (var i = 0; i < users.length; i++) {
+			msg += '  - ' + users[i].key + ' (' + users[i].role + ')\n';
+		}
+		msg += '\n删除后：default 引用会回退到一个内置 Mode；acl 引用会被重置为「不走代理」。';
+	}
+	if (!confirm(msg)) return;
+	var count = parseInt(db_ss['ss_split_mode_count'] || '0', 10);
+	if (isNaN(count) || count <= 0) return;
+	var fields = {};
+	var modeFields = ['id', 'name', 'builtin', 'udp_proxy', 'block_quic', 'apply_blackwhite', 'dns_mode', 'default_action', 'rule_count'];
+	var defId = String(db_ss['ss_split_default_mode_id'] || '');
+	if (String(id) === defId) {
+		var nextDef = '';
+		for (var mm = 1; mm <= count; mm++) {
+			if (mm === m) continue;
+			var mid = db_ss['ss_split_mode_' + mm + '_id'];
+			if (mid && db_ss['ss_split_mode_' + mm + '_builtin'] == '1') { nextDef = mid; break; }
+		}
+		fields['ss_split_default_mode_id'] = nextDef || '1';
+	}
+	for (var k in db_ss) {
+		if (Object.prototype.hasOwnProperty.call(db_ss, k) && k.indexOf('ss_acl_split_mode_') === 0) {
+			if (String(db_ss[k]) === String(id)) fields[k] = '0';
+		}
+	}
+	for (var s = m; s < count; s++) {
+		var nxt = s + 1;
+		for (var f = 0; f < modeFields.length; f++) {
+			var key = 'ss_split_mode_' + s + '_' + modeFields[f];
+			var srcKey = 'ss_split_mode_' + nxt + '_' + modeFields[f];
+			fields[key] = (db_ss[srcKey] != null) ? db_ss[srcKey] : '';
+		}
+		var nxtRN = parseInt(db_ss['ss_split_mode_' + nxt + '_rule_count'] || '0', 10);
+		for (var rr = 1; rr <= nxtRN; rr++) {
+			fields['ss_split_mode_' + s + '_rule_' + rr + '_rid'] = db_ss['ss_split_mode_' + nxt + '_rule_' + rr + '_rid'] || '';
+			fields['ss_split_mode_' + s + '_rule_' + rr + '_action'] = db_ss['ss_split_mode_' + nxt + '_rule_' + rr + '_action'] || '';
+		}
+	}
+	for (var f2 = 0; f2 < modeFields.length; f2++) {
+		fields['ss_split_mode_' + count + '_' + modeFields[f2]] = '';
+	}
+	var lastRN = parseInt(db_ss['ss_split_mode_' + count + '_rule_count'] || '0', 10);
+	for (var rrr = 1; rrr <= lastRN; rrr++) {
+		fields['ss_split_mode_' + count + '_rule_' + rrr + '_rid'] = '';
+		fields['ss_split_mode_' + count + '_rule_' + rrr + '_action'] = '';
+	}
+	fields['ss_split_mode_count'] = String(count - 1);
+	split_v2_persist(fields, function(ok) {
+		if (!ok) { alert('删除失败，请稍后重试。'); return; }
+		render_split_mode_list();
+		render_split_default_mode_select();
+	});
 }
+
+// ============ Rule 弹窗 ============
+var _ruleDlgState = {editSlot: null, builtin: false, ruleId: 0};
+
 function split_v2_new_rule() {
-	alert('alpha 第一稿：新建 Rule 暂未实现。\\n\\n请先用 Subagent A 的 install.sh::migrate_split_routing_v1 种子 8 条内置 Rule，再回此页面查看列表。\\n\\nTODO(doge.12-alpha): 完整编辑对话框留待 doge.13。');
+	var rid = split_v2_next_rule_id();
+	split_v2_open_rule_dialog(null, {
+		id: rid, name: '新 Rule ' + rid, builtin: '0',
+		source_url: '', update_hours: '0', payload: ''
+	});
 }
+
 function split_v2_edit_rule(r) {
-	var id = db_ss['ss_split_rule_' + r + '_id'] || '?';
-	var name = db_ss['ss_split_rule_' + r + '_name'] || '(unnamed)';
-	alert('alpha 第一稿：编辑 Rule #' + id + ' (' + name + ') 暂未实现。\\n\\n临时方案：SSH 修改 /koolshare/ss/rules_user/rule_' + id + '.txt 然后重启代理。\\n\\nTODO(doge.12-alpha): 完整编辑对话框留待 doge.13。');
+	var ruleId = db_ss['ss_split_rule_' + r + '_id'] || '';
+	split_v2_open_rule_dialog(r, {
+		id: ruleId,
+		name: db_ss['ss_split_rule_' + r + '_name'] || '',
+		builtin: db_ss['ss_split_rule_' + r + '_builtin'] || '0',
+		source_url: db_ss['ss_split_rule_' + r + '_source_url'] || '',
+		update_hours: db_ss['ss_split_rule_' + r + '_update_hours'] || '0',
+		payload: '' // 留空 = 不覆盖既有文件
+	});
 }
+
+function split_v2_open_rule_dialog(slot, data) {
+	_ruleDlgState.editSlot = slot;
+	_ruleDlgState.builtin = (data.builtin == '1');
+	_ruleDlgState.ruleId = parseInt(data.id, 10);
+	var title = (slot == null) ? '新建 Rule' : ('编辑 Rule #' + data.id + (_ruleDlgState.builtin ? ' [内置]' : ''));
+	var dis = _ruleDlgState.builtin ? ' disabled' : '';
+	var statD = (slot != null) ? (db_ss['ss_split_rule_' + slot + '_stat_domains'] || '0') : '0';
+	var statI = (slot != null) ? (db_ss['ss_split_rule_' + slot + '_stat_ips'] || '0') : '0';
+	var html = '<table>';
+	html += '<tr><th>ID</th><td><b>' + split_v2_html_escape(data.id) + '</b><span style="color:#888;font-size:11px;">&nbsp;(自动分配, 不可改)</span></td></tr>';
+	html += '<tr><th>名称</th><td><input type="text" id="rule_dlg_name" value="' + split_v2_html_escape(data.name) + '" maxlength="40"' + dis + ' /></td></tr>';
+	html += '<tr><th>自动更新 URL</th><td><input type="text" id="rule_dlg_source_url" value="' + split_v2_html_escape(data.source_url) + '" placeholder="留空 = 手编规则" /><div style="color:#888;font-size:11px;">http(s) URL；空 URL 即完全手编。</div></td></tr>';
+	html += '<tr><th>自动更新间隔</th><td><input type="number" id="rule_dlg_update_hours" value="' + split_v2_html_escape(data.update_hours || '0') + '" min="0" max="168" style="width:80px;" /> 小时 <span style="color:#888;font-size:11px;">(0 = 禁用 auto-update)</span></td></tr>';
+	if (slot != null) {
+		html += '<tr><th>当前 stats</th><td><span style="color:#888;">域名 ' + split_v2_html_escape(statD) + ' 条 / IP ' + split_v2_html_escape(statI) + ' 条</span></td></tr>';
+	}
+	html += '<tr><th>规则内容<br><span style="color:#888;font-size:11px;font-weight:normal;">一行一条<br>域名/IP/CIDR 混排<br># 起头为注释</span></th>';
+	html += '<td><textarea id="rule_dlg_payload" rows="10" style="width:95%;font-family:monospace;font-size:12px;" placeholder="example.com&#13;&#10;# 注释&#13;&#10;1.2.3.0/24&#13;&#10;1.2.3.4"></textarea>';
+	if (slot != null) {
+		html += '<div style="color:#888;font-size:11px;padding-top:4px;">留空提交 = <b>不覆盖</b>现有文件（仅更新名称/URL/小时数）；如要清空规则文件请输入单个 "#" 字符。</div>';
+	}
+	html += '</td></tr>';
+	html += '</table>';
+	splitDlg.open(title, html, function() { return split_v2_save_rule_dialog(); });
+	$('#rule_dlg_payload').val(data.payload || '');
+}
+
+function split_v2_save_rule_dialog() {
+	var name = $.trim($('#rule_dlg_name').val() || '');
+	if (!name && !_ruleDlgState.builtin) { splitDlg.error('名称不能为空'); return true; }
+	if (split_v2_name_has_forbidden(name)) { splitDlg.error('名称不能包含 " ` $ \\ = 或换行字符'); return true; }
+	var sourceUrl = $.trim($('#rule_dlg_source_url').val() || '');
+	var updateHours = parseInt($('#rule_dlg_update_hours').val() || '0', 10);
+	if (isNaN(updateHours) || updateHours < 0) updateHours = 0;
+	if (updateHours > 168) updateHours = 168;
+	var payload = $('#rule_dlg_payload').val() || '';
+	var payloadB64 = '';
+	if (payload !== '') {
+		try { payloadB64 = btoa(unescape(encodeURIComponent(payload))); }
+		catch (e) { splitDlg.error('payload 编码失败'); return true; }
+	}
+	var op = (_ruleDlgState.editSlot == null) ? 'create' : 'update';
+	var ruleId = _ruleDlgState.ruleId;
+	if (!ruleId || ruleId < 1) { splitDlg.error('invalid rule id'); return true; }
+	splitDlg.error('保存中...');
+	$('#split_dlg_ok_btn').prop('disabled', true);
+	split_v2_rule_persist(op, ruleId, name, sourceUrl, updateHours, payloadB64, function(success, errmsg) {
+		$('#split_dlg_ok_btn').prop('disabled', false);
+		if (success) splitDlg.close();
+		else splitDlg.error('保存失败: ' + (errmsg || '未知错误'));
+	});
+	return true; // 异步
+}
+
 function split_v2_delete_rule(r) {
-	var id = db_ss['ss_split_rule_' + r + '_id'] || '?';
+	var builtin = db_ss['ss_split_rule_' + r + '_builtin'] == '1';
+	if (builtin) { alert('不能删除内置 Rule。'); return; }
+	var id = db_ss['ss_split_rule_' + r + '_id'];
 	var name = db_ss['ss_split_rule_' + r + '_name'] || '(unnamed)';
-	alert('alpha 第一稿：删除 Rule #' + id + ' (' + name + ') 暂未实现。\\n\\nTODO(doge.12-alpha): 需检查引用计数（如被 Mode 引用则禁止删除）。');
+	var hits = split_v2_rule_usedby(id);
+	var msg = '删除 Rule #' + id + ' (' + name + ') ?';
+	if (hits.length > 0) {
+		msg += '\n\n警告：以下 Mode 正在引用该 Rule（删除后会显示 ⚠️ Rule 缺失）：\n';
+		for (var i = 0; i < hits.length; i++) {
+			msg += '  - Mode #' + db_ss['ss_split_mode_' + hits[i].modeSlot + '_id'] + ' (' + hits[i].modeName + ') 规则 #' + hits[i].ruleIdx + '\n';
+		}
+	}
+	if (!confirm(msg)) return;
+	split_v2_rule_persist('delete', id, '', '', 0, '', function(success, errmsg) {
+		if (!success) alert('删除失败: ' + (errmsg || ''));
+	});
 }
 // 总开关变化时刷新提示行
 // 注意：绝不能在这里写 db_ss['ss_split_enabled'] = $(this).val()——会污染 save() 的差分基线，
 // 导致 compfilter 认为"没变化"而把这个 key 从 post_dbus 里踢掉（doge.12-alpha.3 的 bug 根因）。
-$(function(){ $(document).on('change', '#ss_split_enabled', function(){ render_split_enabled_state(); render_split_runtime_status(); }); });
+$(function(){ $(document).on('change', '#ss_split_enabled', function(){
+	var $sel = $(this);
+	var v = $sel.val();
+	// FORK doge.12 alpha.11 修 C-CRIT-1 + D5 race：变更即通过 dummy_script.sh 立刻持久化；同时 disable 控件直到 ajax 回来，
+	// 避免连点产生多 in-flight 请求乱序（服务端处理顺序非严格 FIFO → dbus 终态可能 ≠ 用户最后一次点击）。
+	// 重启代理仍由页脚 `保存&应用` 触发。
+	$sel.prop('disabled', true);
+	split_v2_persist({ss_split_enabled: v}, function(ok){
+		$sel.prop('disabled', false);
+		if (ok) {
+			// FORK doge.12 alpha.11 Wave2.5：ss_split_enabled 是路由层 fork 入口决策键（CLAUDE.md 硬规则 #14），
+			// 必须 ssconfig.sh restart 才能切换路由路径；dummy_script.sh 仅写 dbus 不重启代理，
+			// 故弹 hint 220 提醒用户去页脚点击 `保存并应用` 完成真正切换。
+			openssHint(220);
+		} else {
+			alert('保存启用状态失败，请稍后重试。');
+			$sel.val(db_ss['ss_split_enabled'] || '0');
+		}
+		render_split_enabled_state();
+		render_split_runtime_status();
+	});
+}); });
+// FORK doge.12 alpha.11 修 C-CRIT-1 同模式 (default_mode_id)：tab 0 主 save() 读空 select 会写 '' 覆盖 dbus；
+// 同样改走 split_v2_persist 立刻持久化，已 stale 的占位选项靠 change 不触发自然跳过。
+// + D5 race：disable 控件直到 ajax 回来，避免连点乱序。
+$(function(){ $(document).on('change', '#ss_split_default_mode_id', function(){
+	var $sel = $(this);
+	var $opt = $sel.find('option:selected');
+	if ($opt.length && $opt.attr('data-stale') === '1') return; // ⚠️ 缺失占位不持久化
+	var v = $sel.val();
+	if (v === '' || v == null) return; // 占位 (无 Mode 可选) 不持久化
+	$sel.prop('disabled', true);
+	split_v2_persist({ss_split_default_mode_id: v}, function(ok){
+		$sel.prop('disabled', false);
+		if (!ok) {
+			alert('保存默认 Mode 失败，请稍后重试。');
+			$sel.val(db_ss['ss_split_default_mode_id'] || '');
+		}
+	});
+}); });
 // ============ FORK doge.12 alpha 分流 JS 区块结束 ============
 // ============ 折叠区块：落地节点 / 前置节点 配置展示 ============
 var propsCollapseState = { landing: 1, front: 1 };
@@ -7201,13 +7874,13 @@ function render_failover_combo_panel() {
 		html += '<td>' + frontLabel + '</td>';
 		html += '<td>' + landingLabel + '</td>';
 		html += '<td style="text-align:center;">' + stHtml + '</td>';
-		html += '<td style="text-align:center;"><a class="ss_btn" style="cursor:pointer;"' + btnDisabled + ' onclick="failover_combo_remove(' + i + ')">删除</a></td>';
+		html += '<td style="text-align:center;"><a class="ss_btn" id="failover_combo_remove_btn_' + i + '" style="cursor:pointer;"' + btnDisabled + ' onclick="failover_combo_remove(' + i + ')">删除</a></td>';
 		html += '</tr>';
 	}
 	// 添加行
 	html += '<tr><td colspan="5"><label style="display:inline-block;min-width:80px;">前置节点</label><select id="failover_combo_add_front" style="width:280px;"></select></td></tr>';
 	html += '<tr><td colspan="5"><label style="display:inline-block;min-width:80px;">落地节点</label><select id="failover_combo_add_landing" style="width:280px;"></select></td></tr>';
-	html += '<tr><td colspan="5"><label style="display:inline-block;min-width:80px;">&nbsp;</label><a class="ss_btn" style="cursor:pointer;" onclick="failover_combo_add()">+ 添加</a></td></tr>';
+	html += '<tr><td colspan="5"><label style="display:inline-block;min-width:80px;">&nbsp;</label><a class="ss_btn" id="failover_combo_add_btn" style="cursor:pointer;" onclick="failover_combo_add()">+ 添加</a></td></tr>';
 	html += '</table>';
 	$panel.html(html);
 	// 填充 select 选项
@@ -7342,7 +8015,12 @@ function failover_combo_add() {
 	fields[prefix + "landing_id"] = landing;
 	fields[prefix + "landing_identity"] = get_node_identity(landing) || "";
 	fields[prefix + "failed"] = "0";
+	// FORK doge.12 alpha.17 F-B-3: 防双击竞态 — ajax 飞行期间 disable 按钮
+	var $btn = $("#failover_combo_add_btn");
+	if ($btn.prop("disabled")) return;
+	$btn.prop("disabled", true).css({"pointer-events": "none", "opacity": "0.5"});
 	failover_combo_persist(fields, function(ok) {
+		$btn.prop("disabled", false).css({"pointer-events": "", "opacity": ""});
 		if (!ok) {
 			alert("保存失败，请稍后重试。");
 			return;
@@ -7380,7 +8058,12 @@ function failover_combo_remove(i) {
 	fields[tailPrefix + "landing_identity"] = "";
 	fields[tailPrefix + "failed"] = "";
 	fields["ss_failover_combo_count"] = String(n - 1);
+	// FORK doge.12 alpha.17 F-B-3: 防双击竞态 — ajax 飞行期间 disable 按钮
+	var $btn = $("#failover_combo_remove_btn_" + i);
+	if ($btn.prop("disabled")) return;
+	$btn.prop("disabled", true).css({"pointer-events": "none", "opacity": "0.5"});
 	failover_combo_persist(fields, function(ok) {
+		$btn.prop("disabled", false).css({"pointer-events": "", "opacity": ""});
 		if (!ok) {
 			alert("保存失败，请稍后重试。");
 			return;
@@ -7532,17 +8215,8 @@ function save() {
 		}
 	}
 	set_ss_status_waiting("Waiting....");
-	// FORK doge.12 alpha: 默认 Mode select 的硬规则 #9 stale 防御——若当前选项标记 stale，跳过覆盖
-	if (E("ss_split_default_mode_id")) {
-		var $splitDefSel = $("#ss_split_default_mode_id");
-		var $splitDefOpt = $splitDefSel.find('option:selected');
-		if ($splitDefOpt.length && $splitDefOpt.attr('data-stale') === '1') {
-			// 标记为跳过——本次 save 不写 ss_split_default_mode_id（保留 dbus 原值）
-			$splitDefSel.attr('data-skip-save', '1');
-		} else {
-			$splitDefSel.removeAttr('data-skip-save');
-		}
-	}
+	// FORK doge.12 alpha.11: 旧版 ss_split_default_mode_id 的 stale 防御已删除（同模式修 C-CRIT-1）——
+	// 该 key 已迁出 params_input，不再被主 save() 读取/覆盖，change 事件直接走 split_v2_persist。
 	// key define
 	var params_input = [
 	  "ss_basic_mode",
@@ -7637,10 +8311,7 @@ function save() {
 	  "ss_basic_direct_asusgo",
 	  "ss_basic_direct_chndns",
 	  "ss_basic_online_ipcheck",
-	  // FORK doge.12 alpha: 分流架构 V2 (split routing)
-	  "ss_split_enabled",
-	  "ss_split_default_mode_id",
-	  "ss_split_dns_global_upstream"
+	  // FORK doge.12 alpha.11: 整组 split 字段（ss_split_enabled / ss_split_default_mode_id / 3 个 DNS upstream）已全迁出 params_input/params_base64，通过 split_v2_persist (dummy_script.sh) 专门通道持久化，避免被任何 tab 的 save() 用 HTML 默认值 / 空值静默覆盖（修 C-CRIT-1+2 + 同模式 default_mode_id）。
 	];
 	var params_check = [
 	  "ss_failover_enable",
@@ -7686,16 +8357,17 @@ function save() {
 		  "ss_basic_sub_node_log",
 		  "ss_basic_sub_keep_info_node"
 	];
-	var params_base64 = ["ss_dnsmasq", "ss_wan_white_ip", "ss_wan_white_domain", "ss_wan_black_ip", "ss_wan_black_domain", "ss_online_links", "ss_basic_custom",
-	  // FORK doge.12 alpha: 双轨 DNS 上游 textarea
-	  "ss_split_dns_china_upstream", "ss_split_dns_overseas_upstream"];
+	var params_base64 = ["ss_dnsmasq", "ss_wan_white_ip", "ss_wan_white_domain", "ss_wan_black_ip", "ss_wan_black_domain", "ss_online_links", "ss_basic_custom"];
 	var params_no_store = ["ss_base64_links"];
 	var aclNodeSupportsUdp = acl_current_node_supports_udp();
 	//---------------------------------------------------------------
 	// collect data from input
 	for (var i = 0; i < params_input.length; i++) {
 		if (E(params_input[i])) {
-			// FORK doge.12: 跳过被标记为 stale 的 select（保留 dbus 原值，硬规则 #9）
+			// FORK doge.12 alpha 通用机制（合同 §6.2 D3 已批准）：任意 params_input 控件可通过设置 data-skip-save="1"
+			// 让本次 save() 跳过 dbus 覆盖（用于 stale 占位 / 用户未触碰守卫等场景，统一替代设计文档 §8 的 data-stale 模式）。
+			// 当前 alpha.11 已无活跃 setter（ss_split_default_mode_id 已迁出 params_input 走 split_v2_persist），
+			// 但本读取代码作为"基础设施"保留——doge.13 ASP 改造可直接复用，不要删。
 			if (E(params_input[i]).getAttribute && E(params_input[i]).getAttribute('data-skip-save') === '1') {
 				continue;
 			}
@@ -14442,6 +15114,9 @@ function handle_tab_click() {
 	if (idx !== 1 && idx !== 5) {
 		stop_node_latency_live_runtime();
 	}
+	if (idx !== 11 && typeof stop_split_status_polling === 'function') {
+		stop_split_status_polling();
+	}
 	tabSelect(idx);
 	if (tab_actions[idx]) {
 		tab_actions[idx]();
@@ -18108,7 +18783,7 @@ function toggleKeyMask(o, show){
 													<thead><tr><td class="IPQOSTitle" colspan="2" align="left" style="font-weight:bold;padding:6px 10px;">模式 (Mode) 管理 <a class="hintstyle" style="color:#03a9f4;font-weight:normal;" href="javascript:void(0);" onclick="openssHint(211);"><u>说明</u></a></td></tr></thead>
 													<tbody>
 														<tr><td colspan="2" style="padding:0;"><div id="split_mode_list_wrap" style="min-height:60px;padding:8px;"><span style="color:#888;">(等到主代理重启代理后此处会有数据)</span></div></td></tr>
-														<tr><td colspan="2" style="padding:6px;"><input type="button" class="ss_btn" style="cursor:pointer;" onclick="split_v2_new_mode();" value="新建 Mode" />&nbsp;&nbsp;<span style="color:#888;font-size:11px;">alpha 第一稿用 prompt() 交互，doge.13 起会做漂亮的弹窗</span></td></tr>
+														<tr><td colspan="2" style="padding:6px;"><input type="button" class="ss_btn" style="cursor:pointer;" onclick="split_v2_new_mode();" value="新建 Mode" />&nbsp;&nbsp;<span style="color:#888;font-size:11px;">alpha 阶段：编辑/删除已通过弹窗实现，doge.13 起加导入/导出/拖拽排序</span></td></tr>
 													</tbody>
 												</table>
 												<table id="table_split_rules" width="100%" border="1" align="center" cellpadding="4" cellspacing="0" bordercolor="#6b8fa3" class="FormTable" style="margin-top:8px;">
@@ -18121,9 +18796,9 @@ function toggleKeyMask(o, show){
 												<table id="table_split_dns" width="100%" border="1" align="center" cellpadding="4" cellspacing="0" bordercolor="#6b8fa3" class="FormTable" style="margin-top:8px;margin-bottom:4px;">
 													<thead><tr><td class="IPQOSTitle" colspan="2" align="left" style="font-weight:bold;padding:6px 10px;">DNS 设置 V2 (双轨) <a class="hintstyle" style="color:#03a9f4;font-weight:normal;" href="javascript:void(0);" onclick="openssHint(213);"><u>说明</u></a></td></tr></thead>
 													<tbody>
-														<tr><th width="30%">分流 DNS upstream (国内)</th><td><textarea id="ss_split_dns_china_upstream" rows="3" cols="60" style="width:90%;font-family:monospace;" placeholder="udp://223.5.5.5:53&#13;&#10;tcp://119.29.29.29:53"></textarea></td></tr>
-														<tr><th>分流 DNS upstream (国外)</th><td><textarea id="ss_split_dns_overseas_upstream" rows="3" cols="60" style="width:90%;font-family:monospace;" placeholder="udp://8.8.8.8:53&#13;&#10;tls://1.1.1.1:853"></textarea></td></tr>
-														<tr><th>全局 DNS upstream (单一海外)</th><td><input type="text" id="ss_split_dns_global_upstream" style="width:60%;font-family:monospace;" placeholder="udp://8.8.8.8:53" /></td></tr>
+														<tr><th width="30%">分流 DNS upstream (国内)</th><td><textarea id="ss_split_dns_china_upstream" rows="3" cols="60" style="width:90%;font-family:monospace;background:#f4f4f4;color:#888;" readonly placeholder="alpha 阶段仅占位，doge.13 启用（请到主页面 DNS 设置配置）"></textarea></td></tr>
+														<tr><th>分流 DNS upstream (国外)</th><td><textarea id="ss_split_dns_overseas_upstream" rows="3" cols="60" style="width:90%;font-family:monospace;background:#f4f4f4;color:#888;" readonly placeholder="alpha 阶段仅占位，doge.13 启用（请到主页面 DNS 设置配置）"></textarea></td></tr>
+														<tr><th>全局 DNS upstream (单一海外)</th><td><input type="text" id="ss_split_dns_global_upstream" style="width:60%;font-family:monospace;background:#f4f4f4;color:#888;" readonly placeholder="alpha 阶段仅占位，doge.13 启用（请到主页面 DNS 设置配置）" /></td></tr>
 														<tr><td colspan="2" style="font-size:11px;color:#A0A0A0;padding:8px;">分流 DNS = chinadns-ng 智能分流实例；全局 DNS = 单一海外 upstream 实例。Mode 通过 <code>dns_mode</code> 字段选择走哪一轨。</td></tr>
 													</tbody>
 												</table>

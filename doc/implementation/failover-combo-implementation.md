@@ -58,22 +58,28 @@
 
 ### 2.3 [fancyss/ss/ssconfig.sh](../../fancyss/ss/ssconfig.sh)
 
-入口 case 分支处加失效清理逻辑（约 +16 行，第 7132 / 7163 行附近）：
+入口 case 分支处加失效清理逻辑（[ssconfig.sh:8633-8689](../../fancyss/ss/ssconfig.sh#L8633)）：
 
 ```sh
 case $ACTION in
 start)
-    if [ "$(dbus get fss_failover_internal_restart)" = "1" ]; then
+    __fofr="$(dbus get fss_failover_internal_restart)"
+    if [ "${__fofr}" = "1" ] || [ "${__fofr}" = "2" ]; then
+        # 内部触发的 restart（failover 自切 / cron / wan-start / legacy 故障检测），不清 failed
         dbus set fss_failover_internal_restart="0"
     else
+        # 用户主动操作，清空所有 combo 的 failed 标志（同时清切换时戳解除冷却）
         fss_failover_clear_all_failed
     fi
+    unset __fofr
     # ...
 restart)
     # 同样的判定逻辑
 ```
 
-要点：start 和 restart 两条入口都要加（`stop` 不需要）。`fss_failover_internal_restart` 是单次握手标志，无论清不清 failed，立即重置防遗留。
+要点：
+- start 和 restart 两条入口都要加（`stop` 不需要）。`fss_failover_internal_restart` 是单次握手标志，无论清不清 failed，立即重置防遗留。
+- alpha.17 起 flag 由两状态扩到**三状态**（`0` / `1` / `2`），把 cron / wan-start / legacy 路径与 failover 自切并列为"内部 restart"，避免周期性 restart 清空失败知识。完整语义与全部上游路径见 §4.7。
 
 ### 2.4 [fancyss/install.sh](../../fancyss/install.sh)
 
@@ -189,7 +195,7 @@ triggers：
 
 | Key | 写入时机 | 清空时机 |
 |---|---|---|
-| `fss_failover_internal_restart` | failover_action 切换前 set 1 | ssconfig.sh 入口握手即 set 0（无论清不清 failed） |
+| `fss_failover_internal_restart` | failover_action 切换前 set `1`；cron / wan-start / legacy 故障检测路径走 `ss_cron_restart.sh` wrapper 或显式 set `2`（详见 §4.7） | ssconfig.sh 入口握手即 set 0（无论清不清 failed） |
 | `fss_failover_last_switch_ts` | failover_action 切换成功后 = `date +%s` | 用户主动 restart（连同 clear_all_failed 清成 0） |
 | `fss_failover_cool_down_sec` | （未在 UI 暴露，留作未来配置项） | 不主动清；空 → 默认 30 |
 | `fss_failover_migrated_v1` | install.sh 迁移成功后 set 1 | 不清（永久幂等标记） |
@@ -229,11 +235,13 @@ triggers：
 
 ### 4.2 用户主动 restart → 清失效
 
-帐号设置点"保存&应用"或路由器 SSH `ssconfig.sh restart`：
+帐号设置点"保存&应用"（[scripts/ss_config.sh:89](../../fancyss/scripts/ss_config.sh#L89)）或路由器 SSH `ssconfig.sh restart`：
 
 1. ssconfig.sh case 分支检查 `fss_failover_internal_restart`
-2. = "1"：故障转移内部触发，仅置 0，**不**清 failed（保留切换历史）
-3. ≠ "1"：用户主动，`fss_failover_clear_all_failed` 把所有 combo 的 `failed` 设 "0"，同时把 `fss_failover_last_switch_ts` 清 0（解除冷却）
+2. = "1" 或 = "2"：内部触发（failover 自切 / cron / wan-start / legacy），仅置 0，**不**清 failed（保留切换历史）
+3. 其他（含空、未 set）：视为用户主动，`fss_failover_clear_all_failed` 把所有 combo 的 `failed` 设 "0"，同时把 `fss_failover_last_switch_ts` 清 0（解除冷却）
+
+三状态语义的展开与"哪些路径必须走 wrapper / 必须显式 set 2"的清单见 §4.7。
 
 ### 4.3 节点删除 → combo 维护
 
@@ -289,6 +297,69 @@ function render_failover_combo_panel() {
 写入路径仍然走 `failover_combo_persist`（`dummy_script.sh` 路由），不重启代理。ajax 失败时 cb(false) → 不重渲染、不落标志，下次进页面再试，是合理降级。
 
 后端 [ss_status_main.sh](../../fancyss/scripts/ss_status_main.sh) 不需要改动——主组合一旦被种子写入，自动成为 #1 参与 `fss_failover_pick_next_available` 扫描流程。
+
+### 4.7 cron / 非用户路径 restart wrapper（alpha.17 新增）
+
+**背景**：alpha.16 之前 `fss_failover_internal_restart` 是两状态标志（`0` / `1`）——只有 `failover_action` 自己切主备时 set 1。**任何其他路径**调 `ssconfig.sh restart` 都被 ssconfig.sh 入口当成用户主动操作，无差别清空 combo 的 failed 字段。
+
+后果：用户配了"每 6 小时 cru 自动重启"或 fancyss 触发"规则更新后重启"或 `failover_check_*` 的 `s4_1=1` 整体重启分支命中——每次重启都把 failover 学到的"哪些 combo 失败过"知识抹掉，下一轮 `failover_check_*` 又得从头探。alpha.16 一段较稳定的 failover 验证里反复观察到这种"重新学习"行为，alpha.17 修。
+
+**新合同 — 三状态语义**（[ssconfig.sh:8633-8689](../../fancyss/ss/ssconfig.sh#L8633)）：
+
+| `fss_failover_internal_restart` | 写者 | ssconfig.sh case 入口行为 |
+|---|---|---|
+| `0`（默认 / 未 set / 空） | — | **清** failed + 清 `fss_failover_last_switch_ts`（用户主动 = "重新洗牌"） |
+| `1` | `failover_action` 自切主备时 set | **不清** failed（保留切换历史，握手即重置为 0） |
+| `2` (**alpha.17 新增**) | cron / wan-start / legacy 故障检测路径预先 set | **不清** failed（与 `1` 同语义，但区分语义来源） |
+
+`1` 和 `2` 在 ssconfig.sh 入口被同一条 `if` 合并处理（`[ "${__fofr}" = "1" ] || [ "${__fofr}" = "2" ]`），分两个码值只是为了将来运维时一眼能区分"是 failover 自己切的"还是"周期任务触发的"。
+
+**wrapper 脚本**：[fancyss/scripts/ss_cron_restart.sh](../../fancyss/scripts/ss_cron_restart.sh)（部署到 `/koolshare/scripts/ss_cron_restart.sh`）
+
+```sh
+#!/bin/sh
+dbus set fss_failover_internal_restart="2"
+exec /bin/sh /koolshare/ss/ssconfig.sh restart
+```
+
+调用约定：所有由 `cru` 注册的定时任务必须通过此 wrapper 路径，不要直接 `cru ... ssconfig.sh restart`。
+
+**必须走 wrapper 的路径**（cru 注册点，由 [ss_reboot_job.sh::set_ss_reboot_job](../../fancyss/scripts/ss_reboot_job.sh#L20) 和 [ssconfig.sh::set_ss_reboot_job](../../fancyss/ss/ssconfig.sh#L8044) 写入 cru 表）：
+
+| 文件 / 行 | 触发条件 |
+|---|---|
+| [ss_reboot_job.sh:24/27/30/34/37/40/45](../../fancyss/scripts/ss_reboot_job.sh#L24) | "插件定时重启"功能各分支（每天 / 每周 / 每月 / 每 N 分 / N 时 / N 天 / 自定义小时） |
+| [ssconfig.sh:8048/8051/8054/8058/8061/8064/8069](../../fancyss/ss/ssconfig.sh#L8048) | 同上（ssconfig.sh 内部副本，apply_ss 重建 cru 表时写） |
+
+**必须显式 `dbus set fss_failover_internal_restart="2"` 的路径**（非 cru 触发但属内部 restart）：
+
+| 文件 / 行 | 触发场景 |
+|---|---|
+| [ss_status_main.sh:241-242](../../fancyss/scripts/ss_status_main.sh#L241) | `failover_check_*` 命中后 `ss_failover_s4_1=1`（整体重启分支，legacy 故障检测） |
+| [fss_rules_update.sh:331-332](../../fancyss/scripts/fss_rules_update.sh#L331) | 内置 Rule 自动更新成功，cron mode 批量重启 |
+| [fss_rules_update.sh:378-379](../../fancyss/scripts/fss_rules_update.sh#L378) | 单条 Rule 强制更新成功重启 |
+| [ss_rule_update.sh:258-259](../../fancyss/scripts/ss_rule_update.sh#L258) | 旧 rule 自动更新流程的"自动重启 fancyss"分支 |
+| [ss_status_main.sh:289](../../fancyss/scripts/ss_status_main.sh#L289) | `failover_action` 自切（继续用 `=1` 保留"failover 自己切的"语义） |
+
+注意 `ss_status_main.sh:289` 用 `=1` 而非 `=2`——这是 failover 自身切换路径，与 cron / legacy 区分；但两者在 ssconfig.sh 入口都进入"不清 failed"分支。
+
+**必须保留默认清除行为的路径**（这些路径**不**预 set，意图就是"用户主动 = 清 failed"）：
+
+| 文件 / 行 | 触发场景 |
+|---|---|
+| [install.sh:2589](../../fancyss/install.sh#L2589) | install_now 装包末尾的 `sh /koolshare/ss/ssconfig.sh restart`（用户装包 = 重新洗牌） |
+| [scripts/ss_config.sh:89](../../fancyss/scripts/ss_config.sh#L89) | WebUI "保存&应用"路由的 `start_fancyss()`（用户保存 = 重新洗牌） |
+| 路由器 SSH 终端手动 `ssconfig.sh restart` | 同上，用户意图明确 |
+
+**已知遗留**（acceptable degradation）：
+
+用户从 alpha.16 升级到 alpha.17 时，旧 cru 表里 `ss_reboot` 那条仍然是直接调 `ssconfig.sh restart`——`set_ss_reboot_job` 只在被调用时才用新模板重写 cru 表。新模板生效路径：
+
+1. 路由器重启 → wan-start → `apply_ss` → `set_ss_reboot_job` 重新注册 → cru 表里换上 wrapper ✓
+2. 用户在 ASP "插件定时重启"区块改一下任意字段并保存 → `set_ss_reboot_job` 重跑 ✓
+3. 用户安装更新版本（装包末尾的 `ssconfig.sh restart` → `apply_ss` → `set_ss_reboot_job`） ✓
+
+直到上述任一事件发生前，旧 cru 任务触发的 restart 会继续清 failed。设计上接受这一过渡窗口——路由器重启或更新一次就自动修。
 
 ---
 
@@ -389,3 +460,4 @@ UI 持久化 combo 字段不应触发 `ssconfig.sh restart`（用户在 UI 加�
 - 2026-05-03：初稿，对应设计文档 §7 实施步骤 1–6 全部落地。
 - 2026-05-03：补充 §4.6「主组合自动种子」机制 + §3.1 新增 `fss_failover_main_combo_seeded` key（解决首次进入页面时主面板组合不在列表导致故障转移无法触发切换的 UX 问题）。
 - 2026-05-03：combo dbus key 前缀重命名 `fss_failover_combo_*` → `ss_failover_combo_*`、`fss_failover_main_combo_seeded` → `ss_failover_main_combo_seeded`。原因详见 §5.7：`fss_*` 前缀不在 koolshare `/_api/ss` 返回白名单内导致前端 reload 后读不到 combo 数据，`ensure_main_combo_seeded` 反复重新种子覆盖用户加的备用组合。同步新增 `install.sh::migrate_failover_v2` 一次性迁移老用户已有数据。
+- 2026-05-20 alpha.17：`fss_failover_internal_restart` 由两状态扩到三状态（`0`/`1`/`2`），新增 [ss_cron_restart.sh](../../fancyss/scripts/ss_cron_restart.sh) wrapper + 6+ 处显式 `set 2` 保留 failed 状态，避免 cron / 规则更新 / wan-start / legacy 故障检测路径无差别清空失败知识。详见 §4.7 完整路径清单。`fss_failover_internal_restart=2` 的码值仅用于"区分语义来源"，在 ssconfig.sh 入口与 `=1` 同条件分支合并处理。

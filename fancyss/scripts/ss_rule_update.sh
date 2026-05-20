@@ -255,6 +255,8 @@ start_update(){
 	# reboot fancyss
 	if [ "${reboot}" == "1" ];then
 		echo_date "自动重启fancyss，以应用新的规则文件！请稍后！"
+		# alpha.17 修：标记内部 restart，防止 ssconfig.sh 入口清掉 failover combo 的 failed 标志
+		dbus set fss_failover_internal_restart="2"
 		run sh /koolshare/ss/ssconfig.sh restart
 	fi
 	echo ==================================================================================================

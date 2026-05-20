@@ -260,6 +260,71 @@ GET_FAILOVER(){
 	fi
 }
 
+# FORK doge.10: 链式代理状态行（前置节点 ID + 名字 + 类型 + 运行时状态）
+GET_CHAIN_PROXY_STATUS(){
+	local front_id="${ssconf_basic_node_front}"
+	if [ -z "${front_id}" ] || [ "${front_id}" = "0" ]; then
+		echo "未启用"
+		return
+	fi
+	local front_name="-"
+	local front_type=""
+	if type fss_get_node_field_plain >/dev/null 2>&1; then
+		front_name="$(fss_get_node_field_plain "${front_id}" "name" 2>/dev/null)"
+		front_type="$(fss_get_node_field_plain "${front_id}" "type" 2>/dev/null)"
+		[ -z "${front_name}" ] && front_name="-"
+	fi
+	local type_name=""
+	[ -n "${front_type}" ] && type_name="，$(GET_TYPE_NAME "${front_type}")"
+	local status_str="$(dbus get ss_chain_status 2>/dev/null)"
+	[ -z "${status_str}" ] && status_str="unknown"
+	echo "前置节点 ID=${front_id}（${front_name}${type_name}），运行状态：${status_str}"
+}
+
+# FORK doge.12: 分流架构 V2 状态行
+GET_SPLIT_V2_STATUS(){
+	local enabled="${ss_split_enabled}"
+	[ -z "${enabled}" ] && enabled="0"
+	if [ "${enabled}" != "1" ]; then
+		echo "未启用（走 doge.10/11 老路径）"
+		return
+	fi
+	local mode_count="$(dbus get ss_split_mode_count 2>/dev/null)"
+	[ -z "${mode_count}" ] && mode_count="0"
+	local rule_count="$(dbus get ss_split_rule_count 2>/dev/null)"
+	[ -z "${rule_count}" ] && rule_count="0"
+	local default_mode="$(dbus get ss_split_default_mode_id 2>/dev/null)"
+	[ -z "${default_mode}" ] && default_mode="-"
+	local default_mode_name="-"
+	if [ "${default_mode}" != "-" ]; then
+		local m=1
+		while [ "${m}" -le "${mode_count}" ]; do
+			local mid="$(dbus get ss_split_mode_${m}_id 2>/dev/null)"
+			if [ "${mid}" = "${default_mode}" ]; then
+				default_mode_name="$(dbus get ss_split_mode_${m}_name 2>/dev/null)"
+				[ -z "${default_mode_name}" ] && default_mode_name="-"
+				break
+			fi
+			m=$((m + 1))
+		done
+	fi
+	local warn="$(dbus get fss_split_xray_warn 2>/dev/null)"
+	local warn_str=""
+	[ -n "${warn}" ] && warn_str="，⚠️ ${warn}"
+	echo "已启用（Mode=${mode_count} / Rule=${rule_count} / 默认 Mode #${default_mode} ${default_mode_name}${warn_str}）"
+}
+
+# FORK doge.9: 直连 koolcenter/华硕生态开关（默认 1）
+GET_DIRECT_ASUSGO(){
+	local v="${ss_basic_direct_asusgo}"
+	[ -z "${v}" ] && v="1"
+	if [ "${v}" = "1" ]; then
+		echo "开启（koolcenter / 华硕官网等强制走直连）"
+	else
+		echo "关闭"
+	fi
+}
+
 GET_RULE_UPDATE(){
 	if [ "${ss_basic_rule_update}" == "1" ]; then
 		echo "规则定时更新开启，每天${ss_basic_rule_update_time}:00更新规则"
@@ -919,7 +984,10 @@ check_status() {
 	echo "🟠 规则更新：$(GET_RULE_UPDATE)"
 	echo "🟠 订阅更新：$(GET_SUBS_UPDATE)"
 	echo "🟠 故障转移：$(GET_FAILOVER)"
-	
+	echo "🟠 链式代理：$(GET_CHAIN_PROXY_STATUS)"
+	echo "🟠 分流架构V2：$(GET_SPLIT_V2_STATUS)"
+	echo "🟠 直连白名单：$(GET_DIRECT_ASUSGO)"
+
 	GET_PROG_STAT
 
 	ECHO_VERSION

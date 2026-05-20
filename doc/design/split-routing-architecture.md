@@ -381,6 +381,8 @@ for acl in users:
     # 未列出设备走 ss_split_default_mode_id 对应端口
 ```
 
+> **实施状态**：代码已写（[ssconfig.sh:7120-7137](../../fancyss/ss/ssconfig.sh#L7120) TPROXY 段 + [:7159-7169](../../fancyss/ss/ssconfig.sh#L7159) DNAT 段），alpha.10 未实地验证 per-MAC 分流真生效，详见实施合同 [D8](../implementation/split-routing-implementation.md#d8-ss_acl_split_mode_i-per-mac-路由层兑现状况未实地验证-alpha10-审计交叉--已知未验证)。
+
 ### 5.2 TCP/UDP 路径（Q3 决议：不切全 TPROXY）
 
 **保持现状混搭**：TCP 走 nat REDIRECT，UDP 走 mangle TPROXY。理由：
