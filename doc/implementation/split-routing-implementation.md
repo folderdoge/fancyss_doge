@@ -77,6 +77,8 @@ doge.12 是 1-2 周量级的架构跃迁，单次 release 全切风险极大。a
 | `ss_split_default_mode_id` | int | 默认 Mode.id（**必须非 0**） |
 | `ss_acl_split_mode_<acl_node>` | int | 该 acl 行分配的 Mode.id（0=不通过代理） |
 
+> **注**：ACL 默认行 `ss_acl_default_mode`（取值 `follow` / `0` / `1` / `2` / `3` / `5` / `7`）**不参与 split mode 翻译**——split V2 路径下表外设备走 `ss_split_default_mode_id` 兜底（[ssconfig.sh:7288](../../fancyss/ss/ssconfig.sh#L7288)），跟 ACL 默认行 UI 是两条独立逻辑。alpha.18 Q2 翻译 + install.sh::migrate_split_routing_v1 step 4 一致只处理数字下标行 `ss_acl_mode_<i>`。doge.13 ACL UI 改造时可顺便确认要不要把两套默认行 UI 合并/联动（独立 task）。
+
 ### 1.4.1 索引规范（**新增 — 修复 BLOCKER R2.8**）
 
 dbus key 中的 `<m>` (Mode 索引) / `<r>` (rule 序号) / `<i>` (Rule 索引) 在 alpha 阶段约定为：
@@ -243,7 +245,7 @@ fancyss/                                  # 仓库内
 - ~~`block_quic` Mode 级开关 alpha 在 iptables 层不实现（xray sniffing 已能识别 QUIC SNI 但无 DROP；doge.13 加 `iptables -A SHADOWSOCKS -p udp --dport 443 -j DROP`）。~~ **alpha.16 已兑现 → 详见 §6.2 D11**；`udp_proxy` Mode 级开关同时兑现。
 - active Mode 判定粗放：alpha 把"内置 Mode + default Mode"都激活，不严格按 acl 引用过滤。
 - 单条 dbus 调用 fork 多个 jq 子进程，50 mode × 10 rule 量级启动 ~3s。alpha 接受。
-- **acl per-Mode 路由层不兑现**（alpha.11 文档化 / 修 C-CRIT-7）：合同 §1.4 定义 `ss_acl_split_mode_<acl_node>` = 每个 acl 行分配的 Mode.id（0 = 不走代理）。`install.sh::migrate_split_routing_v1` 写入、`Module_shadowsocks.asp` 展示并支持删除 Mode 时清零，但 **`ssconfig.sh::load_iptables_split` 完全不读取** —— alpha 阶段所有客户端无差别走 `ss_split_default_mode_id` 指定的 default Mode。后果：访问控制里给每个 MAC 选的 Mode 在 alpha 完全不生效。doge.13 兑现方案：`load_iptables_split` 读 `ss_acl_split_mode_<i>` → per-MAC fwmark → per-Mark iptables 跳转到对应 Mode TPROXY listener。alpha 阶段如需 per-Mode 路由请暂用旧路径 (`ss_split_enabled=0`)。
+- **acl per-Mode 路由层不兑现**（alpha.11 文档化 / 修 C-CRIT-7 / **alpha.18 写者侧兑现**）：合同 §1.4 定义 `ss_acl_split_mode_<acl_node>` = 每个 acl 行分配的 Mode.id（0 = 不走代理）。`install.sh::migrate_split_routing_v1` 写入、`Module_shadowsocks.asp` 展示并支持删除 Mode 时清零，但 **`ssconfig.sh::load_iptables_split` 完全不读取** —— alpha 阶段所有客户端无差别走 `ss_split_default_mode_id` 指定的 default Mode。后果：访问控制里给每个 MAC 选的 Mode 在 alpha 完全不生效。doge.13 兑现方案：`load_iptables_split` 读 `ss_acl_split_mode_<i>` → per-MAC fwmark → per-Mark iptables 跳转到对应 Mode TPROXY listener。alpha 阶段如需 per-Mode 路由请暂用旧路径 (`ss_split_enabled=0`)。**2026-05-20 alpha.18 兑现写者侧**（详见 §6.2 D8 + 修订记录 alpha.18）：[asp:8478-8483 save() ACL 循环](../../fancyss/webs/Module_shadowsocks.asp#L8478) 同步翻译 `ss_acl_mode_<i>` → `ss_acl_split_mode_<i>`（0→0, 5→1, *→2，与 install.sh:709-718 字节级一致）+ [delTr 清零](../../fancyss/webs/Module_shadowsocks.asp#L16315)。读者侧 per-MAC TPROXY/DNS 装配自 alpha.10 起就位（§6.2 D8）。**仍待 doge.13**：(a) `__split_mode_port_by_id` 端口分配 gate 解除（用户自定义 Mode 静默退化默认端口）；(b) ACL UI select 支持自定义 Mode（alpha.18 仍只有旧 6 个 option / 翻译规则保守，UI 改造留 doge.13）。
 - **Mode name 后端 sanitize 缺口**（alpha.11 review D4 + A4 发现 / 文档化）：C-CRIT-6 修复在 Rule 路径双层防御（前端 `split_v2_name_has_forbidden` + 后端 `ss_split_rule_save.sh::case` 兜底），但 **Mode 路径单层** —— Mode CRUD 走 `split_v2_persist` → `dummy_script.sh`（koolshare 通用"只写 dbus"占位脚本），**无任何后端 sanitize**。攻击场景：LAN 内 admin 已认证攻击者绕过前端校验，curl 直 POST `{"method":"dummy_script.sh","fields":{"ss_split_mode_2_name":"bad\"name"}}`，恶意值直接进 dbus，污染 `dbus list ss_split_mode_` 输出 (`key=value` 文本格式)，下游任何 awk `-F=` 切分会错位。alpha 阶段风险评估：**低**（要求 admin auth + LAN 接入；alpha 用户量小且 opt-in），但**不为零**。doge.13 兑现方案：新增 `ss_split_mode_save.sh` helper（同 `ss_split_rule_save.sh` 量级，~200 行），Mode CRUD 改走专用 helper 加同款 case sanitize，把 dummy_script.sh 仅留给真正"只改一两个标量字段"的场景。
 
 **install.sh 迁移层**（A）：
@@ -255,9 +257,11 @@ fancyss/                                  # 仓库内
 - 新建/编辑/删除 Mode/Rule 对话框用 `alert()` 占位文字。doge.13 做漂亮弹窗。
 - 拖动重排未实现（依赖编辑弹窗）。
 - 立即更新 / 回滚到 .bak 按钮无 UI 入口（脚本能力已就绪 by D，UI 后接）。
-- 访问控制 UI 改造留 doge.13。
+- 访问控制 UI 改造留 doge.13（alpha.18 已通过 save() 翻译写 `ss_acl_split_mode_<i>` 兜底，select option 仍是旧 6 个）。
 - 导入/导出 Mode (JSON) 留 doge.13。
 - Mode/Rule 子字段写入路径（如 `ss_split_mode_<m>_udp_proxy`）依赖编辑弹窗。
+- **内置 Mode 字段全锁** → **alpha.18 修正**：alpha.17 F-B-7 把内置 Mode 所有字段一律 disabled 设计过度。alpha.18 拆 `disName`（锁名字）+ `disRun=''`（运行时字段放开）：name + rule list 顺序仍锁（防止破坏 install.sh 种子标识），default_action / udp_proxy / block_quic / apply_blackwhite / dns_mode / rule action 全放开。详见 [Module_shadowsocks.asp:7318-7340](../../fancyss/webs/Module_shadowsocks.asp#L7318)。
+- **「确定」按钮仅写 dbus 不重启代理** → **alpha.18 加「保存并立即生效」按钮**：Mode 弹窗 footer 三按钮（取消 / 保存 / 保存并立即生效）。`split_v2_persist(fields, cb, applyAfter)` 新增 applyAfter 参数，true 时 dbus 落盘后调 `push_data_ws('ss_config.sh', enabled?'start':'stop', {})` 复用主面板「保存&应用」路径。详见 [splitDlg.okApply](../../fancyss/webs/Module_shadowsocks.asp#L7025) / [split_v2_persist](../../fancyss/webs/Module_shadowsocks.asp#L7039)。
 
 **cron**（D）：
 - `recount_stats` 用 grep 单行处理，10 万行规则路由器上估算 5-10s（alpha 阶段 update_hours=0 cron 不实际跑）。doge.13 改 awk 单遍。
@@ -314,6 +318,7 @@ fancyss/                                  # 仓库内
 - **端口分配限制（新发现）**：`__split_mode_port_by_id` [ssconfig.sh:7021](../../fancyss/ss/ssconfig.sh#L7021) 的循环 gate 是 `if (is_default=1 || builtin=1)`——只对默认 Mode 与内置 Mode 分配 TPROXY/DNS 端口；用户自定义、非内置、非默认的 Mode 在 [ssconfig.sh:7031](../../fancyss/ss/ssconfig.sh#L7031) 兜底回 `SS_SPLIT_PORT_BASE`（默认 Mode 端口），即静默退化为「跟默认 Mode 走同一条路径」。`__split_mode_dns_port_by_id` 同结构同语义。
 - **alpha 决议**：**保留代码不动**。alpha 用户大概率只用内置 Mode#1（全局）/ Mode#2（大陆白名单），不受端口分配 gate 影响；自定义 Mode 静默退化到默认端口属"已知行为"而非崩溃。
 - **doge.13 兑现**：(a) 真机三 MAC 对照测试 ✓ default + ✓ builtin + ✓ user-defined Mode，对照实际出口 IP / 直连命中验证三条路径独立工作；(b) 扩展 `__split_mode_port_by_id` / `__split_mode_dns_port_by_id` 端口分配到用户自定义 Mode（去掉 `is_default || builtin` gate，按 mode 顺序分配端口偏移）；(c) 修任何真机暴露的 bug（iptables 规则顺序 / fallback 链优先级等）→ 删除本条 D8 与 §6.1 line 239 那条对应的"完全不读取"过时描述。
+- **2026-05-20 alpha.18 实测触发 + 修写者侧**：用户在 alpha.17 真机配某台测试设备走 Mode 1 (全局代理)，实测发现该设备仍走 Mode 2 (大陆白名单)。Opus subagent trace 端到端：ACL UI 的 `<select id="ss_acl_mode_<rowid>">` 写的是**旧 `ss_acl_mode_<i>`**（值 0/1/2/3/5/7 = `ss_basic_mode` 语义），**从不写 `ss_acl_split_mode_<i>`**；`load_iptables_split` 读不到 → 静默 fallback default Mode。`migrate_split_routing_v1` 是幂等只跑一次（`fss_split_migrated_v1=1` 守卫），UI 后续改 ACL 不会再同步翻译。**alpha.18 修法**：[asp:8478-8483 save() ACL 循环](../../fancyss/webs/Module_shadowsocks.asp#L8478) 同步翻译 `0→0, 5→1, *→2`（与 install.sh:709-718 字节级一致）+ [delTr 清零](../../fancyss/webs/Module_shadowsocks.asp#L16315)。**仍待 doge.13**：ACL UI select 仍是旧 6 个 option（0/1/2/3/5/7），用户不能从 ACL 直接选自定义 Mode；翻译规则保守（旧 GFW/CHN/HOM/GAM/xray 分流统一 → Mode 2 大陆白名单）。完整 ACL UI 改造留 doge.13。
 
 #### D9: `ss_split_rule_to_json` 必须文件中转，不能走 stdout / 变量（**alpha.13 + alpha.14 修订，已落地**）
 - **症状（alpha.13 ARG_MAX）**：alpha.12 修好 hot reseed 后，Rule 1（大陆白名单_常用）文件首次出现真实内容（chnlist 11 万行）。`ss_split_rule_to_json` 把 ~1.6MB JSON 通过 `rdata=$(ss_split_rule_to_json ...)` 灌进 shell 变量，紧接着 [ssconfig.sh:5359-5361](../../fancyss/ss/ssconfig.sh#L5359) 三处消费（`[ -n "${rdata}" ]` / `[ "${rdata}" != "{}" ]` / `printf '%s' "${rdata}" | jq`）全部踩 busybox `[` 内置 ARG_MAX (~128KB) → restart 永久 hang。alpha.11 没爆是因为 Rule 1 文件丢失走 `{}` 短路；alpha.12 hot reseed 修文件 → 暴露这个 latent bug。
@@ -412,3 +417,10 @@ fancyss/                                  # 仓库内
   - **前端 finding（5 个落地）**：Module_shadowsocks.asp 5 处小修（具体改动看 commit）。
   - **latent issue（4 个文档化，alpha 不修）**：F-A-03 / F-A-05 / F-A-06 / F-A-08 → §6.2 D12 / D13 / D14 / D15，全部因 generate_xray_json_split out_main collapse 掩盖、doge.13 解除 collapse 时必须兑现。
   - **reviewer PASS**：Agent A 深度审计 + 主代理交叉 review 通过。代码改动量 ~185 行（从 alpha.16 → alpha.17，源码 commit 未发版）。
+- 2026-05-20 alpha.18 修订（用户 alpha.17 真机暴露的 2 bug + alpha.17 reviewer 2 条 WARN）：
+  - **Q1-A**（asp）：内置 Mode 字段全锁过度，拆 `disName`（只锁名字）+ `disRun=''`（运行时字段放开）。撤销 alpha.17 F-B-7 对 `default_action` + rule action select 的额外 disable。用户现在能修改内置 Mode #1/#2 的 dns_mode / udp_proxy / block_quic / apply_blackwhite / default_action / 每条 rule 的 action。仍锁：name + rule list 顺序（add/move/del 操作），防止破坏 install.sh 种子标识。详见 §6.1 "UI 第一稿" 末尾 + [asp:7318-7340](../../fancyss/webs/Module_shadowsocks.asp#L7318)。
+  - **Q1-B**（asp）：splitDlg Mode 弹窗 footer 三按钮（取消 / 保存 / 保存并立即生效）。`split_v2_persist(fields, cb, applyAfter)` 新增 applyAfter 参数；applyAfter=true 时 dbus 落盘后调 `push_data_ws('ss_config.sh', enabled?'start':'stop', {})` 复用主面板「保存&应用」路径（与 [asp:8771-8791](../../fancyss/webs/Module_shadowsocks.asp#L8771) 一致）。Rule 弹窗不传 `opts.showApply` 维持旧行为。
+  - **Q2**（asp）：ACL UI 写者侧兑现 `ss_acl_split_mode_<i>` —— save() 同步翻译 `0/5/* → 0/1/2`，delTr() 同步清零。详见 §6.2 D8 alpha.18 段。
+  - **W3**（ssconfig.sh）：[L7263 + L7285](../../fancyss/ss/ssconfig.sh#L7263) `block_quic` DROP 规则加 `-i "${default_iface}"` 限定 LAN 入站方向，防止 LAN 内自建 STUN/媒体服务器接收外部 UDP/443 被误伤。
+  - **W6**（ssconfig.sh）：[L5504-5508](../../fancyss/ss/ssconfig.sh#L5504) 删 dead if/else（split=0/1 两分支调用相同），留单一行 `fss_chain_apply` 调用。
+  - 改动量：asp +61 -19（净 +42）+ ssconfig.sh +7 -4（净 +3）= **总净 +45 行**。BOM/CRLF 字节级保留（CR=LF=18874）。Opus reviewer PASS。

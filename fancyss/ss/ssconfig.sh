@@ -5501,11 +5501,9 @@ start_xray() {
 	# 并设 ss_chain_status=fallback。alpha 阶段两键独立，若用户开 split_enabled=1
 	# 但保留旧 ss_basic_mode=7 的混合状态，链式会被静默禁用（设计内行为，doge.13
 	# UI 引导会避免该组合）。
-	if [ "${ss_split_enabled}" != "1" ]; then
-		type fss_chain_apply >/dev/null 2>&1 && fss_chain_apply /koolshare/ss/xray.json
-	else
-		type fss_chain_apply >/dev/null 2>&1 && fss_chain_apply /koolshare/ss/xray.json
-	fi
+	# split=0/1 两条分支调用一致（fss_chain_apply 内部自己判断 ss_basic_mode/split 状态）；
+	# alpha.17 reviewer W6 标记的 dead if/else，alpha.18 清理为单一行
+	type fss_chain_apply >/dev/null 2>&1 && fss_chain_apply /koolshare/ss/xray.json
 	if [ -n "${xray_asset_dir}" ]; then
 		run_bg env "xray.location.asset=${xray_asset_dir}" /koolshare/bin/xray run -c /koolshare/ss/xray.json
 	else
@@ -7259,8 +7257,10 @@ load_iptables_split() {
 				local user_udp_proxy=$(__split_mode_udp_proxy_by_id "${user_mode}")
 				# alpha.16: block_quic=1 时 UDP/443 不进代理直接 DROP（HTTP/3 回退 TCP）。
 				# 必须放在该 user 的 TPROXY 规则之前——iptables 顺序敏感，先 DROP 后 TPROXY。
+				# alpha.18 W3: 加 -i ${default_iface} 限定仅 DROP 来自 LAN 入站方向的 QUIC，
+				# 防止 LAN 内自建 STUN/媒体服务器接收外部 UDP/443 被误伤
 				if [ "${user_block_quic}" = "1" ]; then
-					append_if_not_exists mangle -A SHADOWSOCKS -p udp --dport 443 -m mac --mac-source "${mac}" -j DROP
+					append_if_not_exists mangle -A SHADOWSOCKS -i "${default_iface}" -p udp --dport 443 -m mac --mac-source "${mac}" -j DROP
 				fi
 				# TCP 走 TPROXY (mangle)
 				append_if_not_exists mangle -A SHADOWSOCKS -p tcp -m mac --mac-source "${mac}" -j TPROXY --tproxy-mark 0x07/0x07 --on-port "${user_port}"
@@ -7281,8 +7281,9 @@ load_iptables_split() {
 	local default_block_quic=$(__split_mode_block_quic_by_id "${default_mid}")
 	local default_udp_proxy=$(__split_mode_udp_proxy_by_id "${default_mid}")
 	# alpha.16: 默认 Mode 的 block_quic / udp_proxy 同样消费（fallback 设备走这条）
+	# alpha.18 W3: 加 -i ${default_iface} 限定仅 DROP LAN 入站方向 QUIC（同 per-user 注释）
 	if [ "${default_block_quic}" = "1" ]; then
-		append_if_not_exists mangle -A SHADOWSOCKS -p udp --dport 443 -j DROP
+		append_if_not_exists mangle -A SHADOWSOCKS -i "${default_iface}" -p udp --dport 443 -j DROP
 	fi
 	append_if_not_exists mangle -A SHADOWSOCKS -p tcp -j TPROXY --tproxy-mark 0x07/0x07 --on-port "${default_port}"
 	if [ "${default_udp_proxy}" = "1" ]; then

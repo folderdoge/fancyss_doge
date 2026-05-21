@@ -6986,23 +6986,34 @@ var splitDlg = {
 		$body.append('<div id="split_dlg_overlay"><div id="split_dlg_box">' +
 			'<div id="split_dlg_head"><span id="split_dlg_title">弹窗</span></div>' +
 			'<div id="split_dlg_body"></div>' +
-			'<div id="split_dlg_foot"><span id="split_dlg_err" class="split_dlg_err"></span><button type="button" onclick="splitDlg.cancel();">取消</button><button type="button" onclick="splitDlg.ok();" id="split_dlg_ok_btn">确定</button></div>' +
+			'<div id="split_dlg_foot"><span id="split_dlg_err" class="split_dlg_err"></span><button type="button" onclick="splitDlg.cancel();">取消</button><button type="button" onclick="splitDlg.ok();" id="split_dlg_ok_btn">确定</button><button type="button" onclick="splitDlg.okApply();" id="split_dlg_ok_apply_btn" style="display:none;background:#445;color:#fff;border:1px solid #334;">保存并立即生效</button></div>' +
 			'</div></div>');
 		this.el = $('#split_dlg_overlay');
 		this.el.on('click', function(e) { if (e.target === this) splitDlg.cancel(); });
 	},
-	open: function(title, bodyHtml, onOk) {
+	open: function(title, bodyHtml, onOk, opts) {
 		this.init();
 		$('#split_dlg_title').text(title);
 		$('#split_dlg_body').html(bodyHtml);
 		$('#split_dlg_err').text('');
 		$('#split_dlg_ok_btn').prop('disabled', false);
+		// FORK doge.12 alpha.18 Q1-B: 「保存并立即生效」按钮只在显式 opts.showApply=true 时显示（默认隐藏，Rule 弹窗等不需要）。
+		// 每次 open 都重置 applyAfter 状态。
+		this.applyAfter = false;
+		if (opts && opts.showApply) {
+			$('#split_dlg_ok_btn').text(opts.okText || '保存').css({background:'#eee',color:'#333'});
+			$('#split_dlg_ok_apply_btn').show().prop('disabled', false);
+		} else {
+			$('#split_dlg_ok_btn').text('确定').css({background:'',color:''});
+			$('#split_dlg_ok_apply_btn').hide();
+		}
 		this.cb = onOk;
 		this.el.show();
 	},
 	close: function() {
 		if (this.el) this.el.hide();
 		this.cb = null;
+		this.applyAfter = false;
 	},
 	cancel: function() { this.close(); },
 	ok: function() {
@@ -7013,13 +7024,22 @@ var splitDlg = {
 			this.close();
 		}
 	},
+	// FORK doge.12 alpha.18 Q1-B: 「保存并立即生效」入口。设 applyAfter=true 后复用 ok() 走相同 callback；
+	// callback (split_v2_save_mode_dialog) 读 splitDlg.applyAfter 决定是否在 persist 成功后触发 ssconfig.sh restart。
+	okApply: function() {
+		this.applyAfter = true;
+		this.ok();
+	},
 	error: function(msg) {
 		$('#split_dlg_err').text(msg || '');
 	}
 };
 
 // ============ 通用 dbus persist（fields-only, 不重启代理）============
-function split_v2_persist(fields, cb) {
+// FORK doge.12 alpha.18 Q1-B: applyAfter 参数（向后兼容，默认 false = 仅写 dbus 不重启）。
+//   applyAfter=true 时 dbus 落盘成功后再调 ss_config.sh start（等价主面板「保存&应用」）。
+//   走 push_data_ws 保留实时启动日志；fallback push_data。obj 传 {} 因 fields 已由 dummy_script.sh 写完。
+function split_v2_persist(fields, cb, applyAfter) {
 	var id = parseInt(Math.random() * 1e8);
 	$.ajax({
 		type: 'POST', cache: false, url: '/_api/',
@@ -7027,6 +7047,16 @@ function split_v2_persist(fields, cb) {
 		dataType: 'json',
 		success: function() {
 			for (var k in fields) if (Object.prototype.hasOwnProperty.call(fields, k)) db_ss[k] = fields[k];
+			if (applyAfter) {
+				// 主面板的实际启动入口；ss_basic_enable=0 时调 stop。
+				var enabled = String(db_ss['ss_basic_enable'] || '0');
+				var arg = (enabled === '1') ? 'start' : 'stop';
+				if (typeof is_ws_available === 'function' && is_ws_available()) {
+					push_data_ws('ss_config.sh', arg, {});
+				} else {
+					push_data('ss_config.sh', arg, {});
+				}
+			}
 			if (typeof cb === 'function') cb(true);
 		},
 		error: function() { if (typeof cb === 'function') cb(false); }
@@ -7287,24 +7317,25 @@ function split_v2_open_mode_dialog(slot, data) {
 	_modeDlgState.modeId = parseInt(data.id, 10) || split_v2_next_mode_id();
 	_modeDlgState.rules = data.rules.slice();
 	var title = (slot == null) ? '新建 Mode' : ('编辑 Mode #' + data.id + (_modeDlgState.builtin ? ' [内置]' : ''));
-	var dis = _modeDlgState.builtin ? ' disabled' : '';
+	// FORK doge.12 alpha.18 Q1-A: 内置 Mode 只锁「名字」+ rule 列表「顺序/增删」，运行时字段（udp/quic/blackwhite/dns_mode/default_action）放开。
+	// disName = 只锁名字标识；disRun = 运行时字段（始终为空 = 不 disable）。理由：内置 Mode 是 install.sh 种子标识，名字改了破坏迁移幂等；其他都是运行时开关，没理由禁。
+	var disName = _modeDlgState.builtin ? ' disabled' : '';
+	var disRun = '';
 	var html = '<table>';
 	html += '<tr><th>ID</th><td><b>' + split_v2_html_escape(data.id) + '</b><span style="color:#888;font-size:11px;">&nbsp;(自动分配, 不可改)</span></td></tr>';
-	html += '<tr><th>名称</th><td><input type="text" id="mode_dlg_name" value="' + split_v2_html_escape(data.name) + '" maxlength="40"' + dis + ' /></td></tr>';
-	html += '<tr><th>UDP 代理</th><td><label><input type="checkbox" id="mode_dlg_udp_proxy"' + (data.udp_proxy == '1' ? ' checked' : '') + dis + '/> 启用 UDP 代理</label></td></tr>';
-	html += '<tr><th>屏蔽 QUIC</th><td><label><input type="checkbox" id="mode_dlg_block_quic"' + (data.block_quic == '1' ? ' checked' : '') + dis + '/> 屏蔽 UDP/443，HTTP/3 回退 TCP</label></td></tr>';
-	html += '<tr><th>受全局黑白名单影响</th><td><label><input type="checkbox" id="mode_dlg_apply_blackwhite"' + (data.apply_blackwhite == '1' ? ' checked' : '') + dis + '/> 应用 ss_wan_white_domain / ss_wan_black_domain</label></td></tr>';
-	html += '<tr><th>DNS 模式</th><td><select id="mode_dlg_dns_mode"' + dis + '><option value="split"' + (data.dns_mode === 'split' ? ' selected' : '') + '>split (智能分流, chinadns-ng)</option><option value="global"' + (data.dns_mode === 'global' ? ' selected' : '') + '>global (单一海外 upstream)</option></select></td></tr>';
+	html += '<tr><th>名称</th><td><input type="text" id="mode_dlg_name" value="' + split_v2_html_escape(data.name) + '" maxlength="40"' + disName + ' /></td></tr>';
+	html += '<tr><th>UDP 代理</th><td><label><input type="checkbox" id="mode_dlg_udp_proxy"' + (data.udp_proxy == '1' ? ' checked' : '') + disRun + '/> 启用 UDP 代理</label></td></tr>';
+	html += '<tr><th>屏蔽 QUIC</th><td><label><input type="checkbox" id="mode_dlg_block_quic"' + (data.block_quic == '1' ? ' checked' : '') + disRun + '/> 屏蔽 UDP/443，HTTP/3 回退 TCP</label></td></tr>';
+	html += '<tr><th>受全局黑白名单影响</th><td><label><input type="checkbox" id="mode_dlg_apply_blackwhite"' + (data.apply_blackwhite == '1' ? ' checked' : '') + disRun + '/> 应用 ss_wan_white_domain / ss_wan_black_domain</label></td></tr>';
+	html += '<tr><th>DNS 模式</th><td><select id="mode_dlg_dns_mode"' + disRun + '><option value="split"' + (data.dns_mode === 'split' ? ' selected' : '') + '>split (智能分流, chinadns-ng)</option><option value="global"' + (data.dns_mode === 'global' ? ' selected' : '') + '>global (单一海外 upstream)</option></select></td></tr>';
 	html += '<tr><th>兜底动作 default_action</th><td>' + split_v2_build_action_html('mode_dlg_default_action', data.default_action, false) + '<div style="color:#888;font-size:11px;padding-top:2px;">不能是「屏蔽」(避免所有流量被屏蔽的死锁)</div></td></tr>';
 	html += '<tr><th>规则列表<br><span style="color:#888;font-size:11px;font-weight:normal;">按顺序逐条匹配<br>首条命中决定动作</span></th><td><div id="mode_dlg_rules_list"></div>' + (_modeDlgState.builtin ? '' : '<input type="button" class="ss_btn" style="margin-top:6px;cursor:pointer;" onclick="split_v2_mode_dlg_rule_add();" value="+ 添加规则" />') + '</td></tr>';
 	html += '</table>';
-	splitDlg.open(title, html, function() { return split_v2_save_mode_dialog(); });
+	// FORK doge.12 alpha.18 Q1-B: Mode 弹窗加「保存并立即生效」按钮 — 改 dns_mode / udp_proxy / default_action 不重启拿不到。
+	splitDlg.open(title, html, function() { return split_v2_save_mode_dialog(); }, {showApply: true, okText: '保存（下次重启代理生效）'});
 	split_v2_populate_action_selects('mode_dlg_default_action', data.default_action);
 	split_v2_render_mode_dlg_rules();
-	// FORK doge.12 alpha.17 F-B-7: builtin Mode default_action 控件也要 disable
-	if (_modeDlgState.builtin) {
-		$('#mode_dlg_default_action_type, #mode_dlg_default_action_node, #mode_dlg_default_action_front').prop('disabled', true);
-	}
+	// FORK doge.12 alpha.18 Q1-A: 撤销 alpha.17 F-B-7 对 default_action 的禁用——default_action 是运行时兜底动作（direct/proxy/reject），用户应能改。
 }
 
 function split_v2_render_mode_dlg_rules() {
@@ -7332,10 +7363,8 @@ function split_v2_render_mode_dlg_rules() {
 	$('#mode_dlg_rules_list').html(html);
 	for (var j = 0; j < rules.length; j++) {
 		split_v2_populate_action_selects('mode_dlg_rule_action_' + j, rules[j].action);
-		// FORK doge.12 alpha.17 F-B-7: builtin Mode 的 rule action select 也禁用
-		if (_modeDlgState.builtin) {
-			$('#mode_dlg_rule_action_' + j + '_type, #mode_dlg_rule_action_' + j + '_node, #mode_dlg_rule_action_' + j + '_front').prop('disabled', true);
-		}
+		// FORK doge.12 alpha.18 Q1-A: 撤销 alpha.17 F-B-7 对 rule action select 的禁用——action 是运行时映射（direct/proxy/reject + 节点），用户应能改。
+		// rid select (上面 ridDis) 仍 disabled，因为改 rule rid 等价于增删条目，破坏种子 rule_list 语义。
 	}
 }
 
@@ -7453,14 +7482,18 @@ function split_v2_save_mode_dialog() {
 			fields['ss_split_mode_' + slot + '_rule_' + k + '_action'] = '';
 		}
 	}
+	// FORK doge.12 alpha.18 Q1-B: 读 splitDlg.applyAfter 判断是否「保存并立即生效」；ok_apply_btn 一起 disable 防连点。
+	var applyAfter = !!splitDlg.applyAfter;
 	$('#split_dlg_ok_btn').prop('disabled', true);
+	$('#split_dlg_ok_apply_btn').prop('disabled', true);
 	split_v2_persist(fields, function(ok) {
 		$('#split_dlg_ok_btn').prop('disabled', false);
+		$('#split_dlg_ok_apply_btn').prop('disabled', false);
 		if (!ok) { splitDlg.error('保存失败，请稍后重试'); return; }
 		splitDlg.close();
 		render_split_mode_list();
 		render_split_default_mode_select();
-	});
+	}, applyAfter);
 	return true; // 异步：手动关
 }
 
@@ -8442,6 +8475,12 @@ function save() {
 			}
 			dbus["ss_acl_name_" + rowid] = E("ss_acl_name_" + rowid).value;
 			dbus["ss_acl_mode_" + rowid] = aclMode;
+			// FORK doge.12 alpha.18 Q2: 同步翻译到 ss_acl_split_mode_<rowid>，否则 V2 分流 (ss_split_enabled=1) 下 load_iptables_split 读不到，
+			// 该 MAC 静默落到默认 Mode (大陆白名单) fallback。翻译规则与 install.sh::migrate_split_routing_v1 step 4 严格一致：0→0 (不代理), 5→1 (全局/Mode 1), 其余→2 (大陆白名单/Mode 2)。
+			var splitMode = "2";
+			if (String(aclMode) == "0") splitMode = "0";
+			else if (String(aclMode) == "5") splitMode = "1";
+			dbus["ss_acl_split_mode_" + rowid] = splitMode;
 			dbus["ss_acl_port_" + rowid] = get_acl_port_save_value("ss_acl_port_" + rowid);
 			dbus["ss_acl_udp_" + rowid] = get_acl_checkbox_save_value("ss_acl_udp_" + rowid);
 			dbus["ss_acl_quic_" + rowid] = get_acl_checkbox_save_value("ss_acl_quic_" + rowid);
@@ -16273,6 +16312,9 @@ function delTr(o) {
 	for (var i = 0; i < params.length; i++) {
 		acls[p + "_" + params[i] + "_" + id] = "";
 	}
+	// FORK doge.12 alpha.18 Q2: 同步清零 ss_acl_split_mode_<id>，对称 save() 的翻译写入。
+	// 若不清，V2 路径会读到上一次行用过该 rowid 时残留的 split_mode 值（dbus 不会自动 GC）。
+	acls["ss_acl_split_mode_" + id] = "";
 	var id = parseInt(Math.random() * 100000000);
 	var postData = {"id": id, "method": "dummy_script.sh", "params":[], "fields": acls};
 	$.ajax({
