@@ -1247,16 +1247,29 @@ function openssHint(itemNum, flag) {
 		_caption = "失败降级";
 	} else if (itemNum == 220) {
 		width = "560px";
-		statusmenu = "<b>分流总开关状态已保存</b>，但<font color='#CC0066'><b>尚未生效</b></font>。<br /><br />";
+		statusmenu = "<b>分流开关状态已保存</b>，但<font color='#CC0066'><b>尚未生效</b></font>。<br /><br />";
 		statusmenu += "<b><font color='#669900'>为什么？</font></b><br />";
-		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• <code>ss_split_enabled</code> 是<b>路由层入口决策键</b>，决定包从哪条路径走（新分流 / 旧 ss_basic_mode）<br />";
-		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• 当前只把开关值写进了 dbus，<b>代理服务（xray / chinadns-ng / iptables）尚未重启</b><br />";
-		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• 实际数据包仍走原路径，UI 显示的「已启用 / 已停用」与运行时不一致<br /><br />";
+		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• <code>ss_split_enabled</code> 仅写入 dbus 配置，代理服务（xray / chinadns-ng / iptables）需重启后才会按新配置运行<br />";
+		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• 当前实际数据包仍走原配置路径，UI 显示的「已启用 / 已停用」与运行时不一致<br /><br />";
 		statusmenu += "<b><font color='#CC0066'>必须操作：</font></b><br />";
 		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• 滚动到页面<b>底部</b>，点击「<b>保存并应用</b>」按钮触发 <code>ssconfig.sh restart</code><br />";
-		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• 重启完成后路由路径才真正切换<br /><br />";
-		statusmenu += "<font color='#888888'>如不点击「保存并应用」就关闭页面，开关状态会保留在 dbus 但运行时仍在旧路径——这是 doge.12 alpha 已知架构限制，doge.13 计划改造为开关变更即重启代理。</font>";
-		_caption = "分流总开关需重启代理";
+		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• 重启完成后配置才真正生效<br /><br />";
+		statusmenu += "<font color='#888888'>如不点击「保存并应用」就关闭页面，开关状态会保留在 dbus 但运行时仍按旧配置运行。</font>";
+		_caption = "分流开关需重启代理生效";
+	} else if (itemNum == 221) {
+		width = "600px";
+		statusmenu = "<b><font color='#CC0066'>分流 V2 与链式代理冲突</font></b><br /><br />";
+		statusmenu += "<b><font color='#669900'>检测到：</font></b><br />";
+		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• 当前 <code>ss_basic_mode=7</code>（xray 半成品分流模式）<br />";
+		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• <code>ss_basic_mode=7</code> 与 doge.12 分流架构共用 xray 主进程<br /><br />";
+		statusmenu += "<b><font color='#CC0066'>冲突后果：</font></b><br />";
+		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• 若同时启用分流，<code>fss_chain_apply</code> 内部检测到 <code>mode=7</code> 后直接 fallback<br />";
+		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• 前置节点（链式代理）将<b>静默失效</b><br /><br />";
+		statusmenu += "<b><font color='#669900'>请选择：</font></b><br />";
+		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• <b>取消</b>：不启用分流，保持现状<br />";
+		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• <b>仅启用分流</b>：链式代理在 <code>mode=7</code> 下继续 fallback（前置节点功能不可用）<br />";
+		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• <b>自动切换</b>：把 <code>ss_basic_mode</code> 改为 <code>2</code>（大陆白名单）再启用分流，链式代理恢复<br />";
+		_caption = "分流 V2 + 链式代理冲突警告";
 	}
 	return overlib(statusmenu, OFFSETX, 30, OFFSETY, 10, RIGHT, STICKY, WIDTH, 'width', CAPTION, _caption, CLOSETITLE, '');
 

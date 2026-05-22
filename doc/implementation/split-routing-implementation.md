@@ -1,6 +1,6 @@
-# 分流架构实施说明 (doge.12 alpha)
+# 分流架构实施说明 (doge.12 alpha → doge.13 beta)
 
-> **状态**：alpha 骨架实施期文档。**会随实施进度持续更新**。
+> **状态**：doge.13 beta 已落地（P0 7 条 + P1 2 条 + UI 方案 A 全部兑现）。alpha 简化与 latent issue 大部分已解除，剩余 doge.13 收尾事项见 §6.1。**会随实施进度持续更新**。
 > 关联设计：[../design/split-routing-architecture.md](../design/split-routing-architecture.md)
 > 关联路线图：[../design/protocol-roadmap.md §8](../design/protocol-roadmap.md)
 >
@@ -8,7 +8,7 @@
 > - D9 = alpha.13/.14 `ss_split_rule_to_json` ARG_MAX + awk O(n²) 双修
 > - D10 = alpha.15 chinadns-ng DNS 层 reject 整套删除（伪语法）
 > - D11 = alpha.16 Mode 级 `block_quic` / `udp_proxy` 接通 iptables 层
-> - **D12-D15** = alpha.17 Agent A 深度审计发现的 4 条 latent issue，alpha 阶段被 out_main collapse 掩盖、doge.13 解除 collapse 时**必须**全部兑现（stale 节点 ID / mode=7 preflight / 订阅删节点未清 split rule action / 空 cur_node 烘焙 trailing colon）
+> - **D1 / D5 / D8 端口分配 gate / D12-D15** = doge.13 beta 兑现段（per-rule 独立 outbound 解 collapse + sentinel `proxy_main` + ASP preflight + 节点删除清理 + dnsmasq_lan 子实例 + DNS upstream migrate_v2）
 > 文末「修订记录」按时间倒序列出版本里程碑。
 
 ---
@@ -36,6 +36,7 @@ doge.12 是 1-2 周量级的架构跃迁，单次 release 全切风险极大。a
 |---|---|---|---|
 | `ss_split_enabled` | "0"/"1" | "0" | alpha 总开关。`=1` 时路由层走新架构 |
 | `fss_split_migrated_v1` | "0"/"1" | "0" | install.sh::migrate_split_routing_v1 幂等标志 |
+| `fss_split_migrated_v2` | "0"/"1" | "0" | install.sh::migrate_split_routing_v2 幂等标志（doge.13 新增；DNS upstream 老→新 key 一次性迁移） |
 
 ### 1.2 Rule 数据
 
@@ -79,16 +80,20 @@ doge.12 是 1-2 周量级的架构跃迁，单次 release 全切风险极大。a
 
 > **注**：ACL 默认行 `ss_acl_default_mode`（取值 `follow` / `0` / `1` / `2` / `3` / `5` / `7`）**不参与 split mode 翻译**——split V2 路径下表外设备走 `ss_split_default_mode_id` 兜底（[ssconfig.sh:7288](../../fancyss/ss/ssconfig.sh#L7288)），跟 ACL 默认行 UI 是两条独立逻辑。alpha.18 Q2 翻译 + install.sh::migrate_split_routing_v1 step 4 一致只处理数字下标行 `ss_acl_mode_<i>`。doge.13 ACL UI 改造时可顺便确认要不要把两套默认行 UI 合并/联动（独立 task）。
 
-### 1.4.1 索引规范（**新增 — 修复 BLOCKER R2.8**）
+### 1.4.1 索引规范（**doge.13 beta — 方案 B 已升级**）
 
-dbus key 中的 `<m>` (Mode 索引) / `<r>` (rule 序号) / `<i>` (Rule 索引) 在 alpha 阶段约定为：
+dbus key 中的 `<m>` (Mode 索引) / `<r>` (rule 序号) / `<i>` (Rule 索引) 的语义演进：
 
+**alpha 阶段（doge.12.alpha-1 → alpha.18，已固化为历史）**：
 - **从 1 开始连续**（与 `install.sh::migrate_split_routing_v1` 写入 `mid=1, mid=2 ...` 一致）
 - **index == id** — alpha 阶段不区分（避免编辑弹窗未实现时的 gap 问题）
-- **消费方必须用 `for X in $(seq 1 count); do` / `for (X=1; X<=n; X++)` 1-indexed 枚举**
-- **禁用** `for X in $(seq 0 ${count-1})` / `for (X=0; X<n; X++)` 0-indexed
+- **消费方用 `for X in $(seq 1 count); do` / `for (X=1; X<=n; X++)` 1-indexed 枚举**
 
-doge.13 引入 Mode/Rule 删除弹窗后，**升级到方案 B**：消费方改用 `dbus list ss_split_mode_ | awk -F_ '$4 ~ /^[0-9]+$/ {print $4}' | sort -nu` 动态枚举 actual slot，解耦 index 与 id；本规范届时废止。
+**doge.13 beta 升级到方案 B（已落地）**：
+- Mode CRUD helper `ss_split_mode_save.sh` 已实施（对标 `ss_split_rule_save.sh`），支持 Mode 编辑/删除/添加；index 与 id 正式解耦——删除中间 Mode 留 gap 不重排。
+- 消费方改用 `dbus list ss_split_mode_ | awk -F_ '$4 ~ /^[0-9]+$/ {print $4}' | sort -nu` **动态枚举 actual slot**（详见 `__split_active_mode_indices` / `__split_active_rule_indices`）。
+- `for $(seq 1 count)` 1-indexed 枚举在 doge.13 路由层逐步替换为动态枚举；旧 1-indexed 写法残留视为待清理 (legacy，**禁止新增**)。
+- alpha 阶段的"index == id"假设**仍兼容**——新写入的 Mode/Rule 仍可以走 install.sh 风格的连续 1-indexed 写入，方案 B 只是允许 gap 出现而已。
 
 ### 1.5 Action 编码格式
 
@@ -98,8 +103,11 @@ doge.13 引入 Mode/Rule 删除弹窗后，**升级到方案 B**：消费方改�
 |---|---|
 | 直连 | `direct` |
 | 屏蔽 | `reject` |
+| 代理（跟随主节点） | `proxy_main`（**doge.13 beta 新增 sentinel**，xray 生成器实时查 `ssconf_basic_node` / `ssconf_basic_node_front` 转译） |
 | 代理（节点 X） | `proxy_node:<node_id>` |
 | 代理（链式 Y→Z） | `proxy_chain:<front_id>:<landing_id>` |
+
+> **`proxy_main` sentinel（doge.13 beta 落地，详见 §6.2 D12 兑现段）**：解决 stale 节点 ID 问题。alpha 阶段 install.sh::migrate_split_routing_v1 把当前 `ssconf_basic_node` 烘焙成具体 ID 写入 Mode 2 rule_5/rule_6 action，主节点变更后 dbus 残留 stale。doge.13 改写为字面量 `proxy_main`，由 [ssconfig.sh::ss_split_action_to_tag](../../fancyss/ss/ssconfig.sh) 解析、xray 生成器查实时主节点构建 outbound。ASP action select 加 `proxy_main` option（默认值）。Mode helper (`ss_split_mode_save.sh`) 接受该字面量。**新代码写 action 字符串时优先用 `proxy_main`**，仅在用户显式指定异于主节点的代理时才写 `proxy_node:<id>`。
 
 ### 1.6 运行状态（后端写，前端读，**必须配合轮询**）
 
@@ -107,9 +115,43 @@ doge.13 引入 Mode/Rule 删除弹窗后，**升级到方案 B**：消费方改�
 |---|---|---|---|
 | `ss_split_active_mode_count` | int | restart 时 | 活跃 Mode 数 |
 | `ss_split_xray_outbound_count` | int | restart 时 | xray 实际生成 outbound 数（去重后） |
+| `ss_split_node_outbound_count` | int | restart 时 | xray 生成的独立节点 outbound 数（doge.13 解 collapse 后新增诊断 key；`proxy_node:` 引用) |
+| `ss_split_chain_outbound_count` | int | restart 时 | xray 生成的独立链式 outbound 数（doge.13 解 collapse 后新增诊断 key；`proxy_chain:` 引用） |
 | `ss_split_last_restart_ts` | int | restart 完成时 | 最近重启时间戳 |
 | `ss_split_dns_split_status` | "ok"/"down" | cron 检测 | 分流 DNS 实例状态 |
 | `ss_split_dns_global_status` | "ok"/"down" | cron 检测 | 全局 DNS 实例状态 |
+
+### 1.6.1 分流 DNS upstream（doge.13 beta 新 key 主消费路径）
+
+| Key | 类型 | 默认 | 说明 |
+|---|---|---|---|
+| `ss_split_dns_china_upstream` | base64 string | 空（回退老 key） | 国内 DNS upstream 列表（每行一条，base64 编码 multi-line）。**新 key 优先消费**，回退老 `ss_basic_chng_china_dns_*` |
+| `ss_split_dns_overseas_upstream` | base64 string | 空 | 国外 DNS upstream 列表，同上。回退老 `ss_basic_chng_trust_dns_*` |
+| `ss_split_dns_global_upstream` | base64 string | 空 | 全局 Mode 专用 DNS upstream 列表，回退老 trust dns |
+
+> **doge.13 beta 兑现路径**（详见 §6.2 D1 兑现段）：`install.sh::migrate_split_routing_v2` 把老 `ss_basic_chng_china_dns_*` / `ss_basic_chng_trust_dns_*` 一次性切到新 key（**不删老 key**，保留 fallback 兜底），落 `fss_split_migrated_v2=1` 守卫；`ssconfig.sh::generate_chinadns_split_conf` / `generate_chinadns_global_conf` 优先读新 key，新 key 为空时回退老路径。
+
+### 1.6.2 Mode CRUD helper 协议（`ss_split_mode_save.sh`，doge.13 beta 新增）
+
+`ss_split_mode_save.sh` 是 Mode 编辑/添加/删除的后端 sanitize 入口（对标 `ss_split_rule_save.sh`，解决 §6.1 alpha "Mode name 后端 sanitize 缺口"）。前端通过 dummy_script.sh 把以下临时 key 写入 dbus 后调用 `ss_split_mode_save.sh`，helper 校验后落到正式 `ss_split_mode_<m>_*` key 并删除临时 key。
+
+| 临时 Key | 类型 | 说明 |
+|---|---|---|
+| `ss_split_mode_save_action` | "add"/"update"/"delete" | CRUD 动作 |
+| `ss_split_mode_save_id` | int | 目标 Mode.id（add 时 helper 自动分配，update/delete 时由前端指定） |
+| `ss_split_mode_save_name` | string | Mode 名（add/update 用，case sanitize 防止注入） |
+| `ss_split_mode_save_udp_proxy` | "0"/"1" | 同 §1.3 |
+| `ss_split_mode_save_block_quic` | "0"/"1" | 同 §1.3 |
+| `ss_split_mode_save_apply_blackwhite` | "0"/"1" | 同 §1.3 |
+| `ss_split_mode_save_dns_mode` | "split"/"global" | 同 §1.3 |
+| `ss_split_mode_save_default_action` | string | 同 §1.3 action 编码（§1.5） |
+| `ss_split_mode_save_rule_count` | int | rules[] 长度 |
+| `ss_split_mode_save_rule_<r>_rid` | int | 引用的 Rule.id |
+| `ss_split_mode_save_rule_<r>_action` | string | 该规则的 action（§1.5） |
+| `ss_split_mode_save_result` | "0"/"1" | helper 写出：操作成功(1)/失败(0) |
+| `ss_split_mode_save_error` | string | helper 写出：失败时的错误码（`name_invalid` / `id_conflict` / `builtin_locked` 等） |
+
+> **helper 行为**：校验 name 合法字符集（与 `ss_split_rule_save.sh` 同款 case sanitize）、阻止 builtin Mode 的危险操作（删除 / 改名 / 改 rule 顺序）、允许 builtin Mode 修改运行时字段（dns_mode / udp_proxy / block_quic / apply_blackwhite / default_action / rule action）。详见 [fancyss/scripts/ss_split_mode_save.sh](../../fancyss/scripts/ss_split_mode_save.sh)。
 
 ### 1.7 后端专用 (`fss_*` 前缀，不上前端)
 
@@ -189,7 +231,7 @@ fancyss/                                  # 仓库内
 
 - **#1**：前端要读的 dbus key 必须 `ss_*` 前缀（**包括 `ss_split_*`**）。后端专用用 `fss_*`。
 - **#2**：`fancyss/webs/Module_shadowsocks.asp` 是 **UTF-8 with BOM, CRLF, tab 缩进**。改 asp 前先 `git diff -U0` 验证只有目标行变化。多行带前导 tab 的替换走 PowerShell 而非 Edit。
-- **#3**：新加 hint id 选 200+。已用：0, 1, 11, 24, 27, 31, 32, 34, 29, 35-41, 44, 47-49, 54-56, 104-118, 133-156, 200, 201, 202, 203, 204。**doge.12 起从 210 开始用**（200-204 已被 doge.9~11 占用）。
+- **#3**：新加 hint id 选 200+。已用：0, 1, 11, 24, 27, 31, 32, 34, 29, 35-41, 44, 47-49, 54-56, 104-118, 133-156, 200-204（doge.9~11）, 210-218（doge.12 alpha）, 221（doge.13 beta D13 preflight）。**doge.13+ 新 hint 从 220 开始**。
 - **#9**：select 控件 `refresh_options` 时若 dbus 值找不到对应 option，**不能** `val('')`——必须插 `data-stale="1"` 占位 option，`save()` 检测到 stale 跳过 dbus 覆盖。
 - **#10**：运行状态 dbus key 必须配合前端轮询（参考 `refresh_chain_status_only`），不能假设 `db_ss` 新鲜。
 - **#11**：alpha 阶段（`ss_split_enabled=0`）继续受 chinadns tag 优先级约束。doge.12 切换后新架构不受 #11 约束。
@@ -240,13 +282,13 @@ fancyss/                                  # 仓库内
 由 4 个 subagent 报告 + 主代理验证汇总。
 
 **ssconfig.sh 路由层**（B）：
-- `proxy_node:X` 当 X 不是当前 `ssconf_basic_node` 时，xray 生成器折回 `out_main`（不构建独立 outbound）。理由：跨节点 outbound 构建要复用所有协议 creat_*_json，alpha 不做。
-- `proxy_chain:Y:X` per-rule 链式 alpha 不支持，回退 `out_main` 并继续走主节点链式 (fss_chain_apply)。
+- ~~`proxy_node:X` 当 X 不是当前 `ssconf_basic_node` 时，xray 生成器折回 `out_main`（不构建独立 outbound）。理由：跨节点 outbound 构建要复用所有协议 creat_*_json，alpha 不做。~~ **✓ doge.13 beta 兑现** —— 新建 [fancyss/scripts/ss_split_node_outbound.sh](../../fancyss/scripts/ss_split_node_outbound.sh) 拆出 ss_chain_proxy.sh 节点 outbound 构建器，[ssconfig.sh::generate_xray_json_split](../../fancyss/ss/ssconfig.sh) 为每个被 split rule 引用的非主节点构建独立 outbound + jq merge 进基线，诊断 dbus `ss_split_node_outbound_count` 记数；helper 未部署时 graceful fallback 仍回退 `out_main` 并写 `fss_split_xray_warn=baseline_missing`。
+- ~~`proxy_chain:Y:X` per-rule 链式~~ **✓ doge.13 beta 兑现**：per-rule chain landing outbound 通过 [`fss_split_build_node_outbound_json`](../../fancyss/scripts/ss_split_node_outbound.sh) 第 4 参 `dialer_tag` 注入 `streamSettings.sockopt.dialerProxy=chain_front_<Y>`；[ssconfig.sh::generate_xray_json_split](../../fancyss/ss/ssconfig.sh) L5598 chain build 循环按合同对齐 helper 签名，前置 `chain_front_<Y>` outbound + landing `out_chain_<Y>_<X>` outbound 双 jq merge 进基线；诊断 dbus key `ss_split_chain_outbound_count` 在 restart 时由 `generate_xray_json_split` 实际填值。helper 未部署时与 §6.1 节点 outbound 同走 graceful fallback。
 - ~~`block_quic` Mode 级开关 alpha 在 iptables 层不实现（xray sniffing 已能识别 QUIC SNI 但无 DROP；doge.13 加 `iptables -A SHADOWSOCKS -p udp --dport 443 -j DROP`）。~~ **alpha.16 已兑现 → 详见 §6.2 D11**；`udp_proxy` Mode 级开关同时兑现。
-- active Mode 判定粗放：alpha 把"内置 Mode + default Mode"都激活，不严格按 acl 引用过滤。
+- active Mode 判定粗放：alpha 把"内置 Mode + default Mode"都激活，不严格按 acl 引用过滤。**doge.13 beta** 引入 `__split_active_mode_indices` 动态枚举（dbus list 切片），与 D8 端口分配 gate 解除联动。
 - 单条 dbus 调用 fork 多个 jq 子进程，50 mode × 10 rule 量级启动 ~3s。alpha 接受。
-- **acl per-Mode 路由层不兑现**（alpha.11 文档化 / 修 C-CRIT-7 / **alpha.18 写者侧兑现**）：合同 §1.4 定义 `ss_acl_split_mode_<acl_node>` = 每个 acl 行分配的 Mode.id（0 = 不走代理）。`install.sh::migrate_split_routing_v1` 写入、`Module_shadowsocks.asp` 展示并支持删除 Mode 时清零，但 **`ssconfig.sh::load_iptables_split` 完全不读取** —— alpha 阶段所有客户端无差别走 `ss_split_default_mode_id` 指定的 default Mode。后果：访问控制里给每个 MAC 选的 Mode 在 alpha 完全不生效。doge.13 兑现方案：`load_iptables_split` 读 `ss_acl_split_mode_<i>` → per-MAC fwmark → per-Mark iptables 跳转到对应 Mode TPROXY listener。alpha 阶段如需 per-Mode 路由请暂用旧路径 (`ss_split_enabled=0`)。**2026-05-20 alpha.18 兑现写者侧**（详见 §6.2 D8 + 修订记录 alpha.18）：[asp:8478-8483 save() ACL 循环](../../fancyss/webs/Module_shadowsocks.asp#L8478) 同步翻译 `ss_acl_mode_<i>` → `ss_acl_split_mode_<i>`（0→0, 5→1, *→2，与 install.sh:709-718 字节级一致）+ [delTr 清零](../../fancyss/webs/Module_shadowsocks.asp#L16315)。读者侧 per-MAC TPROXY/DNS 装配自 alpha.10 起就位（§6.2 D8）。**仍待 doge.13**：(a) `__split_mode_port_by_id` 端口分配 gate 解除（用户自定义 Mode 静默退化默认端口）；(b) ACL UI select 支持自定义 Mode（alpha.18 仍只有旧 6 个 option / 翻译规则保守，UI 改造留 doge.13）。
-- **Mode name 后端 sanitize 缺口**（alpha.11 review D4 + A4 发现 / 文档化）：C-CRIT-6 修复在 Rule 路径双层防御（前端 `split_v2_name_has_forbidden` + 后端 `ss_split_rule_save.sh::case` 兜底），但 **Mode 路径单层** —— Mode CRUD 走 `split_v2_persist` → `dummy_script.sh`（koolshare 通用"只写 dbus"占位脚本），**无任何后端 sanitize**。攻击场景：LAN 内 admin 已认证攻击者绕过前端校验，curl 直 POST `{"method":"dummy_script.sh","fields":{"ss_split_mode_2_name":"bad\"name"}}`，恶意值直接进 dbus，污染 `dbus list ss_split_mode_` 输出 (`key=value` 文本格式)，下游任何 awk `-F=` 切分会错位。alpha 阶段风险评估：**低**（要求 admin auth + LAN 接入；alpha 用户量小且 opt-in），但**不为零**。doge.13 兑现方案：新增 `ss_split_mode_save.sh` helper（同 `ss_split_rule_save.sh` 量级，~200 行），Mode CRUD 改走专用 helper 加同款 case sanitize，把 dummy_script.sh 仅留给真正"只改一两个标量字段"的场景。
+- **acl per-Mode 路由层（doge.13 beta 兑现，详见 §6.2 D8 兑现段）**：合同 §1.4 定义 `ss_acl_split_mode_<acl_node>` = 每个 acl 行分配的 Mode.id（0 = 不走代理）。**alpha.18 写者侧已 OK**（save() 翻译 + delTr 清零）；**doge.13 beta 读者侧端口分配 gate 解除**：`__split_mode_port_by_id` / `__split_mode_dns_port_by_id` 同步删除 `is_default || builtin` gate，按 `__split_active_mode_indices` 动态分配端口偏移，用户自定义 Mode 不再静默退化到默认端口。**仍待 doge.13 收尾真机三 MAC 验证 + ACL UI select 扩展支持自定义 Mode**。
+- ~~**Mode name 后端 sanitize 缺口**~~ **✓ doge.13 beta 兑现**：新增 [fancyss/scripts/ss_split_mode_save.sh](../../fancyss/scripts/ss_split_mode_save.sh) 545 行 helper（对标 `ss_split_rule_save.sh`），Mode CRUD 改走专用 helper 加 case sanitize；dummy_script.sh 仅保留给"只改单个标量字段"的轻量场景。详见 §1.6.2 helper 协议。
 
 **install.sh 迁移层**（A）：
 - 旧 key 物理删除（设计 §14 Step 6 / Step 7.5）alpha 跳过，新旧并存。
@@ -254,14 +296,15 @@ fancyss/                                  # 仓库内
 - helper `write_builtin_mode_meta` 硬编码 `apply_blackwhite=1`，doge.13 视需要扩展签名。
 
 **UI 第一稿**（C）：
-- 新建/编辑/删除 Mode/Rule 对话框用 `alert()` 占位文字。doge.13 做漂亮弹窗。
+- ~~新建/编辑/删除 Mode/Rule 对话框用 `alert()` 占位文字。doge.13 做漂亮弹窗。~~ **✓ doge.13 beta 兑现**：Mode 走 `ss_split_mode_save.sh` helper + UI 弹窗（详见 §1.6.2）；Rule 沿用 alpha.10 的 `ss_split_rule_save.sh` 路径。
 - 拖动重排未实现（依赖编辑弹窗）。
 - 立即更新 / 回滚到 .bak 按钮无 UI 入口（脚本能力已就绪 by D，UI 后接）。
-- 访问控制 UI 改造留 doge.13（alpha.18 已通过 save() 翻译写 `ss_acl_split_mode_<i>` 兜底，select option 仍是旧 6 个）。
+- **访问控制 UI 改造仍待**：alpha.18 写者侧 save() 翻译 + delTr 清零已就绪；doge.13 beta 端口分配 gate 已解除（读者侧自定义 Mode 独立端口）；但 ACL UI select 仍只有旧 6 个 option（0/1/2/3/5/7），**用户不能从 ACL 直接选自定义 Mode**。完整 ACL UI 改造留 doge.13 收尾。
 - 导入/导出 Mode (JSON) 留 doge.13。
-- Mode/Rule 子字段写入路径（如 `ss_split_mode_<m>_udp_proxy`）依赖编辑弹窗。
-- **内置 Mode 字段全锁** → **alpha.18 修正**：alpha.17 F-B-7 把内置 Mode 所有字段一律 disabled 设计过度。alpha.18 拆 `disName`（锁名字）+ `disRun=''`（运行时字段放开）：name + rule list 顺序仍锁（防止破坏 install.sh 种子标识），default_action / udp_proxy / block_quic / apply_blackwhite / dns_mode / rule action 全放开。详见 [Module_shadowsocks.asp:7318-7340](../../fancyss/webs/Module_shadowsocks.asp#L7318)。
-- **「确定」按钮仅写 dbus 不重启代理** → **alpha.18 加「保存并立即生效」按钮**：Mode 弹窗 footer 三按钮（取消 / 保存 / 保存并立即生效）。`split_v2_persist(fields, cb, applyAfter)` 新增 applyAfter 参数，true 时 dbus 落盘后调 `push_data_ws('ss_config.sh', enabled?'start':'stop', {})` 复用主面板「保存&应用」路径。详见 [splitDlg.okApply](../../fancyss/webs/Module_shadowsocks.asp#L7025) / [split_v2_persist](../../fancyss/webs/Module_shadowsocks.asp#L7039)。
+- Mode/Rule 子字段写入路径（如 `ss_split_mode_<m>_udp_proxy`）通过 helper 协议 §1.6.2 兑现。
+- **内置 Mode 字段全锁** → **alpha.18 修正 / doge.13 沿用**：alpha.17 F-B-7 把内置 Mode 所有字段一律 disabled 设计过度。alpha.18 拆 `disName`（锁名字）+ `disRun=''`（运行时字段放开）：name + rule list 顺序仍锁（防止破坏 install.sh 种子标识），default_action / udp_proxy / block_quic / apply_blackwhite / dns_mode / rule action 全放开。详见 [Module_shadowsocks.asp:7318-7340](../../fancyss/webs/Module_shadowsocks.asp#L7318)。Mode helper 在 doge.13 同样落实 builtin_locked 错误码兜底。
+- **「确定」按钮仅写 dbus 不重启代理** → **alpha.18 加「保存并立即生效」按钮 / doge.13 沿用**：Mode 弹窗 footer 三按钮（取消 / 保存 / 保存并立即生效）。`split_v2_persist(fields, cb, applyAfter)` 新增 applyAfter 参数，true 时 dbus 落盘后调 `push_data_ws('ss_config.sh', enabled?'start':'stop', {})` 复用主面板「保存&应用」路径。详见 [splitDlg.okApply](../../fancyss/webs/Module_shadowsocks.asp#L7025) / [split_v2_persist](../../fancyss/webs/Module_shadowsocks.asp#L7039)。
+- **UI 方案 A（doge.13 beta 新增）**：ASP 标签 "分流V2 (实验)" → "分流"；ss_basic_mode select 中 mode 7 option 隐藏 + stale 占位（老用户保留旧值，不在 UI 主流入口暴露 xray 分流旧路径）。
 
 **cron**（D）：
 - `recount_stats` 用 grep 单行处理，10 万行规则路由器上估算 5-10s（alpha 阶段 update_hours=0 cron 不实际跑）。doge.13 改 awk 单遍。
@@ -276,14 +319,16 @@ fancyss/                                  # 仓库内
 >
 > 想批量删一组前缀 key 的正确写法是 `dbus list <prefix>_ | cut -d= -f1 | while read k; do dbus remove "$k"; done`（见 [install.sh:491-499](../../fancyss/install.sh#L491) 已有范例）。看到形如 `dbus remove ss_acl_mode` 这种"裸前缀单行调用"不要假设它能删一票子 key，那是上游 no-op 死代码。
 
-#### D1: 分流 DNS upstream 读写两套 key
-- **症状**：C 的 UI 新增 textarea 写入 `ss_split_dns_china_upstream` / `ss_split_dns_overseas_upstream` / `ss_split_dns_global_upstream`，但 B 的 `generate_chinadns_split_conf` / `generate_chinadns_global_conf` 仍从老 key `ss_basic_chng_china_dns_*` / `ss_basic_chng_trust_dns_*` 读取。
-- **alpha 决议**：C 的 textarea 应改为 placeholder / hint 提示用户去"DNS 设置"老页面配置，**或** B 的生成器加优先级 fork（先读新 key，缺失回退老 key）。**主代理选 placeholder 方案**——alpha 阶段新 UI 仅展示老页面的配置不可直接编辑，避免分裂用户心智模型。
-- **doge.13 完成**：新增"分流 DNS 设置 V2"独立 ASP 入口，统一 ss_split_dns_* 命名 + migrate 把老 key 一次性切到新 key 后删老 key。
+#### D1: 分流 DNS upstream 读写两套 key（**✓ doge.13 beta 兑现**）
+- **alpha 历史**：C 的 UI textarea 写新 key `ss_split_dns_china_upstream` 等，但 B 的 chinadns conf 生成器仍读老 key。alpha 决议用 placeholder 方案避免分裂心智。
+- **doge.13 beta 兑现**：
+  - `install.sh::migrate_split_routing_v2` 把老 `ss_basic_chng_china_dns_*` / `ss_basic_chng_trust_dns_*` 一次性切到新 key（base64 multi-line 编码），落 `fss_split_migrated_v2=1` 守卫；**不删老 key**保留 fallback 兜底；
+  - `ssconfig.sh::generate_chinadns_split_conf` / `generate_chinadns_global_conf` 优先读新 key，新 key 为空时回退老路径；
+  - 新 key 契约入 §1.6.1。
 
-#### D2: Mode index `m` 与 Mode.id 在 alpha 时等同
-- **症状**：A 写入用 `mid=1, mid=2` 同时作为索引和 id；设计文档 §3.1 说"索引与 id 解耦（删除时不重排 id）"。
-- **alpha 决议**：alpha 阶段（用户不能删内置 Mode 也没编辑弹窗）等同没问题。doge.13 起，编辑弹窗实现 Mode 删除时**必须**重构为索引-id 解耦，否则 B 的 `for m in $(seq 1 ${mode_count})` 会漏掉中间 gap。
+#### D2: Mode index `m` 与 Mode.id 在 alpha 时等同（**✓ doge.13 beta 兑现，方案 B 升级**）
+- **alpha 历史**：A 写入用 `mid=1, mid=2` 同时作为索引和 id；alpha 阶段无编辑弹窗，等同没问题。
+- **doge.13 beta 兑现**：`ss_split_mode_save.sh` helper 实施 + `__split_active_mode_indices` 动态枚举（dbus list 切片），索引与 id 正式解耦——删除中间 Mode 留 gap 不重排，消费方 awk 动态拿 actual slot。详见 §1.4.1 索引规范方案 B。
 
 #### D3: data-skip-save 通用机制 vs 设计文档的 data-stale
 - **症状**：设计文档 §8 通用 select 约束讲 `data-stale="1"` 模式（save() 时跳过 dbus 覆盖）。C 实现的是更通用的 `data-skip-save="1"` 属性，save() 收集循环检测此属性跳过。
@@ -293,11 +338,12 @@ fancyss/                                  # 仓库内
 - **症状**：C asp 引入了 `ss_split_runtime_status` / `ss_split_enabled_state` 两个 key 不在合同 §1。
 - **审查结论**（Reviewer 3）：纯 DOM `<span id=>`，仅 `.html()` 渲染，**未** `dbus set`。属命名巧合，无需进合同。
 
-#### D5: dnsmasq 让位 65355 未接线（**审查发现 → alpha 降级 WARN**）
-- **症状**：ssconfig.sh L42 定义 `SS_SPLIT_DNS_LAN_PORT="65355"`，分流/全局两个 chinadns conf 都把 LAN 域名 `group-upstream` 指向 `127.0.0.1#65355`，但**没有任何代码**把 dnsmasq 实际 listen 改到 65355。
-- **后果**：ss_split_enabled=1 模式下 `*.lan` / `<asusrouter>` / LAN hostname 解析可能静默失败（chinadns 转发到 65355 → 那里啥也没监听 → 超时）。
-- **alpha 决议**：**降级为 WARN，留 doge.13 解决**。理由：dnsmasq 让位涉及 fancyss `postscripts/dnsmasq.postconf` + 路由器 nvram 联动，alpha 时间窗口完成风险高；alpha 默认 `ss_split_enabled=0` 不影响老用户；alpha 用户开启时已被 hint 210 警告"LAN hostname 解析可能失败"。
-- **doge.13 解决方案**：在 `start_chinadns_ng_split` 起 chinadns 前通过 `postscripts/dnsmasq.postconf` 追加 `listen-address=127.0.0.1` + `port=65355`，`service restart_dnsmasq`；在 `stop_chinadns_ng_split` 中还原。
+#### D5: dnsmasq 让位 65355 未接线（**✓ doge.13 beta 兑现，方案 C-2 而非 pc_insert**）
+- **alpha 历史**：ssconfig.sh 定义 `SS_SPLIT_DNS_LAN_PORT="65355"`，chinadns conf 把 LAN 域名 group-upstream 指向 127.0.0.1#65355，但无代码让 dnsmasq 实际 listen 65355。alpha 降级 WARN。
+- **doge.13 beta 兑现（方案 C-2：独立 dnsmasq_lan 子实例）**：**不动**主 dnsmasq（保留它在标准 53/UDP 服务路由器自身名解析与广播 LAN 客户端），新起一个独立 `dnsmasq_lan` 子实例占 127.0.0.1:65355，仅服务 chinadns 回查"LAN 域名"的 split path。
+  - 实施位置：`ssconfig.sh::start_chinadns_ng_split`（启动子实例）/ `stop_chinadns_ng_split`（回收）；
+  - **与原计划的差异**：原 doge.13 计划走 `postscripts/dnsmasq.postconf` 改主 dnsmasq listen 到 65355（"pc_insert port=65355"方案），但实施期评估发现改主实例 listen 会破坏路由器自身名解析、增加跟 asus 系统脚本耦合的风险；改走独立子实例方案，零侵入主 dnsmasq。
+  - 旧方案描述（pc_insert port=65355）**已废弃**，本条记入修订记录。
 
 #### D6: ACL 清空连带删 ss_acl_split_mode_* （~~审查发现 → alpha WARN~~ → **2026-05-18 实测为误报，无需修复**）
 - ~~**症状**：现有 `ssconfig.sh::clean_acl()` 有 `dbus remove ss_acl_mode`（前缀匹配），新迁移的 `ss_acl_split_mode_<i>` 在用户点 ACL 清空按钮时会跟着被删。~~
@@ -306,19 +352,22 @@ fancyss/                                  # 仓库内
 - **附带发现**：[ssconfig.sh:6712-6718](../../fancyss/ss/ssconfig.sh#L6712) 那 7 行 `dbus remove ss_acl_ip` / `_mac` / `_name` / `_mode` / `_port` / `_udp` / `_quic` 是上游 fancyss 多年的**死代码 no-op**——试图删字面 key `ss_acl_ip` 等（不存在），真正的 `ss_acl_ip_<i>` 完全不受影响。无害但也无效。alpha 阶段不动它（不在本次工作范围）。
 - **`ss_acl_split_mode_<i>` 双重安全**：(1) `dbus remove` 不是 prefix；(2) 就算它是 prefix，`ss_acl_split_mode_<i>` 也不以 `ss_acl_mode` 开头（中间 `_split` 隔开），不会被串到。
 
-#### D7: fss_chain_apply 与 split 路径下 out_main tag 兼容性（**审查发现 → alpha WARN**）
-- **症状**：B 的 `generate_xray_json_split` 把基线 outbounds[0].tag 改为 `out_main`，但旧 `fss_chain_apply` 历史上按 outbound 索引 / tag 注入 `dialerProxy`。
-- **审查结论**（Reviewer 3）：建议主代理读 fss_chain_apply 源码后判定。**主代理后续验证**：fss_chain_apply 是基于 `tag == "shadowsocks"` 等老 tag 匹配，还是按 outbounds[0] 索引匹配。alpha 路径下 fss_chain_apply 仍被调用，若 tag 不匹配则链式静默失效。
-- **doge.12 后续动作**：实际测试时若链式代理在 ss_split_enabled=1 下失效，把 ssconfig.sh L5366-L5369 处的 fss_chain_apply 调用改为 split 路径专用版本（或直接 skip，让 split 路径由生成器自己处理 chain）。
+#### D7: fss_chain_apply 与 split 路径下 out_main tag 兼容性（**alpha.15 注释修正 + alpha.18 W6 dead branch 删除 + ✓ doge.13 beta per-rule chain dialerProxy 已收敛**）
+- **alpha 历史**：B 的 `generate_xray_json_split` 把基线 outbounds[0].tag 改为 `out_main`，担心 fss_chain_apply 按 tag 匹配会断；alpha.15 注释修正（D10 顺手做的事）澄清"split 路径下 generate_xray_json_split 只动主 outbound tag + 追加 direct/reject，不注入链式；链式由 fss_chain_apply 唯一一次注入到 out_main"。
+- **alpha.18 W6**：[L5504-5508 dead if/else 删除](../../fancyss/ss/ssconfig.sh#L5504)（split=0/1 两分支调用相同 fss_chain_apply）。
+- **doge.13 beta 收敛**：主节点链式（fss_chain_apply 注入到 out_main）正常工作；**per-rule chain outbound dialerProxy 注入已闭环** —— `fss_split_build_node_outbound_json` 函数签名已由 3 参扩到 4 参（新增 `dialer_tag`），jq 注入 `streamSettings.sockopt.dialerProxy=chain_front_<Y>`，与 [ssconfig.sh::generate_xray_json_split L5598](../../fancyss/ss/ssconfig.sh#L5598) chain build 循环对齐。详见 §6.1 "ssconfig.sh 路由层" `proxy_chain:Y:X` 兑现段。
 
-#### D8: ss_acl_split_mode_<i> per-MAC 路由层基础已兑现 + 真机未验证 + 端口分配有限（**alpha.10 审计交叉 → 基础兑现 + 真机未验证 + 端口分配有限**）
-- **症状**：合同 §1.4 定义 `ss_acl_split_mode_<acl_node>` = 该 acl 行分配的 Mode.id（0=不通过代理）。`install.sh::migrate_split_routing_v1` 写入、`Module_shadowsocks.asp` 读出来在 ACL 表展示、删 Mode 时清零，**路由层** `ssconfig.sh::load_iptables_split` 已加上基础装配：per-MAC TPROXY 段 [ssconfig.sh:7123-7137](../../fancyss/ss/ssconfig.sh#L7123) TCP+UDP 双装、per-MAC DNS DNAT 段 [ssconfig.sh:7162-7168](../../fancyss/ss/ssconfig.sh#L7162) 同样读 `ss_acl_split_mode_<a>` 并通过 `__split_mode_dns_port_by_id` 映射到 mode 专用 chinadns 实例端口。
-- **起因 & 历史校正**：alpha.10 审计报告 [doc/reports/alpha10-deep-audit.md](../reports/alpha10-deep-audit.md) C-CRIT-7 判定"`ssconfig.sh::load_iptables_split` 完全不读 `ss_acl_split_mode_<i>`、写者一人读者 0 人"——**该结论已过时**，基于 alpha.9 骨架快照；alpha.10 加上 per-MAC 装配后审计未刷新。本条 §6.1 line 239 "完全不读取" 那一长条描述同样滞后，**保留不动**（属审计原话），由 D8 在 §6.2 补登"基础已兑现、未真机验证"的当前事实。
-- **真机未验证**：所有 alpha 真机测试场景（alpha.3 → alpha.10）都是单 acl 行或全部走 default Mode，**per-MAC 多分支真机一次都没跑过**。
-- **端口分配限制（新发现）**：`__split_mode_port_by_id` [ssconfig.sh:7021](../../fancyss/ss/ssconfig.sh#L7021) 的循环 gate 是 `if (is_default=1 || builtin=1)`——只对默认 Mode 与内置 Mode 分配 TPROXY/DNS 端口；用户自定义、非内置、非默认的 Mode 在 [ssconfig.sh:7031](../../fancyss/ss/ssconfig.sh#L7031) 兜底回 `SS_SPLIT_PORT_BASE`（默认 Mode 端口），即静默退化为「跟默认 Mode 走同一条路径」。`__split_mode_dns_port_by_id` 同结构同语义。
-- **alpha 决议**：**保留代码不动**。alpha 用户大概率只用内置 Mode#1（全局）/ Mode#2（大陆白名单），不受端口分配 gate 影响；自定义 Mode 静默退化到默认端口属"已知行为"而非崩溃。
-- **doge.13 兑现**：(a) 真机三 MAC 对照测试 ✓ default + ✓ builtin + ✓ user-defined Mode，对照实际出口 IP / 直连命中验证三条路径独立工作；(b) 扩展 `__split_mode_port_by_id` / `__split_mode_dns_port_by_id` 端口分配到用户自定义 Mode（去掉 `is_default || builtin` gate，按 mode 顺序分配端口偏移）；(c) 修任何真机暴露的 bug（iptables 规则顺序 / fallback 链优先级等）→ 删除本条 D8 与 §6.1 line 239 那条对应的"完全不读取"过时描述。
-- **2026-05-20 alpha.18 实测触发 + 修写者侧**：用户在 alpha.17 真机配某台测试设备走 Mode 1 (全局代理)，实测发现该设备仍走 Mode 2 (大陆白名单)。Opus subagent trace 端到端：ACL UI 的 `<select id="ss_acl_mode_<rowid>">` 写的是**旧 `ss_acl_mode_<i>`**（值 0/1/2/3/5/7 = `ss_basic_mode` 语义），**从不写 `ss_acl_split_mode_<i>`**；`load_iptables_split` 读不到 → 静默 fallback default Mode。`migrate_split_routing_v1` 是幂等只跑一次（`fss_split_migrated_v1=1` 守卫），UI 后续改 ACL 不会再同步翻译。**alpha.18 修法**：[asp:8478-8483 save() ACL 循环](../../fancyss/webs/Module_shadowsocks.asp#L8478) 同步翻译 `0→0, 5→1, *→2`（与 install.sh:709-718 字节级一致）+ [delTr 清零](../../fancyss/webs/Module_shadowsocks.asp#L16315)。**仍待 doge.13**：ACL UI select 仍是旧 6 个 option（0/1/2/3/5/7），用户不能从 ACL 直接选自定义 Mode；翻译规则保守（旧 GFW/CHN/HOM/GAM/xray 分流统一 → Mode 2 大陆白名单）。完整 ACL UI 改造留 doge.13。
+#### D8: ss_acl_split_mode_<i> per-MAC 路由层（**端口分配 gate doge.13 beta 兑现 + 真机三 MAC 验证仍待**）
+- **症状**：合同 §1.4 定义 `ss_acl_split_mode_<acl_node>` = 该 acl 行分配的 Mode.id（0=不通过代理）。alpha.10 起 `load_iptables_split` 已加基础装配（per-MAC TPROXY + per-MAC DNS DNAT），alpha.18 ACL UI 写者侧也已兑现（save() 翻译 + delTr 清零）。
+- **端口分配 gate（doge.13 beta 兑现）**：alpha 阶段 `__split_mode_port_by_id` / `__split_mode_dns_port_by_id` 循环 gate 是 `if (is_default || builtin)`，用户自定义 Mode 静默退化到默认端口。**doge.13 beta 删除 gate**：
+  - 改为 `__split_active_mode_indices` 动态枚举所有写入 dbus 的 Mode slot（通过 `dbus list ss_split_mode_` awk 切片）；
+  - 按 active_indices 顺序分配端口偏移，用户自定义 Mode 拿到独立端口（不再 collapse 到默认 Mode 端口）；
+  - `load_iptables_split` per-MAC 段同步消费 active_indices，避免读到尚未装配的 Mode slot。
+- **仍待 doge.13 收尾**：
+  - **真机三 MAC 验证**：default + builtin + user-defined Mode 三条路径独立工作（alpha 阶段从未跑过 per-MAC 多分支真机）；
+  - **ACL UI select 扩展**：alpha.18 写者侧用保守的翻译规则（0/5/* → 0/1/2），ACL UI 仍只有旧 6 个 option，用户不能从 ACL 直接选自定义 Mode；
+  - **iptables 规则顺序 / fallback 链优先级**：真机暴露的细节 bug 一并修。
+- 修复后同步删除本条 D8（端口分配 gate 解除部分已完成，剩余条目跟随 doge.13 真机验收）。
 
 #### D9: `ss_split_rule_to_json` 必须文件中转，不能走 stdout / 变量（**alpha.13 + alpha.14 修订，已落地**）
 - **症状（alpha.13 ARG_MAX）**：alpha.12 修好 hot reseed 后，Rule 1（大陆白名单_常用）文件首次出现真实内容（chnlist 11 万行）。`ss_split_rule_to_json` 把 ~1.6MB JSON 通过 `rdata=$(ss_split_rule_to_json ...)` 灌进 shell 变量，紧接着 [ssconfig.sh:5359-5361](../../fancyss/ss/ssconfig.sh#L5359) 三处消费（`[ -n "${rdata}" ]` / `[ "${rdata}" != "{}" ]` / `printf '%s' "${rdata}" | jq`）全部踩 busybox `[` 内置 ARG_MAX (~128KB) → restart 永久 hang。alpha.11 没爆是因为 Rule 1 文件丢失走 `{}` 短路；alpha.12 hot reseed 修文件 → 暴露这个 latent bug。
@@ -352,41 +401,37 @@ fancyss/                                  # 仓库内
 - **alpha 实施期反模式教训**：写者（UI + dbus + install 默认值）写满了，读者（路由层）是空的。alpha 实施期文档化"以后兑现"的占位注释（"走 iptables 层屏蔽" / §6.1 line 236 "doge.13 加 iptables -A SHADOWSOCKS -p udp --dport 443 -j DROP"）而非真正接通。**doge.12-stable 收尾前应该全仓库 grep 一次 `ss_split_mode_*_` / `ss_split_rule_*_` dbus key，检查每个 key 都有真实消费者** — 这次 alpha.16 是 manual 发现的，下次靠工具。
 - **已落地版本**：alpha.16。
 
-#### D12: Split Mode 2 rule actions 烘焙 stale 节点 ID（**alpha.17 Agent A 发现 / 留 doge.13 兑现**）
-- **症状**：`install.sh::migrate_split_routing_v1` 在 [install.sh:649-660](../../fancyss/install.sh#L649) 把当前 `ssconf_basic_node` 编码成 `cur_action="proxy_node:<N>"`（或 `proxy_chain:<front>:<N>`）字符串，然后 [install.sh:682-683](../../fancyss/install.sh#L682) 把这个字符串烘焙进 Mode 2 的 `rule_5_action` (telegram) 和 `rule_6_action` (gfwlist) 持久化进 dbus。后续主节点变更（failover 切换 / 订阅刷新换 id / 用户手动改主节点）**不会**回头刷新这些字符串——dbus 里仍然指向迁移时刻的旧节点 ID。
-- **alpha 安全为什么没炸**：[ssconfig.sh:5177 generate_xray_json_split](../../fancyss/ss/ssconfig.sh#L5177) 在生成 xray.json 时把所有 `out_node_X` / `out_chain_Y_X` outbound 都 collapse 成单一 `out_main`（对应当前主节点），所以即便 dbus 里写的是 stale ID，实际 xray 路由也指向"当前主节点"——stale 字符串被生成器掩盖。
-- **alpha 决议**：保留代码不动。collapse 是 alpha 范围内"per-rule 跨节点 outbound 不构建"的兜底（详见 §6.1 line 240）。
-- **doge.13 必修**：collapse 一旦解除，stale ID 会立刻指向已删除节点或错误节点。两种修法二选一：
-  - **方案 A（sentinel）**：迁移 / 写入时改写 `proxy_main` 字面量，xray 生成器解析到 sentinel 才查 dbus `ssconf_basic_node`；优势是字符串永远新鲜，缺点是引入第三种 action 编码格式。
-  - **方案 B（resync helper）**：新增 `fss_split_actions_resync`，在 failover_action / 订阅刷新 / 主节点变更三个 hook 点遍历所有 `ss_split_mode_*_rule_*_action` 重写指向新主节点；优势是 action 字符串语义不变，缺点是多了一组 hook。
-- 修复时同步删除本条 D12。
+#### D12: Split Mode 2 rule actions 烘焙 stale 节点 ID（**✓ doge.13 beta 兑现，选方案 A sentinel**）
+- **alpha 历史**：install.sh::migrate_split_routing_v1 把当前 `ssconf_basic_node` 编码成具体 `proxy_node:<N>` / `proxy_chain:<front>:<N>` 烘焙到 Mode 2 rule_5/rule_6 action，主节点变更后 dbus 残留 stale。
+- **doge.13 beta 兑现（方案 A sentinel）**：
+  - **install.sh 写入端**：迁移阶段写 `proxy_main` 字面量而非具体 node ID（覆盖 Mode 1/2 default_action + Mode 2 rule_5/rule_6 action 共 4 处）；
+  - **ssconfig.sh::ss_split_action_to_tag 解析端**：xray 生成器遇 `proxy_main` 时实时查 dbus `ssconf_basic_node` / `ssconf_basic_node_front` 转译为 `out_main` tag；
+  - **ASP action select**：新增 `proxy_main` option（默认值），UI 默认写入 `proxy_main` 而非具体节点；
+  - **Mode helper (`ss_split_mode_save.sh`)**：接受 `proxy_main` 字面量 + 校验通过；
+  - action 编码格式见 §1.5（已加 `proxy_main`）。
+- 顺手合并 §6.2 D15（空 cur_node trailing colon），install.sh cur_action 改为单行 sentinel 后空节点场景自然解决。
 
-#### D13: `fss_chain_apply` 在 `ss_basic_mode=7` 时静默 fallback（**alpha.17 Agent A 发现 / 留 doge.13 兑现**）
-- **症状**：alpha 的 fork-not-replace 策略保留了 `ss_basic_mode=7`（xray 半成品分流，旧路径）。如果用户开启 `ss_split_enabled=1` 时仍保留 `ss_basic_mode=7`，[ssconfig.sh:5500-5503](../../fancyss/ss/ssconfig.sh#L5500) 注释明确说明 `fss_chain_apply` 会在内部检查 `ss_basic_mode=7` 时直接 return 0 并设 `ss_chain_status=fallback`——前置节点链式静默失效。
-- **alpha 决议**：ssconfig.sh 注释已说明"alpha 阶段两键独立，若用户开 split_enabled=1 但保留旧 ss_basic_mode=7 的混合状态，链式会被静默禁用（设计内行为）"。UI 层无任何 preflight 警告——用户唯一感知途径是浏览器 console 查 `db_ss["ss_chain_status"]==="fallback"`，alpha 用户基本不会主动查。
-- **doge.13 必修**：在 ASP Module_shadowsocks.asp 加 preflight：用户尝试启用 `ss_split_enabled=1` 时若 `ss_basic_mode==="7"`，弹 hint 警告说明链式将失效并提示先把 `ss_basic_mode` 切到其他模式（或勾选"自动切换 ss_basic_mode 到 0"自动修）。doge.14 物理移除旧路径后本问题自然消失。
-- 修复时同步删除本条 D13。
+#### D13: `fss_chain_apply` 在 `ss_basic_mode=7` 时静默 fallback（**✓ doge.13 beta 兑现，ASP preflight 已实施**）
+- **alpha 历史**：ss_basic_mode=7 与 ss_split_enabled=1 混合状态下 fss_chain_apply 内部 return 0 + 设 ss_chain_status=fallback，链式静默失效，alpha 用户无 UI 提示。
+- **doge.13 beta 兑现**：[Module_shadowsocks.asp `#ss_split_enabled change handler`](../../fancyss/webs/Module_shadowsocks.asp) 加 preflight：用户尝试启用 `ss_split_enabled=1` 时检查 `ss_basic_mode==="7"`，触发 **hint 221**（三按钮弹窗：取消 / 仅启用 split 保留 mode=7 / 同时切换 mode→0）。用户主动选择路径，无静默失效。
+- doge.14 物理移除旧路径后本问题自然消失，hint 221 届时可下线。
 
-#### D14: 订阅删除节点不清理 split rule action 引用（**alpha.17 Agent A 发现 / 留 doge.13 兑现**）
-- **症状**：[Module_shadowsocks.asp:2213 collect_node_reference_delete_impact](../../fancyss/webs/Module_shadowsocks.asp#L2213) 当前扫 `combos`（failover 备用组合）+ `shuntDefault` / `shuntRuleCount`（mode=7 旧路径分流），**不扫** `ss_split_mode_*_rule_*_action` 里的 `proxy_node:<N>` / `proxy_chain:<Y>:<N>` 引用。订阅刷新或手动删节点时该节点 ID 仍残留在 split rule action 字符串里。
-- **alpha 安全为什么没炸**：与 D12 同因——generate_xray_json_split 的 collapse 把所有 `out_node_X` 折回 `out_main`，stale ID 被掩盖。
-- **doge.13 必修**：扩展 `collect_node_reference_delete_impact` 加一个 `splitRules: [{m, r, role}]` 数组，扫所有 `ss_split_mode_*_rule_*_action` 检查 `proxy_node:<被删 id>` 或 `proxy_chain:<被删 id>:*` / `proxy_chain:*:<被删 id>` 模式，命中后 `process_schema2_node_delete_queue` 同步生成清理 fields：
-  - landing 角色被删 → 该 rule action 改成 `direct`（或 fallback `proxy_main`，看 D12 方案）
-  - front 角色被删 → `proxy_chain:Y:Z` 降级为 `proxy_node:Z`
-- 修复时同步删除本条 D14。
+#### D14: 订阅删除节点不清理 split rule action 引用（**✓ doge.13 beta 兑现**）
+- **alpha 历史**：collect_node_reference_delete_impact 只扫 failover combos 和 mode=7 shunt，不扫 split rule action 里的节点引用，订阅刷新或手动删节点会留下 stale ID。
+- **doge.13 beta 兑现**：
+  - **ASP `collect_node_reference_delete_impact` 扩展**：加 `splitRules` 数组扫所有 `ss_split_mode_*_rule_*_action` 模式（含 default_action / rule action）；
+  - **ASP `match_split_action_node(action, deletedId)` helper**：解析 action 字符串（区分 `proxy_node:<N>` / `proxy_chain:<Y>:<N>` / `proxy_chain:<N>:<Z>`），返回角色（landing / front / both）；
+  - **`process_schema2_node_delete_queue` 合入**：landing 被删 → 该 rule action 改 `proxy_main`（与 D12 sentinel 方案统一）；front 被删 → `proxy_chain:Y:Z` 降级为 `proxy_node:Z`；front == landing → action 改 `proxy_main`。
 
-#### D15: `cur_node` 空时 install 烘焙 `"proxy_node:"`（trailing colon）（**alpha.17 Agent A 发现 / 留 doge.13 兑现**）
-- **症状**：[install.sh:655-659](../../fancyss/install.sh#L655) 的 cur_action 构造逻辑没有空节点防御——全新安装（用户没任何节点）或迁移触发时 `ssconf_basic_node=""` → 走 else 分支 → `cur_action="proxy_node:"`（trailing colon、id 段为空）。这条字符串被 [install.sh:665 / 677 / 682 / 683](../../fancyss/install.sh#L665) 写进 Mode 1 default_action、Mode 2 default_action、Mode 2 rule_5_action、Mode 2 rule_6_action 四处 dbus key。
-- **alpha 安全为什么没炸**：同 D12 / D14，xray 生成器 collapse + 主节点为空时整条 split 路径退化兜底。但 dbus 里留下了语法上非法的 `proxy_node:` 字符串，下游任何"用 awk -F: 切第二段"的解析（doge.13 可能引入）会得到空 ID 字段。
-- **doge.13 必修**：迁移阶段在 [install.sh:649](../../fancyss/install.sh#L649) 加空节点检测，二选一：
-  - **方案 A**：`[ -z "${cur_node}" ] && cur_action="direct"` —— 兜底直连，与"全新安装 = 暂无代理出口"语义一致。
-  - **方案 B**：检测到空 `cur_node` 时**整段** Step 1.5 + Step 2 跳过，把内置 Mode 的 default_action 写入推迟到首次"保存&应用"时由 ssconfig.sh 触发一次性 backfill。
-- 修复时同步删除本条 D15。
+#### D15: `cur_node` 空时 install 烘焙 `"proxy_node:"`（trailing colon）（**✓ doge.13 beta 兑现，与 D12 合并**）
+- **alpha 历史**：install.sh::migrate_split_routing_v1 cur_action 构造无空节点防御，全新安装时写 `"proxy_node:"` 进 4 处 dbus key。
+- **doge.13 beta 兑现**：与 D12 sentinel 方案统一——install.sh cur_action 改为单行 `cur_action="proxy_main"` 字面量，不再依据 `ssconf_basic_node` 内容判断；空 cur_node 场景自然不再产生 trailing colon。Mode 1/2 default_action / Mode 2 rule_5/rule_6 action 4 处全部写 `proxy_main`。
 
-> **D12-D15 共性**：四条 latent issue 都在 alpha 阶段被 generate_xray_json_split 的 `out_main` collapse 掩盖。doge.13 解除 collapse（per-Mode / per-Rule 独立 outbound）的同时必须四条全兑现，否则任何一条单独出现都会变成可见 bug。
+> **D12-D15 共性（doge.13 beta 全部兑现）**：四条 latent issue 都在 alpha 阶段被 generate_xray_json_split 的 `out_main` collapse 掩盖。doge.13 beta 解除 collapse（per-rule 独立 outbound 构建）的同时兑现 D12 sentinel + D13 ASP preflight + D14 节点删除清理 + D15 空节点 → proxy_main（与 D12 合并）；四条形成"一组完整修订包"。
 
 ### 6.3 实施期约定的回溯修订
 
+**alpha 阶段（doge.12.alpha-1 → alpha.18）**：
 - 合同 §0 "alpha 不物理删除旧 key" — 由 A 完全遵守 ✓
 - 合同 §4.1 "硬规则 #2 asp 编码" — 由 C 完全遵守 ✓（BOM+CRLF 字节级验证通过）
 - 合同 §4.1 "硬规则 #3 hint id 200+" — C 使用 210-218 ✓
@@ -395,10 +440,35 @@ fancyss/                                  # 仓库内
 - 合同 §4.2 "不动 rules_ng2" — 全部遵守 ✓
 - 合同 §4.2 "不删 ss_node_shunt.sh" — 全部遵守 ✓
 
+**doge.13 beta 新增**：
+- 合同 §4.2 "ssconfig.sh fork-not-replace" — doge.13 路由层改造仍遵守（generate_xray_json_split / __split_mode_port_by_id 等 split 路径函数独立，旧路径 byte-for-byte 保留） ✓
+- 合同 §4.2 "不删现有 dbus key" — `migrate_split_routing_v2` 把老 DNS upstream 切到新 key 时**保留**老 key 作 fallback ✓
+- 合同 §4.1 "硬规则 #3 hint id" — doge.13 beta 用 hint 221（D13 preflight），与 alpha 210-218 不冲突 ✓
+- 合同 §4.1 "硬规则 #1 ss_* 前缀" — `ss_split_node_outbound_count` / `ss_split_chain_outbound_count` 等诊断 key 沿用 ss_ 前缀；`fss_split_xray_warn` / `fss_split_migrated_v2` 后端 hot 状态用 fss_ 前缀 ✓
+- 合同 §4.2 "不动 ss_node_shunt.sh" — doge.13 beta 仍未动 ss_node_shunt.sh，留 doge.14 物理移除 ✓
+
 ---
 
 ## 修订记录
 
+- 2026-05-22 doge.13 beta 实施完成（P0 7 条 + P1 2 条 + UI 方案 A）：
+  - **D12 sentinel `proxy_main` 解决 stale 节点 ID**：install.sh 写入端 + ssconfig.sh::ss_split_action_to_tag 解析 + ASP action select option + Mode helper 接受 `proxy_main` 字面量。详见 §1.5 + §6.2 D12 兑现段。
+  - **解除 out_main collapse**：新建 [fancyss/scripts/ss_split_node_outbound.sh](../../fancyss/scripts/ss_split_node_outbound.sh) 拆出 ss_chain_proxy.sh 节点 outbound 构建器；ssconfig.sh::generate_xray_json_split 构建 per-rule 独立 outbound + jq merge；graceful fallback 兜底 helper 未部署场景；新增诊断 dbus key `ss_split_node_outbound_count` / `ss_split_chain_outbound_count` + `fss_split_xray_warn` 失败码。
+    * BLOCKER fix: fss_split_build_node_outbound_json 签名从 3 参扩 4 参(加 dialer_tag)+ jq 注入 streamSettings.sockopt.dialerProxy,与 ssconfig.sh::generate_xray_json_split chain build 循环 (L5598) 对齐
+  - **D8 端口分配 gate 解除**：`__split_mode_port_by_id` / `__split_mode_dns_port_by_id` 去 `is_default || builtin` gate；新增 `__split_active_mode_indices` 动态枚举 active slot；用户自定义 Mode 拿到独立端口偏移。
+  - **D13 ASP preflight**：`#ss_split_enabled change handler` 检测 `ss_basic_mode=7` 时触发 hint 221（取消 / 仅启用 / 同时切换）三按钮弹窗。
+  - **D14 节点删除清理**：`collect_node_reference_delete_impact` 加 splitRules 数组 + `match_split_action_node` helper + `process_schema2_node_delete_queue` 合入；订阅刷新 / 手动删节点时自动改 action 字符串（landing 删 → `proxy_main`；front 删 → 降级为 `proxy_node:Z`）。
+  - **D15 空节点 → proxy_main**：与 D12 sentinel 合并实施，install.sh cur_action 改为单行 `cur_action="proxy_main"` 字面量。
+  - **Mode CRUD sanitize helper**：新建 [fancyss/scripts/ss_split_mode_save.sh](../../fancyss/scripts/ss_split_mode_save.sh) 545 行（对标 ss_split_rule_save.sh），Mode CRUD 改走专用 helper 加 case sanitize；§1.6.2 helper 协议契约。
+  - **D5 dnsmasq 让位 65355**：独立 `dnsmasq_lan` 子实例占 127.0.0.1:65355（**方案 C-2**，不动主 dnsmasq；原计划的 pc_insert port=65355 方案已废弃）。详见 §6.2 D5 兑现段。
+  - **D1 DNS upstream 真消费**：install.sh::migrate_split_routing_v2 把老 key 一次性切到新 key（保留老 key fallback），落 `fss_split_migrated_v2=1` 守卫；ssconfig.sh 优先读新 key、回退老路径。新 key 契约入 §1.6.1。
+  - **§1.4.1 索引规范升级到方案 B**：Mode CRUD helper 解锁 index↔id 解耦，消费方改 `dbus list ss_split_mode_ | awk ...` 动态枚举。
+  - **UI 方案 A**：asp 标签 "分流V2 (实验)" → "分流"，mode 7 option 隐藏 + stale 占位（老用户保留旧值）。
+  - **新文件**：fancyss/scripts/ss_split_mode_save.sh / fancyss/scripts/ss_split_node_outbound.sh
+  - **净改动**：install.sh +117/-9, ssconfig.sh +333/-71, ASP +248/-104, ss_chain_proxy.sh -205/+21, ss-menu.js +20/-7, +2 个新文件。
+  - **已知收尾事项**：
+    - D8 真机三 MAC 验证（default + builtin + user-defined Mode）仍待；
+    - ACL UI select 扩展支持自定义 Mode 留 doge.13 后续。
 - 2026-05-15 alpha 实施期初稿。
 - 2026-05-20 alpha.13-16 修订汇总：
   - alpha.13：`ss_split_rule_to_json` ARG_MAX hotfix（1.6MB JSON 灌 shell 变量爆 busybox `[` 内置 → 改文件中转 + jq 流式）。详见 §6.2 D9。

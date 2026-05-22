@@ -721,7 +721,9 @@ var ph_xray = "# 填入xray json配置，内容可以是标准的也可以是压
 var ph_tuic = "# 填入tuic client json配置，内容可以是标准的也可以是压缩的&#10;# 请保证你json内的relay部分的配置正确！！！" 	//fancyss-full
 var mainPanelNodeId = "";
 var option_proxy_modes = [["1", "gfw黑名单模式"], ["2", "大陆白名单模式"], ["3", "游戏模式"], ["5", "全局代理模式"]];
-var option_main_modes = [["1", "gfw黑名单模式"], ["2", "大陆白名单模式"], ["3", "游戏模式"], ["5", "全局代理模式"], ["7", "xray分流模式"]];
+// FORK doge.13: option_main_modes 移除 mode 7 (xray分流模式)，由新「分流」标签页替代。
+// 用户已在 mode 7 时（升级路径），下方 forms() 调用前会动态插入 stale option 保留原值（硬规则 #9）。
+var option_main_modes = [["1", "gfw黑名单模式"], ["2", "大陆白名单模式"], ["3", "游戏模式"], ["5", "全局代理模式"]];
 var option_modes = option_proxy_modes;
 var option_method = [ "none",  "rc4",  "rc4-md5",  "rc4-md5-6",  "aes-128-gcm",  "aes-192-gcm",  "aes-256-gcm",  "aes-128-cfb",  "aes-192-cfb",  "aes-256-cfb",  "aes-128-ctr",  "aes-192-ctr",  "aes-256-ctr",  "camellia-128-cfb",  "camellia-192-cfb",  "camellia-256-cfb",  "bf-cfb",  "cast5-cfb",  "idea-cfb",  "rc2-cfb",  "seed-cfb",  "salsa20",  "chacha20",  "chacha20-ietf",  "chacha20-ietf-poly1305",  "xchacha20-ietf-poly1305", "plain", "2022-blake3-aes-128-gcm", "2022-blake3-aes-256-gcm", "2022-blake3-chacha20-poly1305" ];
 var option_protocals = [ "origin", "verify_simple", "verify_sha1", "auth_sha1", "auth_sha1_v2", "auth_sha1_v4", "auth_aes128_md5", "auth_aes128_sha1", "auth_chain_a", "auth_chain_b", "auth_chain_c", "auth_chain_d", "auth_chain_e", "auth_chain_f" ];
@@ -2210,13 +2212,33 @@ function get_shunt_default_node_id() {
 	}
 	return get_shunt_runtime_node_id();
 }
+// FORK doge.13 D14: 帮 collect_node_reference_delete_impact 识别 split_v2 mode/rule action 字段对 nodeId 的引用。
+// action 编码（合同 §1.5）：direct / reject / proxy_main / proxy_node:<id> / proxy_chain:<front>:<landing>。
+// 返回 {role, newAction} 或 null；role=landing|front|both，newAction 为清理后的字符串。
+function match_split_action_node(act, nodeId) {
+	act = String(act == null ? "" : act);
+	nodeId = String(nodeId || "");
+	if (!act || !nodeId) return null;
+	if (act === 'direct' || act === 'reject' || act === 'proxy_main') return null;
+	var pn = act.match(/^proxy_node:(.+)$/);
+	if (pn) return (String(pn[1]) === nodeId) ? {role: 'landing', newAction: 'proxy_main'} : null;
+	var pc = act.match(/^proxy_chain:([^:]+):(.+)$/);
+	if (pc) {
+		var front = String(pc[1]), landing = String(pc[2]);
+		if (front === nodeId && landing === nodeId) return {role: 'both', newAction: 'proxy_main'};
+		if (front === nodeId)   return {role: 'front',   newAction: 'proxy_node:' + landing};
+		if (landing === nodeId) return {role: 'landing', newAction: 'proxy_main'};
+	}
+	return null;
+}
 function collect_node_reference_delete_impact(nodeId) {
 	nodeId = String(nodeId || "");
 	var impact = {
 		current: get_saved_current_node_id() == nodeId,
 		shuntDefault: false,
 		shuntRuleCount: 0,
-		combos: []
+		combos: [],
+		splitRules: []
 	};
 	if (!nodeId) {
 		return impact;
@@ -2241,6 +2263,23 @@ function collect_node_reference_delete_impact(nodeId) {
 			}
 			if (String(c.landing_id) === nodeId) {
 				impact.combos.push({i: ci, role: "landing"});
+			}
+		}
+	}
+	// FORK doge.13 D14：扫描 split_v2 mode/rule action 字段，把引用此节点的位置记录到 impact.splitRules
+	// 每条 {m, r, role, oldAction, newAction}；r==0 = mode 的 default_action，r>0 = mode 内第 r 条 rule。
+	var modeCount = parseInt(db_ss['ss_split_mode_count'] || '0', 10);
+	if (!isNaN(modeCount) && modeCount > 0) {
+		for (var sm = 1; sm <= modeCount; sm++) {
+			var defAct = String(db_ss['ss_split_mode_' + sm + '_default_action'] || '');
+			var dh = match_split_action_node(defAct, nodeId);
+			if (dh) impact.splitRules.push({m: sm, r: 0, role: dh.role, oldAction: defAct, newAction: dh.newAction});
+			var rcnt = parseInt(db_ss['ss_split_mode_' + sm + '_rule_count'] || '0', 10);
+			if (isNaN(rcnt) || rcnt <= 0) continue;
+			for (var sr = 1; sr <= rcnt; sr++) {
+				var act = String(db_ss['ss_split_mode_' + sm + '_rule_' + sr + '_action'] || '');
+				var rh = match_split_action_node(act, nodeId);
+				if (rh) impact.splitRules.push({m: sm, r: sr, role: rh.role, oldAction: act, newAction: rh.newAction});
 			}
 		}
 	}
@@ -2270,6 +2309,21 @@ function show_deleted_node_reference_notice(nodeName, impact, nextCurrentId) {
 			roleNames.push("#" + c.i + "（" + (c.role === "front" ? "前置" : "落地") + "）");
 		}
 		lines.push("节点【" + nodeName + "】被引用于备用组合 " + roleNames.join("、") + "，已自动清理（落地被删的组合整体移除，前置被删的仅清空前置变为直连）。");
+	}
+	// FORK doge.13 D14：分流 (split_v2) 中对此节点的引用已自动改写
+	if (impact.splitRules && impact.splitRules.length > 0) {
+		var landingHits = 0, frontHits = 0;
+		for (var spi = 0; spi < impact.splitRules.length; spi++) {
+			var sp = impact.splitRules[spi];
+			if (sp.role === 'front') frontHits += 1;
+			else landingHits += 1; // landing 或 both 都归为落地处理（newAction = proxy_main）
+		}
+		if (landingHits > 0) {
+			lines.push("分流配置中有 " + landingHits + " 处「落地引用」原本指向【" + nodeName + "】，已自动改为「跟随主节点」(proxy_main)。");
+		}
+		if (frontHits > 0) {
+			lines.push("分流配置中有 " + frontHits + " 处「前置引用」原本指向【" + nodeName + "】，已自动降级为「直连落地节点」(proxy_chain -> proxy_node)。");
+		}
 	}
 	if (!lines.length) {
 		return;
@@ -6795,11 +6849,11 @@ function refresh_split_v2_panel() {
 		E('ss_split_enabled').value = db_ss['ss_split_enabled'] || '0';
 		render_split_enabled_state();
 	}
-	// 全局 DNS upstream input
-	// FORK doge.12 alpha.11 修 C-CRIT-2：3 个 DNS upstream 控件已设 readonly + 占位文案，alpha 阶段不再用 dbus 持久化；强制清空 value 确保 placeholder 显示
-	if (E('ss_split_dns_global_upstream')) { E('ss_split_dns_global_upstream').value = ''; }
-	if (E('ss_split_dns_china_upstream')) { E('ss_split_dns_china_upstream').value = ''; }
-	if (E('ss_split_dns_overseas_upstream')) { E('ss_split_dns_overseas_upstream').value = ''; }
+	// FORK doge.13 D1：DNS upstream 控件 接通 dbus 持久化（base64 编码）。
+	// db_ss 里值为 base64，反向填到控件用 Base64.decode（参考 split_v2_b64_decode）。
+	if (E('ss_split_dns_global_upstream')) { E('ss_split_dns_global_upstream').value = split_v2_b64_decode(db_ss['ss_split_dns_global_upstream'] || ''); }
+	if (E('ss_split_dns_china_upstream')) { E('ss_split_dns_china_upstream').value = split_v2_b64_decode(db_ss['ss_split_dns_china_upstream'] || ''); }
+	if (E('ss_split_dns_overseas_upstream')) { E('ss_split_dns_overseas_upstream').value = split_v2_b64_decode(db_ss['ss_split_dns_overseas_upstream'] || ''); }
 	render_split_mode_list();
 	render_split_rule_list();
 	render_split_default_mode_select();
@@ -7125,6 +7179,80 @@ function split_v2_rule_persist(op, ruleId, name, sourceUrl, updateHours, payload
 	});
 }
 
+// FORK doge.13: Mode CRUD 走专用 helper（参考 split_v2_rule_persist）。
+// 后端 ss_split_mode_save.sh 接管 default_mode_id fallback / acl 清零 / slot shift 等复杂逻辑，
+// 避免前端 split_v2_save_mode_dialog / split_v2_delete_mode 各写一份 fields 拼装容易漂移。
+// 参数：
+//   op = 'create' | 'update' | 'delete'
+//   modeId = number（mode 的 ID，create 时由调用方先 split_v2_next_mode_id() 算出）
+//   modeFields = { name, builtin, udp_proxy, block_quic, apply_blackwhite, dns_mode, default_action, rules:[{rid,action},...] }
+//     delete 时 modeFields 可为 {}（后端不读 fields，只看 op + id）
+//   applyAfter = true 时 ssconfig.sh restart；false 仅写 dbus
+//   cb(ok, errmsg)
+function split_v2_mode_persist(op, modeId, modeFields, applyAfter, cb) {
+	modeFields = modeFields || {};
+	var rulesArr = modeFields.rules || [];
+	var rulesB64 = '';
+	try {
+		rulesB64 = btoa(unescape(encodeURIComponent(JSON.stringify(rulesArr))));
+	} catch (e) {
+		if (typeof cb === 'function') cb(false, 'rules encode failed');
+		return;
+	}
+	var saveFields = {
+		ss_split_mode_save_op: String(op || ''),
+		ss_split_mode_save_id: String(modeId),
+		ss_split_mode_save_name: modeFields.name || '',
+		ss_split_mode_save_builtin_hint: modeFields.builtin || '0',
+		ss_split_mode_save_udp_proxy: modeFields.udp_proxy || '0',
+		ss_split_mode_save_block_quic: modeFields.block_quic || '0',
+		ss_split_mode_save_apply_blackwhite: modeFields.apply_blackwhite || '1',
+		ss_split_mode_save_dns_mode: modeFields.dns_mode || 'split',
+		ss_split_mode_save_default_action: modeFields.default_action || 'direct',
+		ss_split_mode_save_rule_count: String(rulesArr.length),
+		ss_split_mode_save_rules_b64: rulesB64
+	};
+	var reqId = parseInt(Math.random() * 1e8);
+	$.ajax({
+		type: 'POST', cache: false, url: '/_api/',
+		data: JSON.stringify({"id": reqId, "method": "ss_split_mode_save.sh", "params":[], "fields": saveFields}),
+		dataType: 'json',
+		success: function() {
+			setTimeout(function() {
+				$.ajax({
+					type: 'GET', url: '/_api/ss', dataType: 'json', cache: false,
+					success: function(data) {
+						if (!data || !data.result || !data.result[0]) { if (typeof cb === 'function') cb(false, 'no response'); return; }
+						var fresh = data.result[0];
+						var r = fresh.ss_split_mode_save_result || '';
+						var err = fresh.ss_split_mode_save_error || '';
+						if (r === 'ok') {
+							split_v2_refresh_dbss(function() {
+								if (applyAfter) {
+									var enabled = String(db_ss['ss_basic_enable'] || '0');
+									var arg = (enabled === '1') ? 'start' : 'stop';
+									if (typeof is_ws_available === 'function' && is_ws_available()) {
+										push_data_ws('ss_config.sh', arg, {});
+									} else {
+										push_data('ss_config.sh', arg, {});
+									}
+								}
+								render_split_mode_list();
+								render_split_rule_list();
+								render_split_default_mode_select();
+								if (typeof cb === 'function') cb(true, '');
+							});
+						} else {
+							if (typeof cb === 'function') cb(false, err || 'unknown error');
+						}
+					},
+					error: function() { if (typeof cb === 'function') cb(false, 'polling failed'); }
+				});
+			}, 500);
+		},
+		error: function() { if (typeof cb === 'function') cb(false, 'network error'); }
+	});
+}
 // ============ 引用检查 + ID 分配 helpers ============
 function split_v2_mode_users(modeId) {
 	var users = [];
@@ -7184,12 +7312,14 @@ function split_v2_name_has_forbidden(name) {
 	return /["`$=\\\r\n]/.test(String(name == null ? '' : name));
 }
 
-// ============ Action 编码 select（direct / reject / proxy_node:X / proxy_chain:Y:X）============
+// ============ Action 编码 select（direct / reject / proxy_main / proxy_node:X / proxy_chain:Y:X）============
+// FORK doge.13: 新加 proxy_main = 「跟随主节点」，路由层用当前 ss_basic_node（落地节点）。
 // idPrefix = HTML id 前缀（如 "mode_dlg_default_action" 或 "mode_dlg_rule_action_0"）
 function split_v2_build_action_html(idPrefix, value, includeReject) {
 	var html = '<select id="' + idPrefix + '_type" onchange="split_v2_action_type_changed(\'' + idPrefix + '\');">';
 	html += '<option value="direct">直连</option>';
 	if (includeReject !== false) html += '<option value="reject">屏蔽</option>';
+	html += '<option value="proxy_main">跟随主节点</option>';
 	html += '<option value="proxy_node">代理(节点)</option>';
 	html += '<option value="proxy_chain">代理(链式)</option>';
 	html += '</select>';
@@ -7202,6 +7332,7 @@ function split_v2_action_type_changed(idPrefix) {
 	var t = $('#' + idPrefix + '_type').val();
 	var $n = $('#' + idPrefix + '_node');
 	var $f = $('#' + idPrefix + '_front');
+	// FORK doge.13: proxy_main / direct / reject 都不需要节点选择
 	if (t === 'proxy_node') { $n.show(); $f.hide(); }
 	else if (t === 'proxy_chain') { $n.show(); $f.show(); }
 	else { $n.hide(); $f.hide(); }
@@ -7211,6 +7342,7 @@ function split_v2_populate_action_selects(idPrefix, value) {
 	var v = value || 'direct';
 	var type = 'direct', nodeId = '', frontId = '';
 	if (v === 'reject') type = 'reject';
+	else if (v === 'proxy_main') type = 'proxy_main'; // FORK doge.13
 	else if (v.indexOf('proxy_chain:') === 0) {
 		type = 'proxy_chain';
 		var pp = v.substring(12).split(':');
@@ -7265,7 +7397,8 @@ function split_v2_populate_action_selects(idPrefix, value) {
 
 function split_v2_collect_action(idPrefix) {
 	var t = $('#' + idPrefix + '_type').val();
-	if (t === 'direct' || t === 'reject') return t;
+	// FORK doge.13: proxy_main 与 direct/reject 同属字面量字符串，无附加参数
+	if (t === 'direct' || t === 'reject' || t === 'proxy_main') return t;
 	if (t === 'proxy_node') return 'proxy_node:' + ($('#' + idPrefix + '_node').val() || '');
 	if (t === 'proxy_chain') {
 		var f = $('#' + idPrefix + '_front').val() || '';
@@ -7452,48 +7585,29 @@ function split_v2_save_mode_dialog() {
 	split_v2_collect_mode_dlg_rules();
 	var rules = _modeDlgState.rules;
 	var slot = _modeDlgState.editSlot;
-	var fields = {};
-	var prevRuleCount = 0;
-	if (slot == null) {
-		var count = parseInt(db_ss['ss_split_mode_count'] || '0', 10);
-		if (isNaN(count) || count < 0) count = 0;
-		slot = count + 1;
-		fields['ss_split_mode_count'] = String(slot);
-		fields['ss_split_mode_' + slot + '_id'] = String(_modeDlgState.modeId);
-		fields['ss_split_mode_' + slot + '_builtin'] = '0';
-	} else {
-		prevRuleCount = parseInt(db_ss['ss_split_mode_' + slot + '_rule_count'] || '0', 10);
-	}
-	if (!_modeDlgState.builtin) fields['ss_split_mode_' + slot + '_name'] = name;
-	fields['ss_split_mode_' + slot + '_udp_proxy'] = udp;
-	fields['ss_split_mode_' + slot + '_block_quic'] = quic;
-	fields['ss_split_mode_' + slot + '_apply_blackwhite'] = bw;
-	fields['ss_split_mode_' + slot + '_dns_mode'] = dnsMode;
-	fields['ss_split_mode_' + slot + '_default_action'] = defAction;
-	fields['ss_split_mode_' + slot + '_rule_count'] = String(rules.length);
-	for (var r = 0; r < rules.length; r++) {
-		fields['ss_split_mode_' + slot + '_rule_' + (r + 1) + '_rid'] = String(rules[r].rid || '');
-		fields['ss_split_mode_' + slot + '_rule_' + (r + 1) + '_action'] = rules[r].action || 'direct';
-	}
-	// 旧 rule 槽位软删（dbus 不能 delete，set 空字符串 + rule_count 限读取）
-	if (!isNaN(prevRuleCount) && prevRuleCount > rules.length) {
-		for (var k = rules.length + 1; k <= prevRuleCount; k++) {
-			fields['ss_split_mode_' + slot + '_rule_' + k + '_rid'] = '';
-			fields['ss_split_mode_' + slot + '_rule_' + k + '_action'] = '';
-		}
-	}
-	// FORK doge.12 alpha.18 Q1-B: 读 splitDlg.applyAfter 判断是否「保存并立即生效」；ok_apply_btn 一起 disable 防连点。
+	// FORK doge.13: Mode CRUD 改走 ss_split_mode_save.sh helper（合同 §6 D11）
+	// 后端接管 slot 计算 / builtin 字段保护 / acl & default_mode_id fallback / slot shift。
+	var op = (slot == null) ? 'create' : 'update';
+	var modeFields = {
+		name: name,
+		builtin: _modeDlgState.builtin ? '1' : '0',
+		udp_proxy: udp,
+		block_quic: quic,
+		apply_blackwhite: bw,
+		dns_mode: dnsMode,
+		default_action: defAction,
+		rules: rules // [{rid, action}]，helper 内部 base64
+	};
 	var applyAfter = !!splitDlg.applyAfter;
 	$('#split_dlg_ok_btn').prop('disabled', true);
 	$('#split_dlg_ok_apply_btn').prop('disabled', true);
-	split_v2_persist(fields, function(ok) {
+	split_v2_mode_persist(op, _modeDlgState.modeId, modeFields, applyAfter, function(ok, errmsg) {
 		$('#split_dlg_ok_btn').prop('disabled', false);
 		$('#split_dlg_ok_apply_btn').prop('disabled', false);
-		if (!ok) { splitDlg.error('保存失败，请稍后重试'); return; }
+		if (!ok) { splitDlg.error('保存失败：' + (errmsg || '请稍后重试')); return; }
 		splitDlg.close();
-		render_split_mode_list();
-		render_split_default_mode_select();
-	}, applyAfter);
+		// split_v2_mode_persist 内已 render_split_mode_list / render_split_default_mode_select
+	});
 	return true; // 异步：手动关
 }
 
@@ -7512,51 +7626,11 @@ function split_v2_delete_mode(m) {
 		msg += '\n删除后：default 引用会回退到一个内置 Mode；acl 引用会被重置为「不走代理」。';
 	}
 	if (!confirm(msg)) return;
-	var count = parseInt(db_ss['ss_split_mode_count'] || '0', 10);
-	if (isNaN(count) || count <= 0) return;
-	var fields = {};
-	var modeFields = ['id', 'name', 'builtin', 'udp_proxy', 'block_quic', 'apply_blackwhite', 'dns_mode', 'default_action', 'rule_count'];
-	var defId = String(db_ss['ss_split_default_mode_id'] || '');
-	if (String(id) === defId) {
-		var nextDef = '';
-		for (var mm = 1; mm <= count; mm++) {
-			if (mm === m) continue;
-			var mid = db_ss['ss_split_mode_' + mm + '_id'];
-			if (mid && db_ss['ss_split_mode_' + mm + '_builtin'] == '1') { nextDef = mid; break; }
-		}
-		fields['ss_split_default_mode_id'] = nextDef || '1';
-	}
-	for (var k in db_ss) {
-		if (Object.prototype.hasOwnProperty.call(db_ss, k) && k.indexOf('ss_acl_split_mode_') === 0) {
-			if (String(db_ss[k]) === String(id)) fields[k] = '0';
-		}
-	}
-	for (var s = m; s < count; s++) {
-		var nxt = s + 1;
-		for (var f = 0; f < modeFields.length; f++) {
-			var key = 'ss_split_mode_' + s + '_' + modeFields[f];
-			var srcKey = 'ss_split_mode_' + nxt + '_' + modeFields[f];
-			fields[key] = (db_ss[srcKey] != null) ? db_ss[srcKey] : '';
-		}
-		var nxtRN = parseInt(db_ss['ss_split_mode_' + nxt + '_rule_count'] || '0', 10);
-		for (var rr = 1; rr <= nxtRN; rr++) {
-			fields['ss_split_mode_' + s + '_rule_' + rr + '_rid'] = db_ss['ss_split_mode_' + nxt + '_rule_' + rr + '_rid'] || '';
-			fields['ss_split_mode_' + s + '_rule_' + rr + '_action'] = db_ss['ss_split_mode_' + nxt + '_rule_' + rr + '_action'] || '';
-		}
-	}
-	for (var f2 = 0; f2 < modeFields.length; f2++) {
-		fields['ss_split_mode_' + count + '_' + modeFields[f2]] = '';
-	}
-	var lastRN = parseInt(db_ss['ss_split_mode_' + count + '_rule_count'] || '0', 10);
-	for (var rrr = 1; rrr <= lastRN; rrr++) {
-		fields['ss_split_mode_' + count + '_rule_' + rrr + '_rid'] = '';
-		fields['ss_split_mode_' + count + '_rule_' + rrr + '_action'] = '';
-	}
-	fields['ss_split_mode_count'] = String(count - 1);
-	split_v2_persist(fields, function(ok) {
-		if (!ok) { alert('删除失败，请稍后重试。'); return; }
-		render_split_mode_list();
-		render_split_default_mode_select();
+	// FORK doge.13: 整段简化 — 改走 ss_split_mode_save.sh helper（合同 §6 D11）。
+	// 后端处理 default_mode_id fallback / acl 清零 / slot shift / rule_count 软删。
+	split_v2_mode_persist('delete', id, {}, false, function(ok, errmsg) {
+		if (!ok) { alert('删除失败：' + (errmsg || '请稍后重试。')); return; }
+		// split_v2_mode_persist 内已 render_split_mode_list / render_split_default_mode_select
 	});
 }
 
@@ -7661,6 +7735,55 @@ function split_v2_delete_rule(r) {
 $(function(){ $(document).on('change', '#ss_split_enabled', function(){
 	var $sel = $(this);
 	var v = $sel.val();
+	// FORK doge.13 D13 ASP preflight：旧值=0、新值=1、当前 ss_basic_mode=7 时弹三按钮决策框
+	// （取消 / 仅启用分流 / 自动切到大陆白名单）。避免 mode 7 + split_v2 双重路由冲突。
+	var prevEnabled = String(db_ss['ss_split_enabled'] || '0');
+	var currentMode = String(db_ss['ss_basic_mode'] || '');
+	if (v === '1' && prevEnabled !== '1' && currentMode === '7') {
+		var restoreSel = function(){ $sel.val(prevEnabled); };
+		var applySplitOnly = function(){
+			$sel.prop('disabled', true);
+			split_v2_persist({ss_split_enabled: '1'}, function(ok){
+				$sel.prop('disabled', false);
+				if (ok) { openssHint(220); } else { alert('保存启用状态失败，请稍后重试。'); restoreSel(); }
+				render_split_enabled_state(); render_split_runtime_status();
+			});
+		};
+		var applySwitchMode = function(){
+			$sel.prop('disabled', true);
+			split_v2_persist({ss_split_enabled: '1', ss_basic_mode: '2'}, function(ok){
+				$sel.prop('disabled', false);
+				if (ok) {
+					db_ss['ss_basic_mode'] = '2';
+					if (E('ss_basic_mode')) { try { E('ss_basic_mode').value = '2'; } catch(e){} }
+					openssHint(220);
+				} else { alert('保存启用状态失败，请稍后重试。'); restoreSel(); }
+				render_split_enabled_state(); render_split_runtime_status();
+			});
+		};
+		if (typeof layer !== 'undefined' && layer.open) {
+			layer.open({
+				type: 1, title: '启用分流：模式冲突提醒', area: ['540px', 'auto'], shadeClose: false, closeBtn: 1,
+				content: '<div style=\"padding:18px 22px;line-height:1.8;font-size:13px;color:#111;background:#fff;\">' +
+					'<div style=\"margin-bottom:10px;\">当前主模式是 <b>xray分流模式 (mode 7)</b>，开启「分流」会与之冲突。请选择：</div>' +
+					'<ul style=\"margin:0 0 8px 20px;padding:0;\"><li>取消：保持现状，不切换</li>' +
+					'<li>仅启用分流：mode 7 保持不变（链式代理仍 fallback）</li>' +
+					'<li>自动切到大陆白名单 + 启用分流（推荐）</li></ul>' +
+					'<div style=\"color:#888;font-size:12px;\">详见 <a href=\"javascript:void(0);\" onclick=\"openssHint(221);\">说明</a>。</div></div>',
+				btn: ['取消', '仅启用分流', '自动切换'],
+				btn1: function(idx){ layer.close(idx); restoreSel(); },
+				btn2: function(idx){ layer.close(idx); applySplitOnly(); return false; },
+				btn3: function(idx){ layer.close(idx); applySwitchMode(); return false; },
+				cancel: function(){ restoreSel(); }
+			});
+		} else {
+			var choice = prompt('当前 mode 7 与新分流冲突。输入：1=仅启用分流 / 2=切到大陆白名单+启用分流 / 其它=取消', '1');
+			if (choice === '1') { applySplitOnly(); }
+			else if (choice === '2') { applySwitchMode(); }
+			else { restoreSel(); }
+		}
+		return;
+	}
 	// FORK doge.12 alpha.11 修 C-CRIT-1 + D5 race：变更即通过 dummy_script.sh 立刻持久化；同时 disable 控件直到 ajax 回来，
 	// 避免连点产生多 in-flight 请求乱序（服务端处理顺序非严格 FIFO → dbus 终态可能 ≠ 用户最后一次点击）。
 	// 重启代理仍由页脚 `保存&应用` 触发。
@@ -8390,7 +8513,8 @@ function save() {
 		  "ss_basic_sub_node_log",
 		  "ss_basic_sub_keep_info_node"
 	];
-	var params_base64 = ["ss_dnsmasq", "ss_wan_white_ip", "ss_wan_white_domain", "ss_wan_black_ip", "ss_wan_black_domain", "ss_online_links", "ss_basic_custom"];
+	// FORK doge.13 D1：3 个 split DNS upstream 接通主 save() base64 通道（textarea/input 走 Base64.encode 写 dbus，refresh_split_v2_panel 走 Base64.decode 读回）。
+	var params_base64 = ["ss_dnsmasq", "ss_wan_white_ip", "ss_wan_white_domain", "ss_wan_black_ip", "ss_wan_black_domain", "ss_online_links", "ss_basic_custom", "ss_split_dns_china_upstream", "ss_split_dns_overseas_upstream", "ss_split_dns_global_upstream"];
 	var params_no_store = ["ss_base64_links"];
 	var aclNodeSupportsUdp = acl_current_node_supports_udp();
 	//---------------------------------------------------------------
@@ -10688,6 +10812,16 @@ function process_schema2_node_delete_queue() {
 				if (Object.prototype.hasOwnProperty.call(comboFields, ck)) {
 					fields_v2[ck] = comboFields[ck];
 				}
+			}
+		}
+		// FORK doge.13 D14：把 split_v2 引用清理（mode default_action / rule action）合入提交
+		if (deleteImpact && deleteImpact.splitRules && deleteImpact.splitRules.length > 0) {
+			for (var spk = 0; spk < deleteImpact.splitRules.length; spk++) {
+				var spe = deleteImpact.splitRules[spk];
+				var spKey = (spe.r === 0)
+					? ('ss_split_mode_' + spe.m + '_default_action')
+					: ('ss_split_mode_' + spe.m + '_rule_' + spe.r + '_action');
+				fields_v2[spKey] = spe.newAction;
 			}
 		}
 		var post_data_v2 = compfilter(get_compare_store(), fields_v2);
@@ -17138,7 +17272,8 @@ function refresh_acl_html() {
 	code += '<option value="2">大陆白名单模式</option>'
 	code += '<option value="3">游戏模式</option>'
 	code += '<option value="5">全局代理模式</option>'
-	code += '<option value="7">xray分流模式</option>'
+	// FORK doge.13: mode 7 (xray分流模式) 入口隐藏 — 新建 ACL 行不可再选 mode 7。已有持 mode 7 的行由下方 17311 行 stale option 处理保留。
+	// code += '<option value="7">xray分流模式</option>'
 	// code += '<option value="6">回国模式</option>'
 	code += '</select>'
 	code += '</td>'
@@ -17179,7 +17314,11 @@ function refresh_acl_html() {
 			code += '<option value="2">大陆白名单模式</option>';
 			code += '<option value="3">游戏模式</option>';
 			code += '<option value="5">全局代理模式</option>';
-			code += '<option value="7">xray分流模式</option>';
+			// FORK doge.13: 默认隐藏 mode 7 (xray分流模式) 入口；仅当该 ACL 行 saved mode 已是 7 时插 stale option 保留旧值（硬规则 #9）。
+			var aclSavedMode = String(ac && ac["mode"] != null ? ac["mode"] : "");
+			if (aclSavedMode === "7") {
+				code += '<option value="7">xray分流模式 (已废弃)</option>';
+			}
 			//code += '<option value="6">回国模式</option>';
 		}
 		code += '</select>'
@@ -17802,7 +17941,7 @@ function toggleKeyMask(o, show){
 															<input id="show_btn8" class="show-btn8" style="cursor:pointer" type="button" value="访问控制" />
 															<input id="show_btn9" class="show-btn9" style="cursor:pointer" type="button" value="附加功能" />
 															<input id="show_btn10" class="show-btn10" style="cursor:pointer" type="button" value="查看日志" />
-															<input id="show_btn11" class="show-btn11" style="cursor:pointer;background:#FFEBA0;color:#CC0066;" type="button" value="分流V2 (实验)" title="doge.12 实验性分流架构（默认未启用）" />
+															<input id="show_btn11" class="show-btn11" style="cursor:pointer;background:#FFEBA0;color:#CC0066;" type="button" value="分流" title="doge.12 智能分流架构" />
 														</td>
 													</tr>
 												</table>
@@ -17975,6 +18114,12 @@ function toggleKeyMask(o, show){
 														</tr>
 													</tbody>
 													<script type="text/javascript">
+														// FORK doge.13: 老用户仍持 ss_basic_mode=7 时插 stale option（硬规则 #9）— 保留旧 ID 不被 save() 静默置空。
+														if (String(db_ss["ss_basic_mode"]||"") === "7" && option_main_modes && option_main_modes.length) {
+															var _hasMode7 = false;
+															for (var _i=0; _i<option_main_modes.length; _i++) if (String(option_main_modes[_i][0]) === "7") { _hasMode7 = true; break; }
+															if (!_hasMode7) option_main_modes.push(["7", "xray分流模式 (已废弃，请切换到大陆白名单模式)"]);
+														}
 														$('#tb_main').forms([
 															// commom
 															{ title: '落地节点', id:'ssconf_basic_node', type:'select', func:'onchange="ss_node_sel();"', style:'width:auto;min-width:164px;max-width:450px;', options:[], value: "1"},
@@ -18803,17 +18948,16 @@ function toggleKeyMask(o, show){
 												</div>
 											</div>
 											<div id="tablet_11" style="display: none;">
-												<!-- FORK doge.12 alpha: 分流架构 V2 入口 (实验性，默认未启用) -->
+												<!-- FORK doge.12: 分流架构入口 -->
 												<table id="table_split_v2_main" width="100%" border="1" align="center" cellpadding="4" cellspacing="0" bordercolor="#6b8fa3" class="FormTable" style="margin-top:4px;">
-													<thead><tr><td class="IPQOSTitle" colspan="2" align="left" style="background:#CC0066;color:#fff;font-weight:bold;padding:6px 10px;">分流架构 V2 (doge.12 实验性)</td></tr></thead>
+													<thead><tr><td class="IPQOSTitle" colspan="2" align="left" style="background:#CC0066;color:#fff;font-weight:bold;padding:6px 10px;">分流架构</td></tr></thead>
 													<tbody>
 														<tr><td colspan="2" style="background:#FFEBA0;color:#CC0066;padding:8px;border:1px dashed #CC0066;line-height:1.6;">
-															<b>实验性功能</b>：本架构是 doge.12 重大架构跃迁（per-Mode TPROXY + xray sniffing + 双轨 DNS），alpha 阶段默认未启用。
-															启用后路由层将切换到新模式；如遇问题请切回「未启用」并重启代理。
+															<b>智能分流</b>：基于 per-Mode TPROXY + xray sniffing + 双轨 DNS 的分流架构。按设备/规则分配不同代理策略。
 															详见 <a href="javascript:void(0);" onclick="openssHint(210);" style="color:#03a9f4;"><u>说明</u></a>。
 														</td></tr>
-														<tr><th width="30%"><a class="hintstyle" style="color:#03a9f4;" href="javascript:void(0);" onclick="openssHint(210);">启用分流 V2</a></th>
-															<td><select id="ss_split_enabled" style="width:auto"><option value="0">未启用 (默认，走旧分流)</option><option value="1">已启用 (走 doge.12 新架构)</option></select>
+														<tr><th width="30%"><a class="hintstyle" style="color:#03a9f4;" href="javascript:void(0);" onclick="openssHint(210);">启用分流</a></th>
+															<td><select id="ss_split_enabled" style="width:auto"><option value="0">未启用 (默认)</option><option value="1">已启用</option></select>
 															&nbsp;<span id="ss_split_enabled_state" style="color:#888;font-size:11px;"></span></td></tr>
 														<tr><th>默认 Mode</th>
 															<td><select id="ss_split_default_mode_id" style="width:auto"></select>
@@ -18825,7 +18969,7 @@ function toggleKeyMask(o, show){
 													<thead><tr><td class="IPQOSTitle" colspan="2" align="left" style="font-weight:bold;padding:6px 10px;">模式 (Mode) 管理 <a class="hintstyle" style="color:#03a9f4;font-weight:normal;" href="javascript:void(0);" onclick="openssHint(211);"><u>说明</u></a></td></tr></thead>
 													<tbody>
 														<tr><td colspan="2" style="padding:0;"><div id="split_mode_list_wrap" style="min-height:60px;padding:8px;"><span style="color:#888;">(等到主代理重启代理后此处会有数据)</span></div></td></tr>
-														<tr><td colspan="2" style="padding:6px;"><input type="button" class="ss_btn" style="cursor:pointer;" onclick="split_v2_new_mode();" value="新建 Mode" />&nbsp;&nbsp;<span style="color:#888;font-size:11px;">alpha 阶段：编辑/删除已通过弹窗实现，doge.13 起加导入/导出/拖拽排序</span></td></tr>
+														<tr><td colspan="2" style="padding:6px;"><input type="button" class="ss_btn" style="cursor:pointer;" onclick="split_v2_new_mode();" value="新建 Mode" />&nbsp;&nbsp;<span style="color:#888;font-size:11px;">支持编辑、删除、新建</span></td></tr>
 													</tbody>
 												</table>
 												<table id="table_split_rules" width="100%" border="1" align="center" cellpadding="4" cellspacing="0" bordercolor="#6b8fa3" class="FormTable" style="margin-top:8px;">
@@ -18838,9 +18982,9 @@ function toggleKeyMask(o, show){
 												<table id="table_split_dns" width="100%" border="1" align="center" cellpadding="4" cellspacing="0" bordercolor="#6b8fa3" class="FormTable" style="margin-top:8px;margin-bottom:4px;">
 													<thead><tr><td class="IPQOSTitle" colspan="2" align="left" style="font-weight:bold;padding:6px 10px;">DNS 设置 V2 (双轨) <a class="hintstyle" style="color:#03a9f4;font-weight:normal;" href="javascript:void(0);" onclick="openssHint(213);"><u>说明</u></a></td></tr></thead>
 													<tbody>
-														<tr><th width="30%">分流 DNS upstream (国内)</th><td><textarea id="ss_split_dns_china_upstream" rows="3" cols="60" style="width:90%;font-family:monospace;background:#f4f4f4;color:#888;" readonly placeholder="alpha 阶段仅占位，doge.13 启用（请到主页面 DNS 设置配置）"></textarea></td></tr>
-														<tr><th>分流 DNS upstream (国外)</th><td><textarea id="ss_split_dns_overseas_upstream" rows="3" cols="60" style="width:90%;font-family:monospace;background:#f4f4f4;color:#888;" readonly placeholder="alpha 阶段仅占位，doge.13 启用（请到主页面 DNS 设置配置）"></textarea></td></tr>
-														<tr><th>全局 DNS upstream (单一海外)</th><td><input type="text" id="ss_split_dns_global_upstream" style="width:60%;font-family:monospace;background:#f4f4f4;color:#888;" readonly placeholder="alpha 阶段仅占位，doge.13 启用（请到主页面 DNS 设置配置）" /></td></tr>
+														<tr><th width="30%">分流 DNS upstream (国内)</th><td><textarea id="ss_split_dns_china_upstream" rows="3" cols="60" style="width:90%;font-family:monospace;" placeholder="每行一条：8.8.8.8 / tcp://8.8.8.8 / https://dns.google/dns-query"></textarea></td></tr>
+														<tr><th>分流 DNS upstream (国外)</th><td><textarea id="ss_split_dns_overseas_upstream" rows="3" cols="60" style="width:90%;font-family:monospace;" placeholder="每行一条：8.8.8.8 / tcp://8.8.8.8 / https://dns.google/dns-query"></textarea></td></tr>
+														<tr><th>全局 DNS upstream (单一海外)</th><td><input type="text" id="ss_split_dns_global_upstream" style="width:60%;font-family:monospace;" placeholder="单条 upstream：8.8.8.8 / tcp://8.8.8.8 / https://dns.google/dns-query" /></td></tr>
 														<tr><td colspan="2" style="font-size:11px;color:#A0A0A0;padding:8px;">分流 DNS = chinadns-ng 智能分流实例；全局 DNS = 单一海外 upstream 实例。Mode 通过 <code>dns_mode</code> 字段选择走哪一轨。</td></tr>
 													</tbody>
 												</table>

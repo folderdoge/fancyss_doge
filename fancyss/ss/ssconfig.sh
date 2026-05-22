@@ -8,6 +8,11 @@ source /koolshare/scripts/ss_base.sh
 unset FSS_BASE_EAGER_NODE_ENV
 unset FSS_BASE_SKIP_SHUNT_SOURCE
 [ -f /koolshare/scripts/ss_chain_proxy.sh ] && . /koolshare/scripts/ss_chain_proxy.sh
+# doge.13 beta: 分流多落地 outbound 构建 helper（解除 alpha collapse → out_main 兜底）
+# 提供函数 fss_split_build_node_outbound_json <node_id> <out_tag> <outfile>
+# 与 Impl-ss_split_node_outbound.sh subagent 协同；未部署时 generate_xray_json_split
+# 内有 graceful fallback（仍走 out_main 兜底，不会让 ssconfig.sh restart 挂掉）。
+[ -f /koolshare/scripts/ss_split_node_outbound.sh ] && . /koolshare/scripts/ss_split_node_outbound.sh
 NEW_PATH=$(echo $PATH|tr ':' '\n'|sed '/opt/d;/mmc/d'|awk '!a[$0]++'|tr '\n' ':'|sed '$ s/:$//')
 export PATH=${NEW_PATH}
 #-----------------------------------------------
@@ -39,12 +44,11 @@ SS_SPLIT_PORT_BASE="13333"
 # 双轨 chinadns-ng 实例端口（详见 split-routing-architecture.md §6.2）
 SS_SPLIT_DNS_SPLIT_PORT="65353"
 SS_SPLIT_DNS_GLOBAL_PORT="65354"
-# TODO(doge.12-alpha → doge.13)：dnsmasq 让 53 给 chinadns 后，需要把 dnsmasq
-# listen 改到 SS_SPLIT_DNS_LAN_PORT（这里的常量值），让 *.lan / *.local /
-# <asusrouter> 等本地域名能从 chinadns group lan 链路解出。alpha 阶段未实现
-# 该让位（涉及 fancyss postscripts/dnsmasq.postconf 和路由器 nvram 联动），
-# 因此 ss_split_enabled=1 模式下 LAN 内 hostname 解析可能静默失败。
-# 详见 doc/implementation/split-routing-implementation.md §6.2 D5。
+# doge.13 beta D5 兑现：起独立 dnsmasq 子实例占该端口（方案 C-2），
+# 主 dnsmasq (port=53) 不动；chinadns split/global 两实例的 group lan
+# 把 *.lan / *.local / <asusrouter> 等查询投递到 127.0.0.1:65355 → 这个
+# dnsmasq 子实例 → 读 /etc/hosts 给出真实 LAN IP。
+# 启停 hook 见 start_dnsmasq_lan_listener / stop_dnsmasq_lan_listener。
 SS_SPLIT_DNS_LAN_PORT="65355"
 
 #-----------------------------------------------
@@ -2174,6 +2178,34 @@ start_smartdns(){
 # 出 CDNS_LINE/FDNS_LINE → 然后我们 dump 到 split conf。
 # 但 start_chinadns_ng() 还会真起一个进程。所以这里采用另一思路：
 # 把 CDNS/FDNS 直接从 dbus 读 + 简化拼接，跳过 fixup（fixup 由旧路径承担）。
+# doge.13 beta D1 helper：解码 dbus base64 multi-line 值到 stdout，
+# 一行一条 DNS server。给新的 ss_split_dns_*_upstream key 反查用。
+__get_split_dns_lines() {
+	local b64="$1"
+	[ -z "${b64}" ] && return 0
+	printf '%s' "${b64}" | tr -d '\n\r\t ' | base64 -d 2>/dev/null | grep -v '^$'
+}
+
+# doge.13 beta D1 helper：把多行 DNS server 列表 join 为 chinadns-ng 接受的逗号格式
+__join_split_dns_lines() {
+	local lines="$1"
+	local out=""
+	local line=""
+	# 用 IFS=换行 读
+	IFS='
+'
+	for line in ${lines}; do
+		# strip 前后空白
+		line=$(echo "${line}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+		[ -z "${line}" ] && continue
+		# 注释行跳过
+		case "${line}" in '#'*) continue ;; esac
+		[ -z "${out}" ] && out="${line}" || out="${out},${line}"
+	done
+	unset IFS
+	echo "${out}"
+}
+
 generate_chinadns_split_conf() {
 	local conf="/tmp/chinadns_ng_split.conf"
 	local CDNS_LINE=""
@@ -2185,23 +2217,39 @@ generate_chinadns_split_conf() {
 	local FDNS_2=""
 	local FDNS_3=""
 
-	# 复用现有 get_dns() 拼接国内/可信上游
-	[ "${ss_basic_chng_china_dns_1_chk}" = "1" ] && CDNS_1=$(get_dns china 1)
-	[ "${ss_basic_chng_china_dns_2_chk}" = "1" ] && CDNS_2=$(get_dns china 2)
-	[ "${ss_basic_chng_china_dns_3_chk}" = "1" ] && CDNS_3=$(get_dns china 3)
-	[ "${ss_basic_chng_trust_dns_1_chk}" = "1" ] && FDNS_1=$(get_dns trust 1)
-	[ "${ss_basic_chng_trust_dns_2_chk}" = "1" ] && FDNS_2=$(get_dns trust 2)
-	[ "${ss_basic_chng_trust_dns_3_chk}" = "1" ] && FDNS_3=$(get_dns trust 3)
+	# doge.13 beta D1: 优先读新 key ss_split_dns_china_upstream / overseas_upstream
+	# 双轨保留：新 key 非空 → 用新值；新 key 空 → 回退老路径 get_dns china/trust <n>
+	# (doge.14 删老路径)。
+	local _new_china_b64=$(dbus get ss_split_dns_china_upstream 2>/dev/null)
+	local _new_oversea_b64=$(dbus get ss_split_dns_overseas_upstream 2>/dev/null)
+	local _new_china_lines=$(__get_split_dns_lines "${_new_china_b64}")
+	local _new_oversea_lines=$(__get_split_dns_lines "${_new_oversea_b64}")
 
-	# 拼 CDNS_LINE / FDNS_LINE （非空逗号 join）
-	for v in "${CDNS_1}" "${CDNS_2}" "${CDNS_3}"; do
-		[ -n "${v}" ] || continue
-		[ -z "${CDNS_LINE}" ] && CDNS_LINE="${v}" || CDNS_LINE="${CDNS_LINE},${v}"
-	done
-	for v in "${FDNS_1}" "${FDNS_2}" "${FDNS_3}"; do
-		[ -n "${v}" ] || continue
-		[ -z "${FDNS_LINE}" ] && FDNS_LINE="${v}" || FDNS_LINE="${FDNS_LINE},${v}"
-	done
+	if [ -n "${_new_china_lines}" ]; then
+		CDNS_LINE=$(__join_split_dns_lines "${_new_china_lines}")
+	else
+		# 老路径：复用现有 get_dns() 拼接国内上游
+		[ "${ss_basic_chng_china_dns_1_chk}" = "1" ] && CDNS_1=$(get_dns china 1)
+		[ "${ss_basic_chng_china_dns_2_chk}" = "1" ] && CDNS_2=$(get_dns china 2)
+		[ "${ss_basic_chng_china_dns_3_chk}" = "1" ] && CDNS_3=$(get_dns china 3)
+		for v in "${CDNS_1}" "${CDNS_2}" "${CDNS_3}"; do
+			[ -n "${v}" ] || continue
+			[ -z "${CDNS_LINE}" ] && CDNS_LINE="${v}" || CDNS_LINE="${CDNS_LINE},${v}"
+		done
+	fi
+
+	if [ -n "${_new_oversea_lines}" ]; then
+		FDNS_LINE=$(__join_split_dns_lines "${_new_oversea_lines}")
+	else
+		# 老路径：复用现有 get_dns() 拼接可信上游
+		[ "${ss_basic_chng_trust_dns_1_chk}" = "1" ] && FDNS_1=$(get_dns trust 1)
+		[ "${ss_basic_chng_trust_dns_2_chk}" = "1" ] && FDNS_2=$(get_dns trust 2)
+		[ "${ss_basic_chng_trust_dns_3_chk}" = "1" ] && FDNS_3=$(get_dns trust 3)
+		for v in "${FDNS_1}" "${FDNS_2}" "${FDNS_3}"; do
+			[ -n "${v}" ] || continue
+			[ -z "${FDNS_LINE}" ] && FDNS_LINE="${v}" || FDNS_LINE="${FDNS_LINE},${v}"
+		done
+	fi
 
 	# 兜底：上游空时填补
 	[ -z "${CDNS_LINE}" ] && CDNS_LINE="223.5.5.5"
@@ -2306,13 +2354,22 @@ generate_chinadns_global_conf() {
 	local FDNS_2=""
 	local FDNS_3=""
 
-	[ "${ss_basic_chng_trust_dns_1_chk}" = "1" ] && FDNS_1=$(get_dns trust 1)
-	[ "${ss_basic_chng_trust_dns_2_chk}" = "1" ] && FDNS_2=$(get_dns trust 2)
-	[ "${ss_basic_chng_trust_dns_3_chk}" = "1" ] && FDNS_3=$(get_dns trust 3)
-	for v in "${FDNS_1}" "${FDNS_2}" "${FDNS_3}"; do
-		[ -n "${v}" ] || continue
-		[ -z "${FDNS_LINE}" ] && FDNS_LINE="${v}" || FDNS_LINE="${FDNS_LINE},${v}"
-	done
+	# doge.13 beta D1: 优先读新 key ss_split_dns_global_upstream（单行单值，
+	# 用 head -1 即可——全局模式不像分流那样有多上游平衡）。新 key 空 → 回退老路径。
+	local _new_global_b64=$(dbus get ss_split_dns_global_upstream 2>/dev/null)
+	local _new_global_lines=$(__get_split_dns_lines "${_new_global_b64}")
+	if [ -n "${_new_global_lines}" ]; then
+		FDNS_LINE=$(echo "${_new_global_lines}" | head -1 | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+	else
+		# 老路径
+		[ "${ss_basic_chng_trust_dns_1_chk}" = "1" ] && FDNS_1=$(get_dns trust 1)
+		[ "${ss_basic_chng_trust_dns_2_chk}" = "1" ] && FDNS_2=$(get_dns trust 2)
+		[ "${ss_basic_chng_trust_dns_3_chk}" = "1" ] && FDNS_3=$(get_dns trust 3)
+		for v in "${FDNS_1}" "${FDNS_2}" "${FDNS_3}"; do
+			[ -n "${v}" ] || continue
+			[ -z "${FDNS_LINE}" ] && FDNS_LINE="${v}" || FDNS_LINE="${FDNS_LINE},${v}"
+		done
+	fi
 	[ -z "${FDNS_LINE}" ] && FDNS_LINE="tcp://1.1.1.1"
 
 	rm -f "${conf}" >/dev/null 2>&1
@@ -2352,14 +2409,59 @@ generate_chinadns_global_conf() {
 	EOF
 }
 
+# doge.13 beta D5 兑现（方案 C-2）：起独立 dnsmasq 子实例占 65355，
+# 只服务 chinadns 反查的 LAN 域名 (*.lan / *.local / asuscomm.com / lan_domain)。
+# 主 dnsmasq (port=53) 不动；双实例完全隔离。
+# chinadns split/global 两实例的 group lan 把查询投递到 127.0.0.1:${SS_SPLIT_DNS_LAN_PORT}，
+# 由该子实例读 /etc/hosts 给出真实 LAN IP。
+start_dnsmasq_lan_listener() {
+	if netstat -lnup 2>/dev/null | grep -q ":${SS_SPLIT_DNS_LAN_PORT}\b"; then
+		echo_date "dnsmasq_lan: port ${SS_SPLIT_DNS_LAN_PORT} 已被占用，跳过"
+		return 0
+	fi
+	dnsmasq --port=${SS_SPLIT_DNS_LAN_PORT} \
+		--listen-address=127.0.0.1 \
+		--bind-interfaces \
+		--no-resolv --no-poll \
+		--addn-hosts=/etc/hosts \
+		--domain-needed --bogus-priv \
+		--conf-file=/dev/null \
+		--pid-file=/tmp/dnsmasq_lan.pid \
+		--user=nobody --group=nobody &
+	sleep 1
+	if netstat -lnup 2>/dev/null | grep -q ":${SS_SPLIT_DNS_LAN_PORT}\b"; then
+		echo_date "dnsmasq_lan: 启动成功 (port=${SS_SPLIT_DNS_LAN_PORT})"
+		dbus set ss_split_dnsmasq_lan_status="ok"
+	else
+		echo_date "dnsmasq_lan: 启动失败，chinadns LAN 反查可能超时"
+		dbus set ss_split_dnsmasq_lan_status="down"
+	fi
+}
+
+stop_dnsmasq_lan_listener() {
+	if [ -f /tmp/dnsmasq_lan.pid ]; then
+		local pid=$(cat /tmp/dnsmasq_lan.pid 2>/dev/null)
+		if [ -n "${pid}" ]; then
+			kill -9 ${pid} 2>/dev/null
+			rm -f /tmp/dnsmasq_lan.pid
+		fi
+	fi
+	dbus set ss_split_dnsmasq_lan_status="down"
+}
+
 # 启动双轨 chinadns-ng 实例
 start_chinadns_ng_split() {
 	echo_date "---------------- start chinadns-ng (split架构 双轨) ----------------"
+	# doge.13 beta D5: 先起 dnsmasq_lan 子实例，否则 group lan 上游 127.0.0.1:65355
+	# 第一次查询会立刻 NXDOMAIN/timeout（端口没人 LISTEN），chinadns 缓存住后续
+	# *.lan / *.local 也会跟着失败。
+	start_dnsmasq_lan_listener
 	echo_date "💾 生成分流 DNS 实例配置 /tmp/chinadns_ng_split.conf ..."
 	if ! generate_chinadns_split_conf; then
 		echo_date "❌ 分流 DNS 实例配置生成失败，回退到旧 chinadns-ng 路径！"
 		dbus set ss_split_dns_split_status="down"
 		# 失败降级：调用旧函数
+		stop_dnsmasq_lan_listener
 		start_chinadns_ng
 		return 1
 	fi
@@ -2367,6 +2469,7 @@ start_chinadns_ng_split() {
 	if ! generate_chinadns_global_conf; then
 		echo_date "❌ 全局 DNS 实例配置生成失败，回退到旧 chinadns-ng 路径！"
 		dbus set ss_split_dns_global_status="down"
+		stop_dnsmasq_lan_listener
 		start_chinadns_ng
 		return 1
 	fi
@@ -2407,6 +2510,8 @@ stop_chinadns_ng_split() {
 	rm -f /tmp/chinadns_ng_split.conf /tmp/chinadns_ng_global.conf >/dev/null 2>&1
 	dbus set ss_split_dns_split_status="down"
 	dbus set ss_split_dns_global_status="down"
+	# doge.13 beta D5: 停 chinadns 后顺手停 dnsmasq_lan 子实例（互锁启停语义）
+	stop_dnsmasq_lan_listener
 }
 
 start_chinadns_ng(){
@@ -4965,13 +5070,18 @@ creat_shunt_json() {
 #      - 重写 inbounds 数组：保留 socks/DNS-relay 入站，新增 per-active-Mode
 #        dokodemo-door TPROXY 入站（带 sniffing）
 #      - 重写 outbounds：保留主节点 outbound 作为 "out_main"，按去重算法补齐
-#        direct / reject 等其他 outbound（alpha：proxy_node:X 引用非当前节点
-#        时回退到 out_main，记 warning）
+#        direct / reject 等其他 outbound；doge.13 beta D12 起 proxy_node:X /
+#        proxy_chain:Y:X 通过 fss_split_build_node_outbound_json 真实 build 出
+#        out_node_X / out_chain_Y_X / chain_front_Y outbound（不再 collapse 到 out_main）。
+#        helper 未部署或 build 失败时 graceful fallback 到 out_main collapse。
 #      - 重写 routing.rules：按 §4.4 顺序铺 RFC1918→黑白名单→Mode rules→兜底
 #   3) 失败回退：jq 任意一步失败则保留基线 xray.json，写 warning dbus key
-# alpha 已知限制：
-#   - proxy_node:X 引用非主节点时回退主节点（避免引入跨节点 outbound 构建复杂性）
-#   - proxy_chain:Y:X 沿用现有 fss_chain_apply 单链路注入（只能覆盖一个落地节点）
+# doge.13 beta 改造点：
+#   - D12 sentinel: ss_split_action_to_tag 新增 proxy_main case
+#   - D12 解除 collapse: proxy_node:X / proxy_chain:Y:X 各自 build 独立 outbound
+#   - D8 端口 gate 解除: 全部已声明 Mode 都进 active_indices + 端口分配
+#   - D5 dnsmasq_lan 子实例: start_chinadns_ng_split 内 hook
+#   - D1 chinadns 新 key: 优先读 ss_split_dns_china/overseas/global_upstream
 # ============================================================================
 
 # 把 rule 文件解析为 jq 友好的 JSON 数组（domains + ip_v4 + ip_v6）
@@ -5047,6 +5157,7 @@ ss_split_action_to_tag() {
 	case "${action}" in
 	direct) echo "out_direct" ;;
 	reject) echo "out_reject" ;;
+	proxy_main) echo "out_main" ;;
 	proxy_node:*)
 		local nid="${action#proxy_node:}"
 		echo "out_node_${nid}"
@@ -5140,7 +5251,11 @@ generate_xray_json_split() {
 	local default_mode_id=$(dbus get ss_split_default_mode_id 2>/dev/null)
 	[ -z "${default_mode_id}" ] && default_mode_id=2  # 大陆白名单兜底
 
-	# 收集 active modes（被任一 user 引用 + default 必激活）
+	# 收集 active modes
+	# doge.13 beta D8 兑现：去掉 alpha 的 `is_default || builtin` 过滤
+	# —— 全部已声明的 Mode 都进 active_indices，与 __split_mode_port_by_id 端口
+	# 分配同步。alpha 期会让自定义 Mode 拿不到 TPROXY 端口 + xray inbound，
+	# ACL 切到这些 Mode 后流量丢失。
 	# 索引按 1-based（与 install.sh::migrate_split_routing_v1 一致），
 	# 详见 doc/implementation/split-routing-implementation.md §1.5 索引规范
 	local active_indices=""
@@ -5148,12 +5263,7 @@ generate_xray_json_split() {
 	local m=1
 	while [ "${m}" -le "${mode_count}" ]; do
 		local mid=$(dbus get ss_split_mode_${m}_id 2>/dev/null)
-		local is_default=0
-		[ "${mid}" = "${default_mode_id}" ] && is_default=1
-		# 简化：所有内置 Mode (builtin=1) 都视为 active
-		local builtin=$(dbus get ss_split_mode_${m}_builtin 2>/dev/null)
-		# alpha: 简化判定，全部 mode 都标为 active
-		if [ "${is_default}" = "1" ] || [ "${builtin}" = "1" ]; then
+		if [ -n "${mid}" ]; then
 			active_indices="${active_indices} ${m}"
 			active_count=$((active_count + 1))
 		fi
@@ -5188,7 +5298,45 @@ generate_xray_json_split() {
 	fi
 
 	# 总是注册 direct / reject / out_main（主节点 outbound 来自基线）
-	actions_seen="direct reject out_main"
+	actions_seen="out_direct out_reject out_main"
+
+	# doge.13 beta D12 兑现：解除 alpha 期的 collapse → out_main 兜底。
+	# 收集所有 unique node/chain outbound tag 与对应 ID，待 jq 合并前一批 build。
+	# - node_outbounds_to_build: "out_node_X" tag 集合（去重，空格分隔）
+	# - chain_outbounds_to_build: "out_chain_Y_X" tag 集合（去重）
+	# - chain_fronts_to_build: 前置 node id 集合 (去重) — 跨节点 chain 需要 build
+	#   chain_front_Y outbound 供 streamSettings.sockopt.dialerProxy 引用
+	local node_outbounds_to_build=""
+	local chain_outbounds_to_build=""
+	local chain_fronts_to_build=""
+
+	# 内嵌 helper：注册 tag 到 build 集合（按形态分桶）
+	__split_register_outbound_tag() {
+		local _tag="$1"
+		case "${_tag}" in
+		out_node_*)
+			case " ${node_outbounds_to_build} " in
+			*" ${_tag} "*) : ;;
+			*) node_outbounds_to_build="${node_outbounds_to_build} ${_tag}" ;;
+			esac
+			;;
+		out_chain_*)
+			case " ${chain_outbounds_to_build} " in
+			*" ${_tag} "*) : ;;
+			*) chain_outbounds_to_build="${chain_outbounds_to_build} ${_tag}" ;;
+			esac
+			# 拆出 front_id (out_chain_Y_X → Y)
+			local _rest="${_tag#out_chain_}"
+			local _fid="${_rest%%_*}"
+			if [ -n "${_fid}" ]; then
+				case " ${chain_fronts_to_build} " in
+				*" ${_fid} "*) : ;;
+				*) chain_fronts_to_build="${chain_fronts_to_build} ${_fid}" ;;
+				esac
+			fi
+			;;
+		esac
+	}
 
 	local mi=""
 	for mi in ${active_indices}; do
@@ -5198,31 +5346,26 @@ generate_xray_json_split() {
 		while [ "${r}" -le "${rcnt}" ]; do
 			local act=$(dbus get ss_split_mode_${mi}_rule_${r}_action 2>/dev/null)
 			local tag=$(ss_split_action_to_tag "${act}")
-			# alpha: proxy_node/chain 都收敛到 out_main（除非已是 direct/reject）
-			case "${tag}" in
-			out_direct|out_reject) : ;;
-			out_main) : ;;
-			out_node_*|out_chain_*)
-				# alpha 简化：所有非主节点引用都回退 out_main
-				tag="out_main"
-				;;
-			esac
+			# doge.13: 不再 collapse，按真实 tag 注册到 actions_seen + 待 build 集合
 			case " ${actions_seen} " in
 			*" ${tag} "*) : ;;
 			*) actions_seen="${actions_seen} ${tag}" ;;
 			esac
+			__split_register_outbound_tag "${tag}"
 			r=$((r + 1))
 		done
 		local da=$(dbus get ss_split_mode_${mi}_default_action 2>/dev/null)
 		local dtag=$(ss_split_action_to_tag "${da}")
+		# 兜底未识别的 default_action（空串等）→ out_main
 		case "${dtag}" in
-		out_direct|out_reject|out_main) : ;;
+		out_direct|out_reject|out_main|out_node_*|out_chain_*) : ;;
 		*) dtag="out_main" ;;
 		esac
 		case " ${actions_seen} " in
 		*" ${dtag} "*) : ;;
 		*) actions_seen="${actions_seen} ${dtag}" ;;
 		esac
+		__split_register_outbound_tag "${dtag}"
 	done
 
 	# 3. 用 jq 重写 inbounds + outbounds + routing
@@ -5288,8 +5431,10 @@ EOF
 		local apply_bw=$(dbus get ss_split_mode_${mi}_apply_blackwhite 2>/dev/null)
 		local da=$(dbus get ss_split_mode_${mi}_default_action 2>/dev/null)
 		local dtag=$(ss_split_action_to_tag "${da}")
+		# doge.13 beta D12: 不再 collapse 到 out_main；按真实 tag emit。
+		# 兜底只对 dtag 不识别的情况（空 / 异常），不影响 node/chain tag。
 		case "${dtag}" in
-		out_direct|out_reject|out_main) : ;;
+		out_direct|out_reject|out_main|out_node_*|out_chain_*) : ;;
 		*) dtag="out_main" ;;
 		esac
 
@@ -5338,8 +5483,9 @@ EOF
 			local rid=$(dbus get ss_split_mode_${mi}_rule_${r}_rid 2>/dev/null)
 			local act=$(dbus get ss_split_mode_${mi}_rule_${r}_action 2>/dev/null)
 			local rtag=$(ss_split_action_to_tag "${act}")
+			# doge.13 beta D12: 不再 collapse 到 out_main；按真实 tag emit。
 			case "${rtag}" in
-			out_direct|out_reject|out_main) : ;;
+			out_direct|out_reject|out_main|out_node_*|out_chain_*) : ;;
 			*) rtag="out_main" ;;
 			esac
 			local rfile="${rules_user_dir}/rule_${rid}.txt"
@@ -5386,10 +5532,112 @@ EOF
 
 	echo "]" >> "${routing_rules_file}"
 
-	# 4. 用 jq 合并到 xray.json
+	# 4. doge.13 beta D12: build node/chain outbounds 并写到 slurpfile
+	# 按收集到的 node_outbounds_to_build / chain_outbounds_to_build / chain_fronts_to_build
+	# 调 fss_split_build_node_outbound_json 生成 outbound JSON。文件中转 → jq slurpfile
+	# 合入 .outbounds。任何 build 失败 → graceful fallback：该 tag 回退 out_main 的 outbound
+	# (用 jq 重写 routing rules 中该 tag 的引用)。
+	# CLAUDE.md 硬规则 #16: 调用必须显式传 outfile 临时路径，不能走 /dev/stdout。
+	local extra_outbounds_file="/tmp/fss_split_extra_obs.$$.json"
+	echo "[]" > "${extra_outbounds_file}"
+	local extra_first=1
+	local fallback_tags=""     # build 失败的 tag 集合，后面要在 routing rules 里 fallback 到 out_main
+
+	__split_append_outbound() {
+		# $1 = 单个 outbound JSON 文件路径（fss_split_build_node_outbound_json 的 outfile）
+		local _ob_file="$1"
+		local _ob_tag="$2"
+		if [ ! -s "${_ob_file}" ]; then
+			echo_date "⚠️ split: outbound build 失败 (${_ob_tag})，routing rule 中该 tag 将 fallback 到 out_main"
+			fallback_tags="${fallback_tags} ${_ob_tag}"
+			return 1
+		fi
+		# 合并到 extra_outbounds_file (走 jq 保证 JSON 正确)
+		local _merge_tmp="/tmp/fss_split_obmerge.$$.json"
+		if jq --slurpfile new "${_ob_file}" '. + $new' "${extra_outbounds_file}" > "${_merge_tmp}" 2>/dev/null; then
+			mv -f "${_merge_tmp}" "${extra_outbounds_file}"
+			extra_first=0
+		else
+			echo_date "⚠️ split: jq 合并 outbound 失败 (${_ob_tag}), fallback 到 out_main"
+			fallback_tags="${fallback_tags} ${_ob_tag}"
+			rm -f "${_merge_tmp}" >/dev/null 2>&1
+		fi
+	}
+
+	if type fss_split_build_node_outbound_json >/dev/null 2>&1; then
+		# 4a. build 跨节点 chain 的前置 outbound（chain_front_<Y>）
+		# 这些是给 chain landing outbound 的 dialerProxy 引用的，必须先 build。
+		local _fid=""
+		for _fid in ${chain_fronts_to_build}; do
+			local _front_tag="chain_front_${_fid}"
+			local _front_ob_file="/tmp/fss_split_front_${_fid}.$$.json"
+			fss_split_build_node_outbound_json "${_fid}" "${_front_tag}" "${_front_ob_file}" 2>/tmp/fss_split_build.err
+			__split_append_outbound "${_front_ob_file}" "${_front_tag}"
+			rm -f "${_front_ob_file}" >/dev/null 2>&1
+		done
+
+		# 4b. build 普通 node outbound（out_node_<X>）
+		local _ntag=""
+		for _ntag in ${node_outbounds_to_build}; do
+			local _nid="${_ntag#out_node_}"
+			local _nob_file="/tmp/fss_split_node_${_nid}.$$.json"
+			fss_split_build_node_outbound_json "${_nid}" "${_ntag}" "${_nob_file}" 2>/tmp/fss_split_build.err
+			__split_append_outbound "${_nob_file}" "${_ntag}"
+			rm -f "${_nob_file}" >/dev/null 2>&1
+		done
+
+		# 4c. build chain landing outbound（out_chain_<Y>_<X>）
+		# helper 第 4 参数 dialer_tag 指定 dialerProxy → chain_front_<Y>
+		local _ctag=""
+		for _ctag in ${chain_outbounds_to_build}; do
+			# out_chain_Y_X
+			local _rest="${_ctag#out_chain_}"
+			local _yfid="${_rest%%_*}"
+			local _xlid="${_rest#*_}"
+			local _cob_file="/tmp/fss_split_chain_${_yfid}_${_xlid}.$$.json"
+			fss_split_build_node_outbound_json "${_xlid}" "${_ctag}" "${_cob_file}" "chain_front_${_yfid}" 2>/tmp/fss_split_build.err
+			__split_append_outbound "${_cob_file}" "${_ctag}"
+			rm -f "${_cob_file}" >/dev/null 2>&1
+		done
+	else
+		# Graceful fallback：helper 未部署（ss_split_node_outbound.sh 缺失或 source 失败）
+		# → 所有 node/chain tag 都 fallback 到 out_main，行为退化为 alpha 期 collapse
+		# (不让 ssconfig.sh restart 死掉)。
+		if [ -n "${node_outbounds_to_build}${chain_outbounds_to_build}" ]; then
+			echo_date "⚠️ split: fss_split_build_node_outbound_json 未定义（ss_split_node_outbound.sh 未部署）"
+			echo_date "⚠️ split: 所有 node/chain outbound 退化为 out_main collapse (alpha 行为)"
+			fallback_tags="${fallback_tags} ${node_outbounds_to_build} ${chain_outbounds_to_build}"
+			dbus set fss_split_xray_warn="outbound_builder_missing"
+		fi
+	fi
+
+	# 4d. fallback_tags 处理：把 routing_rules_file 里失败 tag 的 outboundTag 改成 out_main
+	if [ -n "${fallback_tags}" ]; then
+		local _fb_tmp="/tmp/fss_split_routing_fb.$$.json"
+		# 构造 jq 的 fallback set
+		local _fb_jq_args=""
+		local _fb_jq_filter='map(if (.outboundTag as $t | $fbset | index($t)) then .outboundTag = "out_main" else . end)'
+		local _fb_set_json="["
+		local _fb_first=1
+		local _ft=""
+		for _ft in ${fallback_tags}; do
+			[ -z "${_ft}" ] && continue
+			if [ "${_fb_first}" = "1" ]; then _fb_first=0; else _fb_set_json="${_fb_set_json},"; fi
+			_fb_set_json="${_fb_set_json}\"${_ft}\""
+		done
+		_fb_set_json="${_fb_set_json}]"
+		if jq --argjson fbset "${_fb_set_json}" "${_fb_jq_filter}" "${routing_rules_file}" > "${_fb_tmp}" 2>/dev/null; then
+			mv -f "${_fb_tmp}" "${routing_rules_file}"
+		else
+			rm -f "${_fb_tmp}" >/dev/null 2>&1
+		fi
+	fi
+
+	# 5. 用 jq 合并到 xray.json
 	if ! jq --argjson sniff "${sniff_blocks}" \
 	         --argjson appendOb "${outb_appends}" \
 	         --slurpfile rules "${routing_rules_file}" \
+	         --slurpfile extraObs "${extra_outbounds_file}" \
 	         '
 	           # 只删除新生成器自己写的 dokodemo-door 入站（tag 以 mode_ 开头），
 	           # 保留基线 xray.json 已有的其他入站（socks:23456 + dns_udp_1055
@@ -5407,19 +5655,23 @@ EOF
 	           | .outbounds = (
 	             .outbounds + ($appendOb | map(select(.tag as $t | (.outbounds // []) | map(.tag) | index($t) | not)))
 	           )
+	           # doge.13 beta D12: 追加 node/chain/chain_front outbounds（与已存在 tag 去重）
+	           | .outbounds = (
+	             .outbounds + ($extraObs[0] | map(select(.tag as $t | (.outbounds // []) | map(.tag) | index($t) | not)))
+	           )
 	           | .routing = { domainStrategy: "IPIfNonMatch", rules: $rules[0] }
 	         ' \
 	         "${xray_json}" > "${tmp_json}" 2>/tmp/fss_split_xray.err; then
 		echo_date "❌ split: jq 合并失败，详见 /tmp/fss_split_xray.err，保留基线 xray.json。"
 		dbus set fss_split_xray_warn="jq_merge_failed"
-		rm -f "${tmp_json}" "${routing_rules_file}" >/dev/null 2>&1
+		rm -f "${tmp_json}" "${routing_rules_file}" "${extra_outbounds_file}" >/dev/null 2>&1
 		return 1
 	fi
 
 	if [ ! -s "${tmp_json}" ]; then
 		echo_date "❌ split: 合并产出为空，保留基线 xray.json。"
 		dbus set fss_split_xray_warn="output_empty"
-		rm -f "${tmp_json}" "${routing_rules_file}" >/dev/null 2>&1
+		rm -f "${tmp_json}" "${routing_rules_file}" "${extra_outbounds_file}" >/dev/null 2>&1
 		return 1
 	fi
 
@@ -5428,7 +5680,7 @@ EOF
 	cp -f "${xray_json}" "${xray_json_bak}" 2>/dev/null
 
 	mv -f "${tmp_json}" "${xray_json}"
-	rm -f "${routing_rules_file}" >/dev/null 2>&1
+	rm -f "${routing_rules_file}" "${extra_outbounds_file}" >/dev/null 2>&1
 
 	# 5. 自检（失败时显式回滚基线）
 	if [ -x /koolshare/bin/xray ]; then
@@ -5451,8 +5703,19 @@ EOF
 	dbus set ss_split_xray_outbound_count="${ob_count}"
 	dbus set ss_split_active_mode_count="${active_count}"
 	dbus set ss_split_last_restart_ts="$(date +%s)"
-	dbus set fss_split_xray_warn=""
-	echo_date "✅ split: xray 配置生成完成 (active_mode=${active_count} outbound=${ob_count})"
+	# doge.13 beta D12 诊断：build/fallback 计数
+	local _n_cnt=$(echo "${node_outbounds_to_build}" | tr ' ' '\n' | grep -c '^out_node_')
+	local _c_cnt=$(echo "${chain_outbounds_to_build}" | tr ' ' '\n' | grep -c '^out_chain_')
+	local _f_cnt=$(echo "${chain_fronts_to_build}" | tr ' ' '\n' | grep -cv '^$')
+	dbus set ss_split_node_outbound_count="${_n_cnt}"
+	dbus set ss_split_chain_outbound_count="${_c_cnt}"
+	if [ -z "${fallback_tags}" ]; then
+		dbus set fss_split_xray_warn=""
+	fi
+	echo_date "✅ split: xray 配置生成完成 (active_mode=${active_count} outbound=${ob_count}; node=${_n_cnt} chain=${_c_cnt} front=${_f_cnt})"
+	if [ -n "${fallback_tags}" ]; then
+		echo_date "⚠️ split: 以下 tag build 失败，已 fallback 到 out_main:${fallback_tags}"
+	fi
 	echo_date "---------------------------------------------------------------"
 	return 0
 }
@@ -7081,6 +7344,11 @@ creat_ipset_split() {
 }
 
 # 按 mode 索引计算 TPROXY 端口 (SS_SPLIT_PORT_BASE + index)
+# doge.13 beta D8 兑现：解除 alpha 的 `is_default || builtin` gate。
+# alpha 期只给"默认 Mode + 内置 Mode"分配端口，自定义/未引用 Mode 拿不到端口
+# → ACL 切到这些 Mode 后 iptables 找不到 TPROXY 端口，流量丢失。
+# 现在按 mode 顺序枚举无差别分配，idx 每命中一次 +1。
+# 同步 generate_xray_json_split::active_indices 收集逻辑也去掉同样过滤。
 __split_mode_port_by_id() {
 	# 索引按 1-based（合同 §1.5）
 	local target_mid="$1"
@@ -7090,17 +7358,11 @@ __split_mode_port_by_id() {
 	local idx=0
 	while [ "${m}" -le "${mode_count}" ]; do
 		local mid=$(dbus get ss_split_mode_${m}_id 2>/dev/null)
-		local builtin=$(dbus get ss_split_mode_${m}_builtin 2>/dev/null)
-		local is_default=0
-		local default_mid=$(dbus get ss_split_default_mode_id 2>/dev/null)
-		[ "${mid}" = "${default_mid}" ] && is_default=1
-		if [ "${is_default}" = "1" ] || [ "${builtin}" = "1" ]; then
-			if [ "${mid}" = "${target_mid}" ]; then
-				echo $((SS_SPLIT_PORT_BASE + idx))
-				return 0
-			fi
-			idx=$((idx + 1))
+		if [ "${mid}" = "${target_mid}" ]; then
+			echo $((SS_SPLIT_PORT_BASE + idx))
+			return 0
 		fi
+		idx=$((idx + 1))
 		m=$((m + 1))
 	done
 	# 没找到 → 兜底默认 mode 的端口

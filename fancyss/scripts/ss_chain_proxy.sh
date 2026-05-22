@@ -167,219 +167,30 @@ fss_chain_build_stream_settings() {
 
 # 主入口：构建前置节点的 outbound JSON（单个对象）
 # 失败返回非 0，stdout 为空。
+#
+# doge.13: 节点 outbound 构建逻辑拆到 ss_split_node_outbound.sh,本函数改为 wrapper
+# 以保持向后兼容。新代码请直接调用 fss_split_build_node_outbound_json。
+#
+# 历史签名:fss_chain_build_front_outbound_json <id>  → stdout
+# 新版改用临时文件中转(busybox 路由器 /dev/stdout 不可靠,见 CLAUDE.md 硬规则 #16)。
 fss_chain_build_front_outbound_json() {
 	local id="$1"
 	[ -n "${id}" ] || return 1
 
-	local type
-	type=$(fss_get_node_field_plain "${id}" "type" 2>/dev/null)
-	[ -n "${type}" ] || return 1
-	if ! fss_chain_type_supported "${type}" "${id}"; then
+	if ! type fss_split_build_node_outbound_json >/dev/null 2>&1; then
+		# 防御:若拆分文件未 source(理论上不会发生,见本文件末尾 source 段),回退报错
+		fss_chain_log "fss_split_build_node_outbound_json 未定义,ss_split_node_outbound.sh 缺失?"
 		return 1
 	fi
 
-	local server port
-	server=$(fss_get_node_field_plain "${id}" "server" 2>/dev/null)
-	port=$(fss_get_node_field_plain "${id}" "port" 2>/dev/null)
-	[ -n "${server}" ] || return 1
-	[ -n "${port}" ] || return 1
-
-	local outbound=""
-	case "${type}" in
-	0)
-		# SS no-obfs
-		local password method
-		password=$(fss_get_node_field_plain "${id}" "password" 2>/dev/null)
-		method=$(fss_get_node_field_plain "${id}" "method" 2>/dev/null)
-		outbound=$(jq -n \
-			--arg tag "${FSS_CHAIN_FRONT_TAG}" \
-			--arg srv "${server}" --argjson port "${port}" \
-			--arg pwd "${password}" --arg method "${method}" '
-			{
-				tag: $tag,
-				protocol: "shadowsocks",
-				settings: {servers: [{address: $srv, port: $port, password: $pwd, method: $method, uot: true}]}
-			}
-		') || return 1
-		;;
-	3)
-		local uuid alterid security network host path sni ai alpn_h2 alpn_http grpc_mode grpc_authority grpc_service
-		uuid=$(fss_get_node_field_plain "${id}" "v2ray_uuid" 2>/dev/null)
-		alterid=$(fss_get_node_field_plain "${id}" "v2ray_alterid" 2>/dev/null); alterid=${alterid:-0}
-		security=$(fss_get_node_field_plain "${id}" "v2ray_security" 2>/dev/null); security=${security:-auto}
-		network=$(fss_get_node_field_plain "${id}" "v2ray_network" 2>/dev/null); network=${network:-tcp}
-		host=$(fss_get_node_field_plain "${id}" "v2ray_network_host" 2>/dev/null)
-		path=$(fss_get_node_field_plain "${id}" "v2ray_network_path" 2>/dev/null)
-		sni=$(fss_get_node_field_plain "${id}" "v2ray_network_security_sni" 2>/dev/null)
-		ai=$(fss_get_node_field_plain "${id}" "v2ray_network_security_ai" 2>/dev/null)
-		alpn_h2=$(fss_get_node_field_plain "${id}" "v2ray_network_security_alpn_h2" 2>/dev/null)
-		alpn_http=$(fss_get_node_field_plain "${id}" "v2ray_network_security_alpn_http" 2>/dev/null)
-		grpc_mode=$(fss_get_node_field_plain "${id}" "v2ray_grpc_mode" 2>/dev/null)
-		grpc_authority=$(fss_get_node_field_plain "${id}" "v2ray_grpc_authority" 2>/dev/null)
-		grpc_service="${path}"
-
-		case "${network}" in tcp|ws|grpc) ;; *)
-			fss_chain_log "前置节点 ${id} 使用了未支持的传输协议: ${network}（仅支持 tcp/ws/grpc）"
-			return 1
-			;;
-		esac
-		local stream_security
-		stream_security=$(fss_get_node_field_plain "${id}" "v2ray_network_security" 2>/dev/null); stream_security=${stream_security:-none}
-
-		local stream
-		stream=$(fss_chain_build_stream_settings "${id}" "${network}" "${stream_security}" "${host}" "${path}" "${sni}" "${ai}" "${alpn_h2}" "${alpn_http}" "${grpc_mode}" "${grpc_authority}" "${grpc_service}") || return 1
-
-		outbound=$(jq -n \
-			--arg tag "${FSS_CHAIN_FRONT_TAG}" \
-			--arg srv "${server}" --argjson port "${port}" \
-			--arg uuid "${uuid}" --argjson aid "${alterid}" --arg sec "${security}" \
-			--argjson stream "${stream}" '
-			{
-				tag: $tag,
-				protocol: "vmess",
-				settings: {vnext: [{address: $srv, port: $port, users: [{id: $uuid, alterId: $aid, security: $sec}]}]},
-				streamSettings: $stream
-			}
-		') || return 1
-		;;
-	4)
-		local prot uuid encryption flow network host path sni ai stream_security alpn_h2 alpn_http grpc_mode grpc_authority grpc_service
-		prot=$(fss_get_node_field_plain "${id}" "xray_prot" 2>/dev/null); prot=${prot:-vless}
-		uuid=$(fss_get_node_field_plain "${id}" "xray_uuid" 2>/dev/null)
-		encryption=$(fss_get_node_field_plain "${id}" "xray_encryption" 2>/dev/null)
-		flow=$(fss_get_node_field_plain "${id}" "xray_flow" 2>/dev/null)
-		network=$(fss_get_node_field_plain "${id}" "xray_network" 2>/dev/null); network=${network:-tcp}
-		host=$(fss_get_node_field_plain "${id}" "xray_network_host" 2>/dev/null)
-		path=$(fss_get_node_field_plain "${id}" "xray_network_path" 2>/dev/null)
-		sni=$(fss_get_node_field_plain "${id}" "xray_network_security_sni" 2>/dev/null)
-		ai=$(fss_get_node_field_plain "${id}" "xray_network_security_ai" 2>/dev/null)
-		alpn_h2=$(fss_get_node_field_plain "${id}" "xray_network_security_alpn_h2" 2>/dev/null)
-		alpn_http=$(fss_get_node_field_plain "${id}" "xray_network_security_alpn_http" 2>/dev/null)
-		grpc_mode=$(fss_get_node_field_plain "${id}" "xray_grpc_mode" 2>/dev/null)
-		grpc_authority=$(fss_get_node_field_plain "${id}" "xray_grpc_authority" 2>/dev/null)
-		grpc_service="${path}"
-		stream_security=$(fss_get_node_field_plain "${id}" "xray_network_security" 2>/dev/null); stream_security=${stream_security:-none}
-
-		case "${network}" in tcp|ws|grpc) ;; *)
-			fss_chain_log "前置节点 ${id} 使用了未支持的传输协议: ${network}（仅支持 tcp/ws/grpc）"
-			return 1
-			;;
-		esac
-		case "${stream_security}" in none|tls) ;; *)
-			fss_chain_log "前置节点 ${id} 使用了未支持的安全模式: ${stream_security}（仅支持 none/tls）"
-			return 1
-			;;
-		esac
-
-		local stream
-		stream=$(fss_chain_build_stream_settings "${id}" "${network}" "${stream_security}" "${host}" "${path}" "${sni}" "${ai}" "${alpn_h2}" "${alpn_http}" "${grpc_mode}" "${grpc_authority}" "${grpc_service}") || return 1
-
-		local user_block
-		if [ "${prot}" = "vless" ]; then
-			user_block=$(jq -n --arg uuid "${uuid}" --arg enc "${encryption:-none}" --arg fl "${flow}" '
-				{id: $uuid, encryption: $enc, flow: (if $fl == "" then null else $fl end)}
-				| with_entries(select(.value != null))
-			')
-		else
-			[ -z "${encryption}" ] || [ "${encryption}" = "none" ] && encryption="auto"
-			user_block=$(jq -n --arg uuid "${uuid}" --arg sec "${encryption}" '
-				{id: $uuid, security: $sec}
-			')
-		fi
-
-		outbound=$(jq -n \
-			--arg tag "${FSS_CHAIN_FRONT_TAG}" \
-			--arg prot "${prot}" \
-			--arg srv "${server}" --argjson port "${port}" \
-			--argjson user "${user_block}" \
-			--argjson stream "${stream}" '
-			{
-				tag: $tag,
-				protocol: $prot,
-				settings: {vnext: [{address: $srv, port: $port, users: [$user]}]},
-				streamSettings: $stream
-			}
-		') || return 1
-		;;
-	5)
-		local trojan_uuid sni ai
-		trojan_uuid=$(fss_get_node_field_plain "${id}" "trojan_uuid" 2>/dev/null)
-		sni=$(fss_get_node_field_plain "${id}" "trojan_sni" 2>/dev/null)
-		ai=$(fss_get_node_field_plain "${id}" "trojan_ai" 2>/dev/null)
-
-		local tls_block
-		tls_block=$(jq -n --arg sni "${sni}" --argjson ai "$(fss_chain_bool_json "${ai}")" '
-			{serverName: $sni, allowInsecure: $ai} | with_entries(select(.value != null and .value != ""))
-		')
-
-		outbound=$(jq -n \
-			--arg tag "${FSS_CHAIN_FRONT_TAG}" \
-			--arg srv "${server}" --argjson port "${port}" \
-			--arg pwd "${trojan_uuid}" \
-			--argjson tls "${tls_block}" '
-			{
-				tag: $tag,
-				protocol: "trojan",
-				settings: {servers: [{address: $srv, port: $port, password: $pwd}]},
-				streamSettings: {network: "tcp", security: "tls", tlsSettings: $tls}
-			}
-		') || return 1
-		;;
-	8)
-		# Hysteria2：xray 原生 outbound，network=hysteria（QUIC over UDP）
-		# 字段：hy2_pass / hy2_sni / hy2_ai / hy2_pcs / hy2_vcn
-		local hy2_pass hy2_sni hy2_ai hy2_pcs hy2_vcn
-		hy2_pass=$(fss_get_node_field_plain "${id}" "hy2_pass" 2>/dev/null)
-		hy2_sni=$(fss_get_node_field_plain "${id}" "hy2_sni" 2>/dev/null)
-		hy2_ai=$(fss_get_node_field_plain "${id}" "hy2_ai" 2>/dev/null)
-		hy2_pcs=$(fss_get_node_field_plain "${id}" "hy2_pcs" 2>/dev/null)
-		hy2_vcn=$(fss_get_node_field_plain "${id}" "hy2_vcn" 2>/dev/null)
-
-		# SNI 默认值：跟 ssconfig.sh 4825-4834 行的逻辑保持一致 —— sni 空时用 server（除非 server 是 IP）
-		if [ -z "${hy2_sni}" ]; then
-			case "${server}" in
-			*[a-zA-Z]*) hy2_sni="${server}" ;;
-			esac
-		fi
-
-		local tls_block
-		if [ "${hy2_ai}" = "1" ]; then
-			tls_block=$(jq -n --arg sni "${hy2_sni}" '
-				{serverName: $sni, allowInsecure: true, alpn: ["h3"]}
-				| with_entries(select(.value != null and .value != ""))
-			')
-		else
-			tls_block=$(jq -n --arg sni "${hy2_sni}" --arg pcs "${hy2_pcs}" --arg vcn "${hy2_vcn}" '
-				{serverName: $sni, pinnedPeerCertSha256: $pcs, verifyPeerCertByName: $vcn, alpn: ["h3"]}
-				| with_entries(select(.value != null and .value != ""))
-			')
-		fi
-
-		outbound=$(jq -n \
-			--arg tag "${FSS_CHAIN_FRONT_TAG}" \
-			--arg srv "${server}" --argjson port "${port}" \
-			--arg pwd "${hy2_pass}" \
-			--argjson tls "${tls_block}" '
-			{
-				tag: $tag,
-				protocol: "hysteria",
-				settings: {version: 2, address: $srv, port: $port},
-				streamSettings: {
-					network: "hysteria",
-					hysteriaSettings: {version: 2, auth: $pwd},
-					security: "tls",
-					tlsSettings: $tls
-				}
-			}
-		') || return 1
-		;;
-	*)
+	local tmp="/tmp/fss_chain_front_ob.$$.json"
+	fss_split_build_node_outbound_json "${id}" "${FSS_CHAIN_FRONT_TAG}" "${tmp}" || {
+		rm -f "${tmp}"
 		return 1
-		;;
-	esac
-
-	# strip null/empty
-	printf '%s' "${outbound}" | jq 'del(.. | nulls)'
+	}
+	cat "${tmp}"
+	rm -f "${tmp}"
+	return 0
 }
 
 # 主入口：把链式代理叠加进 xray 配置文件
@@ -512,3 +323,8 @@ fss_chain_apply() {
 	fss_chain_set_status "enabled" "${path}"
 	return 0
 }
+
+# doge.13: source 节点 outbound 构建器(必须在所有 helper 定义之后,因为新文件函数依赖
+# fss_chain_log / fss_chain_type_supported / fss_chain_bool_json / fss_chain_build_stream_settings)。
+# ssconfig.sh 在第 10 行 source 本文件后即可直接调用 fss_split_build_node_outbound_json。
+[ -f "${KSROOT}/scripts/ss_split_node_outbound.sh" ] && . "${KSROOT}/scripts/ss_split_node_outbound.sh"

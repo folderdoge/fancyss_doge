@@ -646,17 +646,16 @@ migrate_split_routing_v1(){
 
 	dbus set ss_split_rule_count="8"
 
-	# ---------- Step 1.5: 现节点（front + landing）→ Mode 兜底动作 ----------
-	local cur_node cur_front cur_udp cur_action
-	cur_node="$(dbus get ssconf_basic_node)"
-	cur_front="$(dbus get ssconf_basic_node_front)"
+	# ---------- Step 1.5: 用 proxy_main sentinel（D12+D15 doge.13 兑现）----------
+	# 内置 Mode 的 default_action 与 telegram/gfwlist rule action 一律写 sentinel，
+	# xray 生成器在 ss_split_action_to_tag 中解析 → out_main（基线 outbounds[0]），
+	# 主节点变更自然跟随，无需 resync hook。空 ssconf_basic_node 时仍然 valid：
+	# 此时 out_main 是 creat_*_json 的空兜底 outbound，xray 启动可能失败，
+	# 属"用户必须先配节点"的语义，不归 install.sh 管。
+	local cur_udp cur_action
 	cur_udp="$(dbus get ss_basic_udp_relay)"
 	[ -z "${cur_udp}" ] && cur_udp="0"
-	if [ -n "${cur_front}" ] && [ "${cur_front}" != "0" ]; then
-		cur_action="proxy_chain:${cur_front}:${cur_node}"
-	else
-		cur_action="proxy_node:${cur_node}"
-	fi
+	cur_action="proxy_main"
 	echo_date "  当前节点动作字符串：${cur_action}（udp_proxy=${cur_udp}）"
 
 	# ---------- Step 2: 写入内置 Mode（id 1~99 预留） ----------
@@ -733,6 +732,148 @@ migrate_split_routing_v1(){
 	# ---------- Step 9: 落幂等标志 ----------
 	dbus set fss_split_migrated_v1="1"
 	echo_date "✅ FORK doge.12 alpha: 分流架构迁移完成（fss_split_migrated_v1=1，ss_split_enabled 默认 0 不接管路由）"
+}
+
+# FORK doge.13 beta：DNS upstream 迁移 v2（D1 兑现）
+# 把老 dbus key（ss_basic_chng_china_dns_<n>_chk + ss_basic_chng_china_net_<n>_typ
+# + ss_basic_chng_china_<net>_<n>_opt/_usr）拼成新 key:
+#   ss_split_dns_china_upstream    多行（每行一条 china_dns 端点，base64 编码后落 dbus）
+#   ss_split_dns_overseas_upstream 多行（每行一条 trust_dns  端点，base64 编码后落 dbus）
+#   ss_split_dns_global_upstream   单行（取 trust_dns_1 端点，base64 编码后落 dbus）
+# 简化策略：不引 get_dns 链（依赖太多），直接拼 <scheme>://<host>:
+#   net=udp → 无 scheme 前缀（裸 ip[:port]）
+#   net=tcp → "tcp://"
+#   net=dot → "tls://"（chinadns-ng 规范名）
+#   opt=99 → 取 _usr 字段；否则取 _opt 字段
+# 不删老 key（alpha/老 chinadns-ng 仍在用），仅前向加新 key。
+# 失败时不 fail install：标 fss_split_migrated_v2=0 等下次重试；成功路径才置 1。
+migrate_split_routing_v2(){
+	local migrated_flag
+	migrated_flag="$(dbus get fss_split_migrated_v2)"
+	if [ "${migrated_flag}" = "1" ]; then
+		return 0
+	fi
+
+	echo_date "🔄 FORK doge.13 beta: 开始迁移 DNS upstream 到分流架构 v2..."
+
+	local n typ opt usr ep raw_china raw_overseas raw_global
+	raw_china=""
+	raw_overseas=""
+	raw_global=""
+
+	# ---- 国内 DNS：china_dns_1/2/3 ----
+	for n in 1 2 3; do
+		[ "$(dbus get ss_basic_chng_china_dns_${n}_chk)" = "1" ] || continue
+		typ="$(dbus get ss_basic_chng_china_net_${n}_typ)"
+		[ -z "${typ}" ] && typ="udp"
+		opt="$(dbus get ss_basic_chng_china_${typ}_${n}_opt)"
+		usr="$(dbus get ss_basic_chng_china_${typ}_${n}_usr)"
+		if [ "${opt}" = "99" ]; then
+			ep="${usr}"
+		else
+			ep="${opt}"
+		fi
+		[ -z "${ep}" ] && continue
+		case "${typ}" in
+			tcp) ep="tcp://${ep}" ;;
+			dot) ep="tls://${ep}" ;;
+		esac
+		raw_china="${raw_china}${ep}
+"
+	done
+
+	# ---- 国外 DNS：trust_dns_1/2/3 ----
+	for n in 1 2 3; do
+		[ "$(dbus get ss_basic_chng_trust_dns_${n}_chk)" = "1" ] || continue
+		typ="$(dbus get ss_basic_chng_trust_net_${n}_typ)"
+		[ -z "${typ}" ] && typ="udp"
+		opt="$(dbus get ss_basic_chng_trust_${typ}_${n}_opt)"
+		usr="$(dbus get ss_basic_chng_trust_${typ}_${n}_usr)"
+		if [ "${opt}" = "99" ]; then
+			ep="${usr}"
+		else
+			ep="${opt}"
+		fi
+		[ -z "${ep}" ] && continue
+		case "${typ}" in
+			tcp) ep="tcp://${ep}" ;;
+			dot) ep="tls://${ep}" ;;
+		esac
+		raw_overseas="${raw_overseas}${ep}
+"
+	done
+
+	# ---- 全局 DNS：取 trust_dns_1 单行 ----
+	typ="$(dbus get ss_basic_chng_trust_net_1_typ)"
+	[ -z "${typ}" ] && typ="udp"
+	opt="$(dbus get ss_basic_chng_trust_${typ}_1_opt)"
+	usr="$(dbus get ss_basic_chng_trust_${typ}_1_usr)"
+	if [ "${opt}" = "99" ]; then
+		ep="${usr}"
+	else
+		ep="${opt}"
+	fi
+	if [ -n "${ep}" ]; then
+		case "${typ}" in
+			tcp) raw_global="tcp://${ep}" ;;
+			dot) raw_global="tls://${ep}" ;;
+			*)   raw_global="${ep}" ;;
+		esac
+	fi
+
+	# ---- base64 编码并写入新 dbus key ----
+	# FORK doge.13 beta.2: base64_encode 二进制周期性追加 TAB (0x09) 而非 LF——输入长度 %9 ∈ {7,8,9} 时追 TAB
+	# 末尾 TAB 不被 $(...) 剥（POSIX 仅剥 trailing \n），落 dbus 后污染 /_api/ss JSON（httpdb 不 escape 控制字符）
+	# → 前端 JSON.parse 抛 SyntaxError → ajax error → skipd 弹窗。详见 [[reference_busybox_base64_loop]]
+	# 必须用 `tr -d '\t\n\r '` 显式字符列——busybox 1.25.1 tr 不支持 POSIX 字符类 [:space:]（reviewer B 真机实证）
+	local enc_china enc_overseas enc_global
+	enc_china="$(printf '%s' "${raw_china}" | base64_encode 2>/dev/null | tr -d '\t\n\r ')"
+	enc_overseas="$(printf '%s' "${raw_overseas}" | base64_encode 2>/dev/null | tr -d '\t\n\r ')"
+	enc_global="$(printf '%s' "${raw_global}" | base64_encode 2>/dev/null | tr -d '\t\n\r ')"
+
+	if [ -z "${enc_china}" ] && [ -z "${enc_overseas}" ] && [ -z "${enc_global}" ]; then
+		echo_date "⚠️ FORK doge.13 beta: DNS upstream 迁移 v2 失败（base64_encode 不可用？），延迟到下次 install 重试"
+		dbus set fss_split_migrated_v2="0"
+		return 0
+	fi
+
+	dbus set ss_split_dns_china_upstream="${enc_china}"
+	dbus set ss_split_dns_overseas_upstream="${enc_overseas}"
+	dbus set ss_split_dns_global_upstream="${enc_global}"
+
+	dbus set fss_split_migrated_v2="1"
+	echo_date "✅ FORK doge.13 beta: DNS upstream 迁移 v2 完成（fss_split_migrated_v2=1）"
+}
+
+# FORK doge.13 beta.2: 一次性治存量——清洗 ss_split_dns_*_upstream 三个 key 末尾的 TAB/CR/空白
+# beta.1 的 migrate_v2 漏 tr -d → 概率性把 TAB 写进 dbus → /_api/ss JSON 含未转义控制字符
+# → 前端 JSON.parse 抛 SyntaxError → ajax error → 弹 skipd 弹窗。详见 [[reference_busybox_base64_loop]]
+# 守门 fss_split_migrated_v3，幂等；仅 dbus set，不重启代理（值变化端到端自然下次启动生效）
+migrate_split_routing_v3(){
+	local migrated_flag
+	migrated_flag="$(dbus get fss_split_migrated_v3)"
+	if [ "${migrated_flag}" = "1" ]; then
+		return 0
+	fi
+
+	local key val cleaned fixed_count
+	fixed_count=0
+	for key in ss_split_dns_china_upstream ss_split_dns_overseas_upstream ss_split_dns_global_upstream; do
+		val="$(dbus get "${key}")"
+		[ -n "${val}" ] || continue
+		cleaned="$(printf '%s' "${val}" | tr -d '\t\n\r ')"
+		if [ "${cleaned}" != "${val}" ]; then
+			dbus set "${key}"="${cleaned}"
+			fixed_count=$((fixed_count + 1))
+		fi
+	done
+
+	dbus set fss_split_migrated_v3="1"
+	if [ "${fixed_count}" -gt 0 ]; then
+		echo_date "✅ FORK doge.13 beta.2: 清洗 ${fixed_count} 个 ss_split_dns_*_upstream key 中的控制字符（修 skipd 弹窗）"
+	else
+		echo_date "✅ FORK doge.13 beta.2: ss_split_dns_*_upstream 已干净，无需清洗（fss_split_migrated_v3=1）"
+	fi
 }
 
 # FORK doge.10: 主动删除 dbus 里所有 type=1 (SSR) / type=6 (Naive) / type=7 (Tuic) 的节点 + 清理引用。
@@ -989,7 +1130,9 @@ schema2_secret_decode_candidate() {
 	decoded="$(printf '%s' "${value}" | base64_decode 2>/dev/null)" || return 1
 	[ -n "${decoded}" ] || return 1
 
-	normalized="$(printf '%s' "${decoded}" | base64_encode 2>/dev/null)"
+	# FORK doge.13 beta.2: base64_encode 末尾可能追 TAB 致 normalize ≠ value 假阴性
+	# 详见同文件 migrate_split_routing_v2 注释 / [[reference_busybox_base64_loop]]
+	normalized="$(printf '%s' "${decoded}" | base64_encode 2>/dev/null | tr -d '\t\n\r ')"
 	[ -n "${normalized}" ] || return 1
 	[ "${normalized}" = "${value}" ] || return 1
 	[ "${decoded}" != "${value}" ] || return 1
@@ -2404,6 +2547,10 @@ install_now(){
 	# 详见 doc/implementation/split-routing-implementation.md / doc/design/split-routing-architecture.md §14
 	# 仅写数据；ss_split_enabled 默认 0，路由层走旧逻辑——老用户升级零感知。
 	migrate_split_routing_v1
+	# FORK doge.13 beta：DNS upstream 老 key → 新 ss_split_dns_*_upstream 一次性迁移（base64 编码、不删老 key）
+	migrate_split_routing_v2
+	# FORK doge.13 beta.2：清洗 ss_split_dns_*_upstream 末尾控制字符（修 skipd 弹窗根因，base64_encode 周期追 TAB 问题）
+	migrate_split_routing_v3
 	# FORK doge.12 alpha 总开关：=0 路由走旧路径（默认）；=1 启用新架构（实验性）。
 	# 首次安装/升级时若未设置则种 0，已有值不覆盖。
 	[ -z "$(dbus get ss_split_enabled)" ] && dbus set ss_split_enabled="0"
