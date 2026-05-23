@@ -2591,15 +2591,17 @@ install_now(){
 	migrate_failover_v2
 	# FORK doge.12 alpha：分流架构（Rule + Mode + per-User + 双轨 DNS）数据迁移
 	# 详见 doc/implementation/split-routing-implementation.md / doc/design/split-routing-architecture.md §14
-	# 仅写数据；ss_split_enabled 默认 0，路由层走旧逻辑——老用户升级零感知。
+	# 仅写数据 + 拷规则文件；路由层是否走新逻辑由下方 ss_split_enabled flip switch 决定。
 	migrate_split_routing_v1
 	# FORK doge.13 beta：DNS upstream 老 key → 新 ss_split_dns_*_upstream 一次性迁移（base64 编码、不删老 key）
 	migrate_split_routing_v2
 	# FORK doge.13 beta.3: 清理 ss_split_dns_*_upstream 被多层 base64 污染的值（D1 asp 不对称漏洞 / 已修但需迁老数据）
 	unwrap_split_dns_multilayer_b64
-	# FORK doge.12 alpha 总开关：=0 路由走旧路径（默认）；=1 启用新架构（实验性）。
-	# 首次安装/升级时若未设置则种 0，已有值不覆盖。
-	[ -z "$(dbus get ss_split_enabled)" ] && dbus set ss_split_enabled="0"
+	# FORK doge.13 stable 总开关：=1 路由走新分流架构（默认）；=0 走旧路径（向后兼容）。
+	# 首次安装：种 1（V2 主线）。
+	# 升级老用户：已显式设置的值（含 alpha/beta 期间默认种下的 0）一律保留，
+	# 不强切 opt-out 用户。doge.14 物理移除旧路径时该开关变为常量永远 1。
+	[ -z "$(dbus get ss_split_enabled)" ] && dbus set ss_split_enabled="1"
 	# FORK doge.12 alpha：分流 Rule 自动更新 cron（每 30 分钟扫一次；详见 doc/design/split-routing-architecture.md §10.3）。
 	# alpha 期内置 Rule 全部 update_hours=0，cron 跑等于 no-op；脚本里有守护跳过。
 	# 用户自定义 Rule + 设置 update_hours>0 + 配置 source_url 才会真正下载。

@@ -1,6 +1,6 @@
-# 分流架构实施说明 (doge.12 alpha → doge.13 beta)
+# 分流架构实施说明 (doge.12 alpha → doge.13 stable)
 
-> **状态**：doge.13 beta 已落地（P0 7 条 + P1 2 条 + UI 方案 A 全部兑现）。alpha 简化与 latent issue 大部分已解除，剩余 doge.13 收尾事项见 §6.1。**会随实施进度持续更新**。
+> **状态**：**doge.13 stable 已发版**——`ss_split_enabled` install.sh 默认值翻成 `1`（CLAUDE.md 硬规则 #14 同步更新），新分流架构正式成为主线路径。alpha/beta 期所有 P0/P1 + UI 方案 A 已兑现，剩余 doge.14 物理删除旧路径任务见 §6.1。**会随实施进度持续更新**。
 > 关联设计：[../design/split-routing-architecture.md](../design/split-routing-architecture.md)
 > 关联路线图：[../design/protocol-roadmap.md §8](../design/protocol-roadmap.md)
 >
@@ -13,18 +13,18 @@
 
 ---
 
-## 0. alpha 范围与"零侵入"承诺
+## 0. 范围与"新旧并存"演进
 
-doge.12 是 1-2 周量级的架构跃迁，单次 release 全切风险极大。alpha 版本（doge.12.alpha）采用**新旧并存**策略：
+doge.12 是 1-2 周量级的架构跃迁，单次 release 全切风险极大。alpha 版本（doge.12.alpha）采用**新旧并存**策略，doge.13 stable 翻成默认走新路径，doge.14 物理删除旧路径完成迁移：
 
-- **总开关** `ss_split_enabled` (dbus, 默认 `0`)
-  - `=0`：路由层完全走旧路径（沿用 `ss_basic_mode` GFW/CHN/HOM/GAM/全局/回国/xray分流）。**老用户升级零感知。**
-  - `=1`：路由层走 doge.12 新架构（per-Mode TPROXY + sniffing + 双轨 DNS）。
-- **migrate 总是跑**（写 dbus + 拷规则文件），但不切换路由层。提供"实验性架构启用"按钮供 alpha 用户主动 opt-in。
+- **总开关** `ss_split_enabled` (dbus, **doge.13 起新装机默认 `1`**)
+  - `=1`：路由层走新分流架构（per-Mode TPROXY + sniffing + 双轨 DNS）。**doge.13 起新装机的默认选择。**
+  - `=0`：路由层完全走旧路径（沿用 `ss_basic_mode` GFW/CHN/HOM/GAM/全局/回国/xray分流）。alpha/beta 老用户显式 opt-out 升级到 doge.13 时该值保留不动。
+- **migrate 总是跑**（写 dbus + 拷规则文件），install.sh 仅在 dbus 完全未设置时种 `1`（已有值——含 alpha/beta 期默认种下的 `0`——一律保留，避免强切显式 opt-out 用户）。
 - **失败降级**：新架构启动失败时，`ssconfig.sh restart` 兜底回退到旧路径（保留 `ss_split_enabled=1`，日志告警）。
-- **完整切换里程碑**：等 alpha 充分测试后，doge.13 默认 `ss_split_enabled=1`，doge.14 物理移除旧路径代码（含 `ss_node_shunt.sh` 物理删除）。
+- **doge.14 完成切换**：物理移除旧路径代码（含 `ss_node_shunt.sh` 物理删除 + `ss_basic_mode=7` 所有路径 + 14 处 `if ss_split_enabled=1` fork 删 else 分支 + 老 [DNS设置] section 等），`ss_split_enabled` 变常量永远 `1`。预计 -2300 行净瘦身。
 
-> **设计文档 §7 "ss_node_shunt 物理移除" 的修订**：alpha 阶段**不物理删除** `ss_node_shunt.sh`，保留旧路径作为回退兜底。等新架构充分验证后再删。
+> **设计文档 §7 "ss_node_shunt 物理移除" 的修订**：alpha/beta/stable 三阶段**不物理删除** `ss_node_shunt.sh`，保留旧路径作为回退兜底。doge.14 物理删除。
 
 ---
 
@@ -34,7 +34,7 @@ doge.12 是 1-2 周量级的架构跃迁，单次 release 全切风险极大。a
 
 | Key | 类型 | 默认 | 说明 |
 |---|---|---|---|
-| `ss_split_enabled` | "0"/"1" | "0" | alpha 总开关。`=1` 时路由层走新架构 |
+| `ss_split_enabled` | "0"/"1" | "1"（doge.13 起；alpha/beta 老用户保留原值不动） | 路由层走新架构开关。`=1` 时走新分流路径 |
 | `fss_split_migrated_v1` | "0"/"1" | "0" | install.sh::migrate_split_routing_v1 幂等标志 |
 | `fss_split_migrated_v2` | "0"/"1" | "0" | install.sh::migrate_split_routing_v2 幂等标志（doge.13 新增；DNS upstream 老→新 key 一次性迁移） |
 
@@ -234,14 +234,14 @@ fancyss/                                  # 仓库内
 - **#3**：新加 hint id 选 200+。已用：0, 1, 11, 24, 27, 31, 32, 34, 29, 35-41, 44, 47-49, 54-56, 104-118, 133-156, 200-204（doge.9~11）, 210-218（doge.12 alpha）, 221（doge.13 beta D13 preflight）。**doge.13+ 新 hint 从 220 开始**。
 - **#9**：select 控件 `refresh_options` 时若 dbus 值找不到对应 option，**不能** `val('')`——必须插 `data-stale="1"` 占位 option，`save()` 检测到 stale 跳过 dbus 覆盖。
 - **#10**：运行状态 dbus key 必须配合前端轮询（参考 `refresh_chain_status_only`），不能假设 `db_ss` 新鲜。
-- **#11**：alpha 阶段（`ss_split_enabled=0`）继续受 chinadns tag 优先级约束。doge.12 切换后新架构不受 #11 约束。
+- **#11**：旧路径（`ss_split_enabled=0`，显式 opt-out 老用户）继续受 chinadns tag 优先级约束。doge.13 stable 默认走的新分流路径不受 #11 约束。
 
-### 4.2 alpha 兼容性硬约束
+### 4.2 新旧并存阶段兼容性硬约束（doge.12 / doge.13 stable，doge.14 会解除）
 
-- **不删除任何现有 dbus key**（不要 `dbus remove`）。设计文档 §14 Step 6 "ss_node_shunt_* 物理移除" alpha 阶段**不做**。
-- **不修改 `rules_ng2/site/*.txt` `rules_ng2/ip/*.txt`**——这些是上游资产，alpha 期间复用，未来 doge.13+ 才考虑改造为本地源。
-- **不修改 `ss_node_shunt.sh`**（保留 mode=7 旧路径）。
-- **ssconfig.sh 改造采用 fork 分支**：在涉及路由层的函数里加 `if [ "${ss_split_enabled}" = "1" ]; then ...新逻辑...; else ...旧逻辑...; fi`。旧逻辑保持位字节级不变（除非有 alpha 总开关引入的小幅参数化）。
+- **不删除任何现有 dbus key**（不要 `dbus remove`）。设计文档 §14 Step 6 "ss_node_shunt_* 物理移除" 留 doge.14。
+- **不修改 `rules_ng2/site/*.txt` `rules_ng2/ip/*.txt`**——这些是上游资产，新旧并存阶段复用，doge.14 才考虑改造为本地源。
+- **不修改 `ss_node_shunt.sh`**（保留 mode=7 旧路径）；doge.14 整文件删除。
+- **ssconfig.sh 改造采用 fork 分支**：在涉及路由层的函数里加 `if [ "${ss_split_enabled}" = "1" ]; then ...新逻辑...; else ...旧逻辑...; fi`。旧逻辑保持位字节级不变（doge.14 删除 else 分支变常量永远走新逻辑）。
 
 ### 4.3 仓库文档/注释约束
 
@@ -487,6 +487,11 @@ fancyss/                                  # 仓库内
 
 ## 修订记录
 
+- **2026-05-23 doge.13 stable 发版（去 beta 后缀，flip switch）** ⭐ milestone：
+  - **install.sh::ss_split_enabled 默认值 0 → 1**（[fancyss/install.sh:2600-2605](../../fancyss/install.sh#L2600)）。新装机自动走新分流路径；alpha/beta 老用户已显式设置过的值（含旧默认种下的 0）一律保留，不强切 opt-out 用户。migrate guard 沿用现成的 `[ -z "$(dbus get ...)" ] && dbus set` 单行模式（用户群只有 fork 维护者 + 1 朋友，决策最简方案）。
+  - **ASP / ss-menu.js 标签去 alpha / 实验性 / V2 残留**：hint 210 警告框删除 + caption 改成 "分流架构"；hint 211/212/215/216/217 "alpha 阶段" / "TODO(doge.12-alpha)…doge.13" → "现阶段" / "doge.14"；ASP 顶部按钮 title "doge.12 智能分流架构" → "智能分流架构"；ss_split_enabled select 的 "(默认)" 标记从未启用翻到已启用 option。
+  - **D16 老路径未补丁**：beta.4 修的 LAN DNS hijack mangle PREROUTING RETURN 只覆盖 load_iptables_split（新路径）。老路径 load_iptables 同款 TPROXY UDP + DNS hijack DNAT 模式同样的 bug 不修——本次 flip switch 后新装机和不显式 opt-out 老用户全部走新路径不踩这个 bug，剩下显式 opt-out 用户已知风险（用户群 = fork 维护者 + 1 朋友，已通报）。doge.14 物理删除老路径时该差异一并消失。
+  - **§4.2 "alpha 兼容性硬约束" 标题升级 → "新旧并存阶段兼容性硬约束（doge.12 / doge.13 stable，doge.14 会解除）"**。
 - 2026-05-22 doge.13 beta 实施完成（P0 7 条 + P1 2 条 + UI 方案 A）：
   - **D12 sentinel `proxy_main` 解决 stale 节点 ID**：install.sh 写入端 + ssconfig.sh::ss_split_action_to_tag 解析 + ASP action select option + Mode helper 接受 `proxy_main` 字面量。详见 §1.5 + §6.2 D12 兑现段。
   - **解除 out_main collapse**：新建 [fancyss/scripts/ss_split_node_outbound.sh](../../fancyss/scripts/ss_split_node_outbound.sh) 拆出 ss_chain_proxy.sh 节点 outbound 构建器；ssconfig.sh::generate_xray_json_split 构建 per-rule 独立 outbound + jq merge；graceful fallback 兜底 helper 未部署场景；新增诊断 dbus key `ss_split_node_outbound_count` / `ss_split_chain_outbound_count` + `fss_split_xray_warn` 失败码。

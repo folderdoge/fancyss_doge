@@ -1126,22 +1126,21 @@ function openssHint(itemNum, flag) {
 	} else if (itemNum == 210) {
 		width = "640px";
 		bgcolor = "#CC0066";
-		statusmenu = "<div style='background:#FFEBA0;padding:8px;border:1px dashed #CC0066;color:#CC0066;'><b>⚠️ 实验性功能：默认未启用</b></div><br />";
-		statusmenu += "<b>分流架构 V2（doge.12）</b>是 fancyss_doge 的重大架构跃迁，将当前 fancyss 的 GFW/CHN/HOM/GAM/全局 5 个硬编码模式 + 半成品 xray 分流，重构为 <b>Clash/Mihomo 风格</b>的三层模型：<br />";
+		statusmenu = "<b>分流架构</b>是 fancyss_doge 的核心路由层（doge.13 起默认启用），将原 fancyss 的 GFW/CHN/HOM/GAM/全局 5 个硬编码模式 + 半成品 xray 分流，重构为 <b>Clash/Mihomo 风格</b>的三层模型：<br />";
 		statusmenu += "<br />&nbsp;&nbsp;&nbsp;&nbsp;• <b>Rule</b> = 一组域名 + IP/CIDR，可有 auto-update URL<br />";
 		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• <b>Mode</b> = (Rule → Action) 有序序列 + 兜底动作 + DNS 模式<br />";
 		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• <b>User</b> = 每个 LAN 设备 1:1 分配一个 Mode<br /><br />";
 		statusmenu += "<b>路由层变化</b>：per-Mode TPROXY + xray sniffing-based routing（不再依赖 ipset 域名匹配）<br /><br />";
-		statusmenu += "<b><font color='#CC0066'>启用条件：</font></b>必须先在「附加功能」点保存&应用一次让 install.sh::migrate_split_routing_v1 跑完种子内置 Mode/Rule，再回此页打开开关。<br /><br />";
+		statusmenu += "<b><font color='#669900'>开箱状态：</font></b>doge.13 起新装机默认启用，内置 Mode/Rule 已由 install.sh 自动种好；老用户升级若曾显式关闭则保留关闭，重新打开即可。<br /><br />";
 		statusmenu += "<b><font color='#CC0066'>切换后操作：</font></b>开关从 0 改到 1（或反向）之后<b>必须</b>点底部「保存&应用」按钮，否则路由层不会切换——dbus 值已写但 ssconfig.sh 未重启。<br /><br />";
-		statusmenu += "<b><font color='#CC0066'>alpha 已知限制：</font></b><br />";
-		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• LAN 内 hostname 解析（如 <code>&lt;asusrouter&gt;</code> / <code>*.lan</code>）可能在新架构下静默失败（dnsmasq 让位未实现，留 doge.13）<br />";
-		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• Mode/Rule 编辑、删除已通过弹窗实现（alpha.10+）<br />";
-		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• per-rule 链式代理（proxy_chain:Y:X）会被回退为主节点 outbound（alpha 简化）<br />";
-		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• 双轨 DNS 控件 readonly 占位；alpha 阶段所有 Mode 走 chinadns 单实例 + 主页面 DNS 设置（doge.13 启用 per-Mode 双轨）<br /><br />";
+		statusmenu += "<b><font color='#CC0066'>已知限制：</font></b><br />";
+		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• LAN 内 hostname 解析（如 <code>&lt;asusrouter&gt;</code> / <code>*.lan</code>）可能在新架构下静默失败（dnsmasq 让位未实现，留 doge.14）<br />";
+		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• Mode/Rule 编辑、删除已通过弹窗实现<br />";
+		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• per-rule 链式代理（proxy_chain:Y:X）会被回退为主节点 outbound（当前简化实现）<br />";
+		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• 双轨 DNS 控件 readonly 占位；当前所有 Mode 走 chinadns 单实例 + 主页面 DNS 设置（doge.14 启用 per-Mode 双轨）<br /><br />";
 		statusmenu += "<b><font color='#CC0066'>失败降级：</font></b>新架构启动失败时，ssconfig.sh restart 会兜底回退到旧路径（保留 ss_split_enabled=1 但走旧 ss_basic_mode），日志告警。<br /><br />";
 		statusmenu += "<font color='#888888'>设计：doc/design/split-routing-architecture.md / 实施：doc/implementation/split-routing-implementation.md</font>";
-		_caption = "分流架构 V2 (doge.12 实验性)";
+		_caption = "分流架构";
 	} else if (itemNum == 211) {
 		width = "560px";
 		statusmenu = "<b>Mode（模式）= 一组规则 + 全局修饰符</b>，由内置预设和用户自定义组成。<br /><br />";
@@ -1165,14 +1164,14 @@ function openssHint(itemNum, flag) {
 		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• <b>source_url</b>：auto-update URL（空=手编）<br />";
 		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• <b>update_hours</b>：自动更新间隔小时（0=禁用）<br />";
 		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• <b>entries</b>：实际规则内容（路径 /koolshare/ss/rules_user/rule_&lt;id&gt;.txt）<br /><br />";
-		statusmenu += "<b><font color='#CC0066'>内置 Rule</font></b>（id 1-99 预留）：alpha 阶段 8 条：大陆白名单_常用 / GFW列表_常用 / 中国公共DNS / 广告统计屏蔽 / Telegram加速 / 在线状态检测站 / 查IP常用站 / Bing加速。<br /><br />";
+		statusmenu += "<b><font color='#CC0066'>内置 Rule</font></b>（id 1-99 预留）：当前 8 条：大陆白名单_常用 / GFW列表_常用 / 中国公共DNS / 广告统计屏蔽 / Telegram加速 / 在线状态检测站 / 查IP常用站 / Bing加速。<br /><br />";
 		statusmenu += "<b><font color='#CC0066'>auto-update 安全：</font></b>远程更新前会备份 .bak（保留 1 版），可手动「回滚到 .bak」。<br /><br />";
 		statusmenu += "<b><font color='#CC0066'>引用保护</font></b>：被任何 Mode 引用的 Rule 不可删除。<br /><br />";
 		statusmenu += "<font color='#888888'>详见 doc/design/split-routing-architecture.md §2.1</font>";
 		_caption = "规则 (Rule)";
 	} else if (itemNum == 213) {
 		width = "640px";
-		statusmenu = "<b>双轨 DNS</b>是 doge.12 的核心架构变更之一，消除「DNS 解析无法 per-Mode 区分」的根本缺陷。<br /><br />";
+		statusmenu = "<b>双轨 DNS</b>是分流架构的核心变更之一，消除「DNS 解析无法 per-Mode 区分」的根本缺陷。<br /><br />";
 		statusmenu += "<b><font color='#669900'>分流 DNS（chinadns-ng 智能分流）：</font></b><br />";
 		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;同时向「国内 upstream」+「国外 upstream」发出请求，按 chnlist/gfwlist tag 智能选择响应。<br />";
 		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;Mode 的 <code>dns_mode=split</code> 时使用此轨。<br /><br />";
@@ -1205,8 +1204,8 @@ function openssHint(itemNum, flag) {
 		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;4. GFW列表 → proxy_node:X<br />";
 		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;5. 大陆白名单 → direct（最后兜底前）<br />";
 		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;<i>default_action</i>: proxy_node:X（兜底走代理）<br /><br />";
-		statusmenu += "<b><font color='#CC0066'>alpha 阶段：</font></b>暂用 ↑↓ 按钮重排（不一定要 jQuery UI sortable）。<br /><br />";
-		statusmenu += "<font color='#888888'>TODO(doge.12-alpha)：完整拖动排序留待 doge.13。</font>";
+		statusmenu += "<b><font color='#CC0066'>当前实现：</font></b>用 ↑↓ 按钮重排（不一定要 jQuery UI sortable）。<br /><br />";
+		statusmenu += "<font color='#888888'>TODO(doge.14)：完整拖动排序。</font>";
 		_caption = "规则顺序";
 	} else if (itemNum == 216) {
 		width = "560px";
@@ -1217,7 +1216,7 @@ function openssHint(itemNum, flag) {
 		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• 失败时保留原文件，不覆盖<br />";
 		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• 互斥锁 <code>fss_split_rules_update_lock</code> 防止并发<br />";
 		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• 用户可手动「立即更新」/「回滚到 .bak」<br /><br />";
-		statusmenu += "<b><font color='#CC0066'>alpha 阶段：</font></b>所有内置 Rule 的 <code>update_hours=0</code>（cron 不去更新），doge.13 切到 fork raw URL 后再开启。<br /><br />";
+		statusmenu += "<b><font color='#CC0066'>当前状态：</font></b>所有内置 Rule 的 <code>update_hours=0</code>（cron 不去更新），doge.14 切到 fork raw URL 后再开启。<br /><br />";
 		statusmenu += "<font color='#888888'>详见 fancyss/scripts/fss_rules_update.sh</font>";
 		_caption = "Rule 自动更新";
 	} else if (itemNum == 217) {
@@ -1228,8 +1227,8 @@ function openssHint(itemNum, flag) {
 		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• 未在 ACL 表里的设备走「默认 Mode」（本页面顶部 select）<br />";
 		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• Mode = 0 时该设备不通过代理（透传）<br /><br />";
 		statusmenu += "<b><font color='#669900'>实现：</font></b>per-Mode TPROXY 端口 + per-MAC DNAT，每个 MAC 的流量被 DNAT 到对应 Mode 的 inbound 端口。<br /><br />";
-		statusmenu += "<b><font color='#CC0066'>alpha 阶段：</font></b>访问控制 UI 暂未改造，先通过 dbus_set 命令手动配 <code>ss_acl_split_mode_&lt;acl_node&gt;</code>。<br /><br />";
-		statusmenu += "<font color='#888888'>TODO(doge.12-alpha)：访问控制 UI 改造留待 doge.13。</font>";
+		statusmenu += "<b><font color='#CC0066'>当前实现：</font></b>访问控制 UI 暂未改造，先通过 dbus_set 命令手动配 <code>ss_acl_split_mode_&lt;acl_node&gt;</code>。<br /><br />";
+		statusmenu += "<font color='#888888'>TODO(doge.14)：访问控制 UI 改造。</font>";
 		_caption = "per-MAC ACL";
 	} else if (itemNum == 218) {
 		width = "560px";
@@ -1258,10 +1257,10 @@ function openssHint(itemNum, flag) {
 		_caption = "分流开关需重启代理生效";
 	} else if (itemNum == 221) {
 		width = "600px";
-		statusmenu = "<b><font color='#CC0066'>分流 V2 与链式代理冲突</font></b><br /><br />";
+		statusmenu = "<b><font color='#CC0066'>分流架构与链式代理冲突</font></b><br /><br />";
 		statusmenu += "<b><font color='#669900'>检测到：</font></b><br />";
 		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• 当前 <code>ss_basic_mode=7</code>（xray 半成品分流模式）<br />";
-		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• <code>ss_basic_mode=7</code> 与 doge.12 分流架构共用 xray 主进程<br /><br />";
+		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• <code>ss_basic_mode=7</code> 与新分流架构共用 xray 主进程<br /><br />";
 		statusmenu += "<b><font color='#CC0066'>冲突后果：</font></b><br />";
 		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• 若同时启用分流，<code>fss_chain_apply</code> 内部检测到 <code>mode=7</code> 后直接 fallback<br />";
 		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• 前置节点（链式代理）将<b>静默失效</b><br /><br />";
@@ -1269,7 +1268,7 @@ function openssHint(itemNum, flag) {
 		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• <b>取消</b>：不启用分流，保持现状<br />";
 		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• <b>仅启用分流</b>：链式代理在 <code>mode=7</code> 下继续 fallback（前置节点功能不可用）<br />";
 		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• <b>自动切换</b>：把 <code>ss_basic_mode</code> 改为 <code>2</code>（大陆白名单）再启用分流，链式代理恢复<br />";
-		_caption = "分流 V2 + 链式代理冲突警告";
+		_caption = "分流架构 + 链式代理冲突警告";
 	}
 	return overlib(statusmenu, OFFSETX, 30, OFFSETY, 10, RIGHT, STICKY, WIDTH, 'width', CAPTION, _caption, CLOSETITLE, '');
 

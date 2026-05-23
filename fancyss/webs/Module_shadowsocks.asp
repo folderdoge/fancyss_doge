@@ -6869,7 +6869,7 @@ function render_split_enabled_state() {
 	if (v == '1') {
 		$s.html("<span style='color:#22ab39;'>● 新架构已启用（重启代理后生效）</span>");
 	} else {
-		$s.html("<span style='color:#888;'>○ 旧分流路径（默认，老用户升级零感知）</span>");
+		$s.html("<span style='color:#888;'>○ 旧分流路径（兼容回退，仅显式 opt-out 老用户）</span>");
 	}
 }
 // 渲染 Mode 列表
@@ -17940,7 +17940,7 @@ function toggleKeyMask(o, show){
 															<input id="show_btn8" class="show-btn8" style="cursor:pointer" type="button" value="访问控制" />
 															<input id="show_btn9" class="show-btn9" style="cursor:pointer" type="button" value="附加功能" />
 															<input id="show_btn10" class="show-btn10" style="cursor:pointer" type="button" value="查看日志" />
-															<input id="show_btn11" class="show-btn11" style="cursor:pointer;background:#FFEBA0;color:#CC0066;" type="button" value="分流" title="doge.12 智能分流架构" />
+															<input id="show_btn11" class="show-btn11" style="cursor:pointer;background:#FFEBA0;color:#CC0066;" type="button" value="分流" title="智能分流架构" />
 														</td>
 													</tr>
 												</table>
@@ -18956,7 +18956,7 @@ function toggleKeyMask(o, show){
 															详见 <a href="javascript:void(0);" onclick="openssHint(210);" style="color:#03a9f4;"><u>说明</u></a>。
 														</td></tr>
 														<tr><th width="30%"><a class="hintstyle" style="color:#03a9f4;" href="javascript:void(0);" onclick="openssHint(210);">启用分流</a></th>
-															<td><select id="ss_split_enabled" style="width:auto"><option value="0">未启用 (默认)</option><option value="1">已启用</option></select>
+															<td><select id="ss_split_enabled" style="width:auto"><option value="0">未启用</option><option value="1">已启用 (默认)</option></select>
 															&nbsp;<span id="ss_split_enabled_state" style="color:#888;font-size:11px;"></span></td></tr>
 														<tr><th>默认 Mode</th>
 															<td><select id="ss_split_default_mode_id" style="width:auto"></select>
