@@ -119,6 +119,18 @@ find_mode_slot_by_id() {
 	return 1
 }
 
+# has_dbus_forbidden_chars：检查字符串含 dbus 文本格式破坏字符 (" ` $ \ = CR LF)
+# 用法：has_dbus_forbidden_chars "$value" && fail "..."
+# 设计原因（doge.13 hotfix #20）：原版 case "*'<CR>'*" 依赖字面 0x0D 字节夹在单引号之间，
+# 但 Edit/Write 工具无法插入字面 CR → beta.2 写代码时变成 "*''*"，POSIX shell 里 '' = 空串，
+# *''* 等价 ** 匹配任何非空字符串 → Mode 编辑保存全部被拒。改用 printf+tr 绕开字面 CR/LF。
+has_dbus_forbidden_chars() {
+	case "$1" in
+		*\"*|*\`*|*\$*|*=*|*\\*) return 0;;
+	esac
+	[ "$(printf '%s' "$1" | tr -cd '\r\n' | wc -c)" -gt 0 ]
+}
+
 # validate_action：校验 action 字符串
 # 用法：validate_action <action_str> <field_label> <allow_reject:0|1>
 # 失败直接 fail()（带请求 id），成功返回 0
@@ -128,10 +140,7 @@ validate_action() {
 	local allow_reject="$3"
 
 	# 段 1: dbus 文本格式破坏字符
-	case "${act}" in
-		*\"*|*\`*|*\$*|*=*|*'\'*|*'
-'*|*''*) fail "${field} contains forbidden chars (\" \` \$ \\ = CR LF)" "${REQ_ID}";;
-	esac
+	has_dbus_forbidden_chars "${act}" && fail "${field} contains forbidden chars (\" \` \$ \\ = CR LF)" "${REQ_ID}"
 	# 段 2: reject 仅 rule action 允许，default_action 禁用
 	if [ "${allow_reject}" != "1" ] && [ "${act}" = "reject" ]; then
 		fail "${field} cannot be reject (only allowed in rule actions)" "${REQ_ID}"
@@ -267,10 +276,7 @@ case "${op}" in
 
 		# --- 校验 name ---
 		[ -z "${name}" ] && fail "missing name" "${REQ_ID}"
-		case "${name}" in
-			*\"*|*\`*|*\$*|*=*|*'\'*|*'
-'*|*''*) fail "name contains forbidden chars (\" \` \$ \\ = CR LF)" "${REQ_ID}";;
-		esac
+		has_dbus_forbidden_chars "${name}" && fail "name contains forbidden chars (\" \` \$ \\ = CR LF)" "${REQ_ID}"
 
 		# --- 校验各字段 ---
 		validate_01 "${udp_proxy}" "udp_proxy"
@@ -418,10 +424,7 @@ case "${op}" in
 			rule_count="$(dbus get ${TMP_RCOUNT_KEY} 2>/dev/null)"
 
 			[ -z "${name}" ] && fail "missing name" "${REQ_ID}"
-			case "${name}" in
-				*\"*|*\`*|*\$*|*=*|*'\'*|*'
-'*|*''*) fail "name contains forbidden chars (\" \` \$ \\ = CR LF)" "${REQ_ID}";;
-			esac
+			has_dbus_forbidden_chars "${name}" && fail "name contains forbidden chars (\" \` \$ \\ = CR LF)" "${REQ_ID}"
 
 			case "${rule_count}" in
 				''|*[!0-9]*) fail "invalid rule_count" "${REQ_ID}";;

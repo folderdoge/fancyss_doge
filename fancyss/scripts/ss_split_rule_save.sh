@@ -40,6 +40,19 @@ TMP_PAYLOAD_KEY="ss_split_rule_save_payload_b64"
 TMP_RESULT_KEY="ss_split_rule_save_result"
 TMP_ERROR_KEY="ss_split_rule_save_error"
 
+# has_dbus_forbidden_chars：检查字符串含 dbus 文本格式破坏字符 (" ` $ \ = CR LF)
+# 用法：has_dbus_forbidden_chars "$value" && fail "..."
+# 设计原因（doge.13 hotfix）：原版 case "*'<CR>'*" 依赖字面 0x0D 字节夹在单引号之间，
+# Edit/Write 工具无法稳定插入；rule_save.sh L156 历史上 CR 字节得以保留是因 git 把文件判 binary，
+# 但任何未来 normalize 行尾 / autocrlf 切换都可能悄悄吃掉，复发 BLOCKER。改用 printf+tr 绕开字面 CR/LF。
+# 同款 helper 也在 ss_split_mode_save.sh，两脚本暂未共享 lib（doge.14 可 DRY 化）。
+has_dbus_forbidden_chars() {
+	case "$1" in
+		*\"*|*\`*|*\$*|*=*|*\\*) return 0;;
+	esac
+	[ "$(printf '%s' "$1" | tr -cd '\r\n' | wc -c)" -gt 0 ]
+}
+
 log() {
 	echo "$(date +'%Y%m%d %H:%M:%S') ${LOG_TAG} $*" >> /tmp/syslog.log 2>/dev/null
 }
@@ -151,10 +164,7 @@ case "${op}" in
 		# 这些字符进了 dbus 后会让 `dbus list` 输出 `key=value` 文本切分错位，下次 awk 切 = 时误读到错误 slot —— 看似数据消失。
 		# 反斜杠会让后续 bash 在 `dbus set key="${name}"` 双引号上下文里把 \" \$ 等转义掉，可能绕过本检查的等价形式。
 		# 前端 split_v2_save_rule_dialog 已先校验拦截，本检查为后端兜底（绕过前端 / curl 直 POST 等场景）。
-		case "${name}" in
-			*\"*|*\`*|*\$*|*=*|*'\'*|*'
-'*|*''*) fail "name contains forbidden chars (\" \` \$ \\ = CR LF)" "${REQ_ID}";;
-		esac
+		has_dbus_forbidden_chars "${name}" && fail "name contains forbidden chars (\" \` \$ \\ = CR LF)" "${REQ_ID}"
 		case "${update_hours}" in
 			''|*[!0-9]*) update_hours=0;;
 		esac
