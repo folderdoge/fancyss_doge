@@ -7491,6 +7491,24 @@ load_iptables_split() {
 	ensure_chain mangle SHADOWSOCKS_DIVERT
 	append_if_not_exists mangle -A SHADOWSOCKS_DIVERT -j MARK --set-xmark 0x07/0x07
 	append_if_not_exists mangle -A SHADOWSOCKS_DIVERT -j ACCEPT
+	# doge.13 beta.4 P0 FIX：DNS 流量在 mangle SHADOWSOCKS 入口直接 RETURN，
+	# 避免 LAN DNS 同时被 TPROXY 和 nat DNS 劫持 DNAT 处理。
+	# 根因：mangle PREROUTING (NF_PRI=-150) 先于 nat PREROUTING (NF_PRI=-100) 跑，
+	# LAN UDP dport=53 进 mangle SHADOWSOCKS 时 dst 仍是原 DNS server (8.8.8.8:53
+	# 等外网 IP)，命中下面的 TPROXY rule → 送进 xray 13334；接着 nat PREROUTING
+	# DNS 劫持把 dst 改写成 127.0.0.1:65353，xray 拿到 back addr=127.0.0.1:65353
+	# 后调 FakeUDP() 在该 addr 上 IP_TRANSPARENT bind UDP socket → 跟 chinadns
+	# split 抢 65353 端口；packet 走 SO_REUSEPORT round-robin 部分被 xray 截走但
+	# xray 不读 (recv-Q 涨)，部分 LAN DNS 查询丢失 → 全网 DNS 解析 5s timeout。
+	# 实地证据：beta.3 上 LAN 50 query 后 xray 在 65353 占 ~50 个 socket。
+	# 修法：DNS 劫持开启时 (默认开)，dport 53 流量在 mangle 入口就 RETURN，不进
+	# TPROXY；nat PREROUTING 的 DNS 劫持 DNAT 再把它转给本机 chinadns。
+	# 注意：必须 ss_basic_dns_hijack=1 才插这条；劫持关闭时 DNS 应当跟普通流量一样
+	# 走 TPROXY 代理路径 (否则 GFW 屏蔽的 DNS server 直连失败)。
+	if [ "${ss_basic_dns_hijack}" = "1" ]; then
+		append_if_not_exists mangle -A SHADOWSOCKS -p udp --dport 53 -j RETURN
+		append_if_not_exists mangle -A SHADOWSOCKS -p tcp --dport 53 -j RETURN
+	fi
 	append_if_not_exists mangle -A SHADOWSOCKS -p tcp -m socket -j SHADOWSOCKS_DIVERT
 	append_if_not_exists mangle -A SHADOWSOCKS -p udp -m socket -j SHADOWSOCKS_DIVERT
 	# 提前 RETURN：保留 IP 段
@@ -7837,6 +7855,20 @@ _start_iptables() {
 
 	# 创建游戏模式udp rule
 	ensure_chain mangle SHADOWSOCKS
+
+	# doge.13 beta.4 P0 FIX (老路径同步)：DNS 流量在 mangle SHADOWSOCKS 入口直接 RETURN。
+	# 根因同 load_iptables_split 的 D16 修订 (详见 doc/implementation/split-routing-implementation.md)：
+	# mangle PREROUTING (NF_PRI=-150) 先于 nat PREROUTING (-100) 跑，LAN UDP dport=53 进
+	# SHADOWSOCKS_GFW / SHADOWSOCKS_CHN 等 sub-chain 时 dst 仍是原 DNS server (8.8.8.8:53
+	# 等)，命中 TPROXY 3333 送 xray；接着 nat PREROUTING DNS 劫持 DNAT 把 dst 改写成
+	# 127.0.0.1:65353，xray 拿到 back addr 后 FakeUDP() IP_TRANSPARENT bind 65353 → 跟
+	# 老路径单实例 chinadns-ng 抢端口，LAN DNS 包通过 SO_REUSEPORT round-robin 部分丢失。
+	# DNS 劫持开启时（默认开），dport 53 流量在 mangle 入口就 RETURN，nat DNS 劫持
+	# DNAT 仍正常把它转给本机 chinadns；劫持关闭时不插（让 DNS 走代理）。
+	if [ "${ss_basic_dns_hijack}" = "1" ]; then
+		append_if_not_exists mangle -A SHADOWSOCKS -p udp --dport 53 -j RETURN
+		append_if_not_exists mangle -A SHADOWSOCKS -p tcp --dport 53 -j RETURN
+	fi
 
 	# IP/cidr/白域名 白名单控制（不go proxy）
 	append_if_not_exists mangle -A SHADOWSOCKS -p udp -m set --match-set ignlist dst -j RETURN

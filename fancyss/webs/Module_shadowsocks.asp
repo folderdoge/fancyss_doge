@@ -6505,7 +6505,9 @@ function get_dbus_data(cb) {
 }
 function conf2obj(obj, action) {
 	//console.log(obj);
-	var _base64 = ["ss_basic_password", "ss_dnsmasq", "ss_wan_white_ip", "ss_wan_white_domain", "ss_wan_black_ip", "ss_wan_black_domain", "ss_online_links", "ss_basic_custom"];
+	// FORK doge.13 beta.3: split DNS upstream 三 key 必须与 params_base64 (line 8517) 对称。
+	// 漏加 → conf2obj 不解码 → textarea 填 RAW b64 → 下次 save() encode +1 → 多层 base64 → chinadns-ng 把字符串当 IP 启动失败。
+	var _base64 = ["ss_basic_password", "ss_dnsmasq", "ss_wan_white_ip", "ss_wan_white_domain", "ss_wan_black_ip", "ss_wan_black_domain", "ss_online_links", "ss_basic_custom", "ss_split_dns_china_upstream", "ss_split_dns_overseas_upstream", "ss_split_dns_global_upstream"];
 	for (var field in obj) {
 		var el = E(field);
 		// do not fill
@@ -6849,11 +6851,8 @@ function refresh_split_v2_panel() {
 		E('ss_split_enabled').value = db_ss['ss_split_enabled'] || '0';
 		render_split_enabled_state();
 	}
-	// FORK doge.13 D1：DNS upstream 控件 接通 dbus 持久化（base64 编码）。
-	// db_ss 里值为 base64，反向填到控件用 Base64.decode（参考 split_v2_b64_decode）。
-	if (E('ss_split_dns_global_upstream')) { E('ss_split_dns_global_upstream').value = split_v2_b64_decode(db_ss['ss_split_dns_global_upstream'] || ''); }
-	if (E('ss_split_dns_china_upstream')) { E('ss_split_dns_china_upstream').value = split_v2_b64_decode(db_ss['ss_split_dns_china_upstream'] || ''); }
-	if (E('ss_split_dns_overseas_upstream')) { E('ss_split_dns_overseas_upstream').value = split_v2_b64_decode(db_ss['ss_split_dns_overseas_upstream'] || ''); }
+	// FORK doge.13 beta.3: 三 split DNS textarea 已由 conf2obj 走 _base64 通道 decode 后填入。
+	// 这里不再二次 decode（双重 decode = 空，导致 save() 把空覆盖 dbus）。仅在 conf2obj 未跑（极少见）时兜底。
 	render_split_mode_list();
 	render_split_rule_list();
 	render_split_default_mode_select();

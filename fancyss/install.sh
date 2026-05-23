@@ -822,14 +822,13 @@ migrate_split_routing_v2(){
 	fi
 
 	# ---- base64 编码并写入新 dbus key ----
-	# FORK doge.13 beta.2: base64_encode 二进制周期性追加 TAB (0x09) 而非 LF——输入长度 %9 ∈ {7,8,9} 时追 TAB
-	# 末尾 TAB 不被 $(...) 剥（POSIX 仅剥 trailing \n），落 dbus 后污染 /_api/ss JSON（httpdb 不 escape 控制字符）
-	# → 前端 JSON.parse 抛 SyntaxError → ajax error → skipd 弹窗。详见 [[reference_busybox_base64_loop]]
-	# 必须用 `tr -d '\t\n\r '` 显式字符列——busybox 1.25.1 tr 不支持 POSIX 字符类 [:space:]（reviewer B 真机实证）
+	# beta.3: /koolshare/bin/base64_encode 输出末尾会带 TAB（参考 ss_node_subscribe.sh:5724 老经验），
+	# 必须 strip 所有 whitespace。raw TAB 写到 dbus 后被 httpdb 塞进 /_api/ss JSON string 当 control char,
+	# JSON.parse 严格模式拒收 → 前端弹"skipd数据读取错误"。
 	local enc_china enc_overseas enc_global
-	enc_china="$(printf '%s' "${raw_china}" | base64_encode 2>/dev/null | tr -d '\t\n\r ')"
-	enc_overseas="$(printf '%s' "${raw_overseas}" | base64_encode 2>/dev/null | tr -d '\t\n\r ')"
-	enc_global="$(printf '%s' "${raw_global}" | base64_encode 2>/dev/null | tr -d '\t\n\r ')"
+	enc_china="$(printf '%s' "${raw_china}" | base64_encode 2>/dev/null | tr -d ' \t\r\n')"
+	enc_overseas="$(printf '%s' "${raw_overseas}" | base64_encode 2>/dev/null | tr -d ' \t\r\n')"
+	enc_global="$(printf '%s' "${raw_global}" | base64_encode 2>/dev/null | tr -d ' \t\r\n')"
 
 	if [ -z "${enc_china}" ] && [ -z "${enc_overseas}" ] && [ -z "${enc_global}" ]; then
 		echo_date "⚠️ FORK doge.13 beta: DNS upstream 迁移 v2 失败（base64_encode 不可用？），延迟到下次 install 重试"
@@ -845,34 +844,83 @@ migrate_split_routing_v2(){
 	echo_date "✅ FORK doge.13 beta: DNS upstream 迁移 v2 完成（fss_split_migrated_v2=1）"
 }
 
-# FORK doge.13 beta.2: 一次性治存量——清洗 ss_split_dns_*_upstream 三个 key 末尾的 TAB/CR/空白
-# beta.1 的 migrate_v2 漏 tr -d → 概率性把 TAB 写进 dbus → /_api/ss JSON 含未转义控制字符
-# → 前端 JSON.parse 抛 SyntaxError → ajax error → 弹 skipd 弹窗。详见 [[reference_busybox_base64_loop]]
-# 守门 fss_split_migrated_v3，幂等；仅 dbus set，不重启代理（值变化端到端自然下次启动生效）
-migrate_split_routing_v3(){
+# FORK doge.13 beta.3: 清理 ss_split_dns_*_upstream 已被多层 base64 污染的值。
+# 根因：D1 在 asp save() params_base64 加了 Base64.encode，但 conf2obj 漏加对应 _base64 decode。
+# 后果：textarea 被填 RAW base64 → 用户每次点"保存&应用"（任意 tab）都会 encode +1 层 → 多次 save 后变 N 层 →
+# chinadns-ng 收到 base64 当 IP → 启动失败（'[opt.zig] invalid ip'）。
+# 修法：反复 decode，**第一次 decoded 含 `.` 或 `:`（IP/URL 必有）= plaintext** → 停。
+#       避免 over-decode（DNS 上游数据字符集有限，可能多次 decode 都是合法 base64 字符集但产出 garbage）。
+# 触发条件：fss_split_dns_b64_unwrapped != "1"。幂等。运行时机：每次 install，在 migrate_v2 之后。
+# 注意：beta.3 同步修了 asp 双边对称问题，旧污染清理后不会复发。
+unwrap_split_dns_multilayer_b64(){
 	local migrated_flag
-	migrated_flag="$(dbus get fss_split_migrated_v3)"
+	migrated_flag="$(dbus get fss_split_dns_b64_unwrapped)"
 	if [ "${migrated_flag}" = "1" ]; then
 		return 0
 	fi
-
-	local key val cleaned fixed_count
-	fixed_count=0
+	local key val unwrapped layer max_layers=8 decoded plaintext_layer changed_count=0
 	for key in ss_split_dns_china_upstream ss_split_dns_overseas_upstream ss_split_dns_global_upstream; do
-		val="$(dbus get "${key}")"
-		[ -n "${val}" ] || continue
-		cleaned="$(printf '%s' "${val}" | tr -d '\t\n\r ')"
-		if [ "${cleaned}" != "${val}" ]; then
-			dbus set "${key}"="${cleaned}"
-			fixed_count=$((fixed_count + 1))
+		val="$(dbus get "${key}" 2>/dev/null)"
+		[ -z "${val}" ] && continue
+		# beta.3: 先 strip whitespace（含 base64_encode 老二进制可能留下的 TAB / NL）— skipd 弹窗的真正根因。
+		# strip 完如果值变了，必须写回，否则下次 /_api/ss 还含 raw TAB。
+		local stripped
+		stripped="$(printf '%s' "${val}" | tr -d ' \t\r\n')"
+		if [ "${stripped}" != "${val}" ] && [ -n "${stripped}" ]; then
+			dbus set "${key}=${stripped}"
+			changed_count=$((changed_count + 1))
+			echo_date "🔧 FORK doge.13 beta.3: ${key} 末尾含 whitespace → 已 strip（skipd 弹窗修复）"
+			val="${stripped}"
 		fi
+		# 如果 dbus 当前值就含 `.` 或 `:`，说明本来就是 plaintext（异常情况）→ encode 一次
+		case "${val}" in
+			*.*|*:*)
+				local fixed_raw
+				fixed_raw="$(printf '%s' "${val}" | base64_encode 2>/dev/null | tr -d ' \t\r\n')"
+				if [ -n "${fixed_raw}" ]; then
+					dbus set "${key}=${fixed_raw}"
+					changed_count=$((changed_count + 1))
+					echo_date "🔧 FORK doge.13 beta.3: ${key} 检测到 plaintext 未编码 → 补 1 层 base64"
+				fi
+				continue
+				;;
+		esac
+		unwrapped="${val}"
+		layer=0
+		plaintext_layer=0
+		# 反复 decode 直到 decoded 含 `.` 或 `:`（plaintext 标志）或达上限
+		while [ "${layer}" -lt "${max_layers}" ]; do
+			# 仍是纯 base64 字符集才尝试 decode；含非 base64 字符已早被 case *.*|*:* 抓
+			case "${unwrapped}" in
+				*[!A-Za-z0-9+/=]*) break ;;
+			esac
+			[ "${#unwrapped}" -lt 4 ] && break
+			decoded="$(printf '%s' "${unwrapped}" | base64 -d 2>/dev/null)"
+			[ -z "${decoded}" ] && break
+			layer=$((layer + 1))
+			unwrapped="${decoded}"
+			case "${unwrapped}" in
+				*.*|*:*)
+					plaintext_layer=${layer}
+					break
+					;;
+			esac
+		done
+		if [ "${plaintext_layer}" -gt 1 ]; then
+			local fixed
+			fixed="$(printf '%s' "${unwrapped}" | base64_encode 2>/dev/null | tr -d ' \t\r\n')"
+			if [ -n "${fixed}" ]; then
+				dbus set "${key}=${fixed}"
+				changed_count=$((changed_count + 1))
+				echo_date "🔧 FORK doge.13 beta.3: ${key} 解开 ${plaintext_layer} 层 base64 污染（chinadns-ng 启动失败修复）"
+			fi
+		fi
+		# plaintext_layer == 1: 单层 base64，已正确，不动
+		# plaintext_layer == 0: 未识别 plaintext（值损坏 / 无 . :）→ 保守不动，留待下次 migrate_v2 重生
 	done
-
-	dbus set fss_split_migrated_v3="1"
-	if [ "${fixed_count}" -gt 0 ]; then
-		echo_date "✅ FORK doge.13 beta.2: 清洗 ${fixed_count} 个 ss_split_dns_*_upstream key 中的控制字符（修 skipd 弹窗）"
-	else
-		echo_date "✅ FORK doge.13 beta.2: ss_split_dns_*_upstream 已干净，无需清洗（fss_split_migrated_v3=1）"
+	dbus set fss_split_dns_b64_unwrapped="1"
+	if [ "${changed_count}" -gt 0 ]; then
+		echo_date "✅ FORK doge.13 beta.3: split DNS upstream 多层 base64 清理完成（修复 ${changed_count} 个 key）"
 	fi
 }
 
@@ -1130,9 +1178,7 @@ schema2_secret_decode_candidate() {
 	decoded="$(printf '%s' "${value}" | base64_decode 2>/dev/null)" || return 1
 	[ -n "${decoded}" ] || return 1
 
-	# FORK doge.13 beta.2: base64_encode 末尾可能追 TAB 致 normalize ≠ value 假阴性
-	# 详见同文件 migrate_split_routing_v2 注释 / [[reference_busybox_base64_loop]]
-	normalized="$(printf '%s' "${decoded}" | base64_encode 2>/dev/null | tr -d '\t\n\r ')"
+	normalized="$(printf '%s' "${decoded}" | base64_encode 2>/dev/null)"
 	[ -n "${normalized}" ] || return 1
 	[ "${normalized}" = "${value}" ] || return 1
 	[ "${decoded}" != "${value}" ] || return 1
@@ -2549,8 +2595,8 @@ install_now(){
 	migrate_split_routing_v1
 	# FORK doge.13 beta：DNS upstream 老 key → 新 ss_split_dns_*_upstream 一次性迁移（base64 编码、不删老 key）
 	migrate_split_routing_v2
-	# FORK doge.13 beta.2：清洗 ss_split_dns_*_upstream 末尾控制字符（修 skipd 弹窗根因，base64_encode 周期追 TAB 问题）
-	migrate_split_routing_v3
+	# FORK doge.13 beta.3: 清理 ss_split_dns_*_upstream 被多层 base64 污染的值（D1 asp 不对称漏洞 / 已修但需迁老数据）
+	unwrap_split_dns_multilayer_b64
 	# FORK doge.12 alpha 总开关：=0 路由走旧路径（默认）；=1 启用新架构（实验性）。
 	# 首次安装/升级时若未设置则种 0，已有值不覆盖。
 	[ -z "$(dbus get ss_split_enabled)" ] && dbus set ss_split_enabled="0"

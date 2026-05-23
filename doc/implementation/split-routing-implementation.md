@@ -319,12 +319,17 @@ fancyss/                                  # 仓库内
 >
 > 想批量删一组前缀 key 的正确写法是 `dbus list <prefix>_ | cut -d= -f1 | while read k; do dbus remove "$k"; done`（见 [install.sh:491-499](../../fancyss/install.sh#L491) 已有范例）。看到形如 `dbus remove ss_acl_mode` 这种"裸前缀单行调用"不要假设它能删一票子 key，那是上游 no-op 死代码。
 
-#### D1: 分流 DNS upstream 读写两套 key（**✓ doge.13 beta 兑现**）
+#### D1: 分流 DNS upstream 读写两套 key（**✓ doge.13 beta 兑现 + doge.13 beta.3 修对称漏洞 + TAB 污染清理**）
 - **alpha 历史**：C 的 UI textarea 写新 key `ss_split_dns_china_upstream` 等，但 B 的 chinadns conf 生成器仍读老 key。alpha 决议用 placeholder 方案避免分裂心智。
 - **doge.13 beta 兑现**：
   - `install.sh::migrate_split_routing_v2` 把老 `ss_basic_chng_china_dns_*` / `ss_basic_chng_trust_dns_*` 一次性切到新 key（base64 multi-line 编码），落 `fss_split_migrated_v2=1` 守卫；**不删老 key**保留 fallback 兜底；
   - `ssconfig.sh::generate_chinadns_split_conf` / `generate_chinadns_global_conf` 优先读新 key，新 key 为空时回退老路径；
   - 新 key 契约入 §1.6.1。
+- **doge.13 beta.3 修订（2026-05-23）**：beta.1 实施有两个 chained bug，用户报"chinadns 启动失败"+"每次登录弹 skipd 弹窗"。
+  - **Bug A (chinadns 启动失败)**：[ASP save() params_base64](../../fancyss/webs/Module_shadowsocks.asp) **加了** 3 个 split DNS upstream key 走 `Base64.encode`，但 [conf2obj _base64](../../fancyss/webs/Module_shadowsocks.asp) **漏加** 对应 decode → textarea 填 RAW 1 层 base64 → 用户每点"保存&应用"(任意 tab) save() 重新 encode → +1 层 → 多次 save 后变 N 层 → chinadns-ng 收到 `VFdwS...` 当 IP → `[opt.zig:310] invalid ip` → 启动失败。**修法**：conf2obj `_base64` 数组加 3 个 key 对称，`refresh_split_v2_panel` 移除冗余 decode（避免双重 decode）。
+  - **Bug B (skipd 弹窗)**：`/koolshare/bin/base64_encode` 二进制**输出末尾带 raw TAB**（U+0009）。`install.sh::migrate_split_routing_v2` 的 `enc_china="$(... | base64_encode 2>/dev/null)"` 写入 dbus 末尾含 TAB → httpdb 塞进 `/_api/ss` JSON string 不 escape control char → 浏览器 `JSON.parse` 拒收 → ajax error → 弹"skipd 数据读取错误"。**修法**：所有 `base64_encode` pipe 加 `| tr -d ' \t\r\n'`（参考 [ss_node_subscribe.sh:5724](../../fancyss/scripts/ss_node_subscribe.sh#L5724) 老代码已有的 strip 模式）。CLAUDE.md 硬规则 #18 新增固化这条。
+  - **新加迁移函数** `install.sh::unwrap_split_dns_multilayer_b64`（幂等 `fss_split_dns_b64_unwrapped=1`）：清理老用户已被多层 base64 污染 + 末尾 TAB 的 dbus 值。逻辑：反复 decode 直到 decoded 含 `.` 或 `:`（IP/URL 必有）= plaintext → 停，避免 over-decode（DNS 上游字符集有限，可能多次 decode 都是合法 base64 字符集但产 garbage）；末尾 whitespace 也独立 strip。
+  - **教训**：所有 asp 端 `params_base64` 数组的 key 都必须在 `conf2obj()` `_base64` 数组对称出现，否则就是 silent data corruption。审计任何新 asp base64 key 时双向 grep `params_base64\|_base64` 看对称。
 
 #### D2: Mode index `m` 与 Mode.id 在 alpha 时等同（**✓ doge.13 beta 兑现，方案 B 升级**）
 - **alpha 历史**：A 写入用 `mid=1, mid=2` 同时作为索引和 id；alpha 阶段无编辑弹窗，等同没问题。
@@ -428,6 +433,37 @@ fancyss/                                  # 仓库内
 - **doge.13 beta 兑现**：与 D12 sentinel 方案统一——install.sh cur_action 改为单行 `cur_action="proxy_main"` 字面量，不再依据 `ssconf_basic_node` 内容判断；空 cur_node 场景自然不再产生 trailing colon。Mode 1/2 default_action / Mode 2 rule_5/rule_6 action 4 处全部写 `proxy_main`。
 
 > **D12-D15 共性（doge.13 beta 全部兑现）**：四条 latent issue 都在 alpha 阶段被 generate_xray_json_split 的 `out_main` collapse 掩盖。doge.13 beta 解除 collapse（per-rule 独立 outbound 构建）的同时兑现 D12 sentinel + D13 ASP preflight + D14 节点删除清理 + D15 空节点 → proxy_main（与 D12 合并）；四条形成"一组完整修订包"。
+
+#### D16: LAN DNS 在 mangle+nat PREROUTING 双跳被 xray FakeUDP 抢 65353（**✓ doge.13 beta.4 兑现**）
+- **beta.3 用户报现象**：装包后 LAN 客户端 (Ubuntu 192.168.51.2) DNS 全 5s timeout / curl 任何网站 HTTP 000，但 SSH 到路由器本机用 dnsclient @127.0.0.1:65353 解析正常。
+- **根因（实地 + xray-core upstream 实证）**：
+  1. iptables `mangle PREROUTING` (NF_PRI=-150) 跑在 `nat PREROUTING` (-100) **之前**
+  2. LAN UDP dport=53 进 mangle SHADOWSOCKS 时 dst 还是原 DNS server（`8.8.8.8:53` 等）
+  3. mangle SHADOWSOCKS 命中 TPROXY rule → 重定向给 xray inbound mode_2 @ 13334
+  4. **接着** nat PREROUTING SHADOWSOCKS_DNS_0 把 dst DNAT 成 `127.0.0.1:65353`
+  5. xray 拿到 packet，看 `back addr` (transparent destination) = `127.0.0.1:65353`
+  6. xray routing 命中 `127.0.0.0/8 → out_direct` → freedom UDP outbound
+  7. xray freedom UDP 调 `FakeUDP()`（[xray-core/proxy/freedom/fakeudp_linux.go](https://github.com/XTLS/Xray-core)），用 IP_TRANSPARENT + bind 绑 `127.0.0.1:65353` 作为返回客户端的 source addr
+  8. 跟 chinadns split listen socket 通过 SO_REUSEPORT 共享端口 → 内核 round-robin 部分 LAN DNS 包被 xray 截走但 xray 不读（recv-Q 持续涨）→ 客户端 timeout
+- **实地证据**：beta.3 上 LAN 50 个 DNS query → xray 在 `127.0.0.1:65353` 累积 ~50 个 UDP socket，recv-Q 最大 72KB 排队
+- **修法（[ssconfig.sh::load_iptables_split](../../fancyss/ss/ssconfig.sh) ~line 7494 之前）**：DNS 劫持开启时，dport 53 流量在 mangle SHADOWSOCKS 入口就 RETURN，不进 TPROXY；nat PREROUTING DNS 劫持 DNAT 再把它转给本机 chinadns 正常解析。
+  ```sh
+  if [ "${ss_basic_dns_hijack}" = "1" ]; then
+      append_if_not_exists mangle -A SHADOWSOCKS -p udp --dport 53 -j RETURN
+      append_if_not_exists mangle -A SHADOWSOCKS -p tcp --dport 53 -j RETURN
+  fi
+  ```
+- **实地验证（修前 vs 修后）**：50 LAN DNS query → 修前 OK=0 BAD=50 / xray 占 65353 ~50 socket，修后 OK=50 BAD=0 / xray 占 65353 = 0 socket，curl 5 站全 200 OK。
+- **修法同步到老路径**（[ssconfig.sh::_start_iptables](../../fancyss/ss/ssconfig.sh) `ensure_chain mangle SHADOWSOCKS` 之后）：老路径 `ss_split_enabled=0` 同样有 TPROXY UDP rule（SHADOWSOCKS_GFW/CHN 等 sub-chain 各 TPROXY 到 port 3333）+ nat DNS 劫持 DNAT 到 chinadns-ng 单实例，钩子顺序的 race 完全等价。补丁结构一致：
+  ```sh
+  if [ "${ss_basic_dns_hijack}" = "1" ]; then
+      append_if_not_exists mangle -A SHADOWSOCKS -p udp --dport 53 -j RETURN
+      append_if_not_exists mangle -A SHADOWSOCKS -p tcp --dport 53 -j RETURN
+  fi
+  ```
+  这条修订意义重大：**老用户即使不切 V2 分流也会受益**（用户报告 daily router 跑 ss_split_enabled=0 + DNS hijack 时 PC 主网卡 DNS 经过该路由器解析也偶发卡死）。
+- **未尽事项（doge.14 IPv6 build-out 注意）**：`SHADOWSOCKS6` chain 当前无 IPv6 split 路径，所以 D16 IPv6 mirror 暂不需要；未来给 split 加 IPv6 时必须同步加 ip6tables RETURN 规则。
+- **教训写入 CLAUDE.md 硬规则 #19**：iptables hook priority 影响 mangle/nat 跑序：raw(-300) → conntrack(-200) → mangle(-150) → nat-dst(-100) → routing。**新增 DNS 劫持 DNAT 之类"改写 dst"的 nat 规则前，必须审计 mangle PREROUTING 是否会先看到原 dst 后做出错误判断**（TPROXY、ipset 命中等）。
 
 ### 6.3 实施期约定的回溯修订
 
