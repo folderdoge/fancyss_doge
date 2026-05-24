@@ -3622,11 +3622,7 @@ sub_node_tool_plan_needs_runtime_cache_refresh(){
 }
 
 sub_should_run_reference_postwrite(){
-	local mode=""
-	mode="$(dbus get ss_basic_mode)"
-	if [ "${mode}" = "7" ];then
-		return 0
-	fi
+	# doge.14: 老 mode=7 (节点分流) 已退役，原 mode=7 强制返回 0 分支整段删除。
 	if [ -z "${SUB_NODE_TOOL_PLAN_FILE_CURRENT}" ] || [ ! -f "${SUB_NODE_TOOL_PLAN_FILE_CURRENT}" ];then
 		return 0
 	fi

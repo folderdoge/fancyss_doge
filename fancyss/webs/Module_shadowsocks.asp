@@ -6846,9 +6846,10 @@ function stop_chain_status_polling() {
 // 实施合同: doc/implementation/split-routing-implementation.md
 var _splitStatusPollTimer = null;
 function refresh_split_v2_panel() {
-	// 总开关 select
+	// FORK doge.14: 总开关已物理移除（永远启用），select 锁定为 "已启用" + disabled
 	if (E('ss_split_enabled')) {
-		E('ss_split_enabled').value = db_ss['ss_split_enabled'] || '0';
+		E('ss_split_enabled').value = '1';
+		E('ss_split_enabled').disabled = true;
 		render_split_enabled_state();
 	}
 	// FORK doge.13 beta.3: 三 split DNS textarea 已由 conf2obj 走 _base64 通道 decode 后填入。
@@ -6863,14 +6864,8 @@ function split_v2_b64_decode(v) {
 	try { return Base64.decode(v); } catch (e) { return ''; }
 }
 function render_split_enabled_state() {
-	// 优先读 DOM 当前值（用户刚切但还没保存），DOM 不存在再 fall back 到 db_ss 快照
-	var v = (E('ss_split_enabled') && E('ss_split_enabled').value) || db_ss['ss_split_enabled'] || '0';
-	var $s = $('#ss_split_enabled_state');
-	if (v == '1') {
-		$s.html("<span style='color:#22ab39;'>● 新架构已启用（重启代理后生效）</span>");
-	} else {
-		$s.html("<span style='color:#888;'>○ 旧分流路径（兼容回退，仅显式 opt-out 老用户）</span>");
-	}
+	// FORK doge.14: ss_split_enabled 永远 1（分流架构是唯一路径），unwrap 老 if/else
+	$('#ss_split_enabled_state').html("<span style='color:#22ab39;'>● 新架构已启用（重启代理后生效）</span>");
 }
 // 渲染 Mode 列表
 function render_split_mode_list() {
@@ -6982,13 +6977,7 @@ function refresh_split_status_only() {
 function render_split_runtime_status() {
 	var $el = $('#ss_split_runtime_status');
 	if (!$el.length) return;
-	// 优先读 DOM 当前值，理由同 render_split_enabled_state
-	var enabledVal = (E('ss_split_enabled') && E('ss_split_enabled').value) || db_ss['ss_split_enabled'] || '0';
-	var enabled = enabledVal == '1';
-	if (!enabled) {
-		$el.html('<span style="color:#888;">(新架构未启用)</span>');
-		return;
-	}
+	// FORK doge.14: ss_split_enabled 永远 1，不再检测 enabled 状态早返回
 	var ac = db_ss['ss_split_active_mode_count'] || '?';
 	var ob = db_ss['ss_split_xray_outbound_count'] || '?';
 	var ts = db_ss['ss_split_last_restart_ts'] || '0';
@@ -7728,80 +7717,6 @@ function split_v2_delete_rule(r) {
 		if (!success) alert('删除失败: ' + (errmsg || ''));
 	});
 }
-// 总开关变化时刷新提示行
-// 注意：绝不能在这里写 db_ss['ss_split_enabled'] = $(this).val()——会污染 save() 的差分基线，
-// 导致 compfilter 认为"没变化"而把这个 key 从 post_dbus 里踢掉（doge.12-alpha.3 的 bug 根因）。
-$(function(){ $(document).on('change', '#ss_split_enabled', function(){
-	var $sel = $(this);
-	var v = $sel.val();
-	// FORK doge.13 D13 ASP preflight：旧值=0、新值=1、当前 ss_basic_mode=7 时弹三按钮决策框
-	// （取消 / 仅启用分流 / 自动切到大陆白名单）。避免 mode 7 + split_v2 双重路由冲突。
-	var prevEnabled = String(db_ss['ss_split_enabled'] || '0');
-	var currentMode = String(db_ss['ss_basic_mode'] || '');
-	if (v === '1' && prevEnabled !== '1' && currentMode === '7') {
-		var restoreSel = function(){ $sel.val(prevEnabled); };
-		var applySplitOnly = function(){
-			$sel.prop('disabled', true);
-			split_v2_persist({ss_split_enabled: '1'}, function(ok){
-				$sel.prop('disabled', false);
-				if (ok) { openssHint(220); } else { alert('保存启用状态失败，请稍后重试。'); restoreSel(); }
-				render_split_enabled_state(); render_split_runtime_status();
-			});
-		};
-		var applySwitchMode = function(){
-			$sel.prop('disabled', true);
-			split_v2_persist({ss_split_enabled: '1', ss_basic_mode: '2'}, function(ok){
-				$sel.prop('disabled', false);
-				if (ok) {
-					db_ss['ss_basic_mode'] = '2';
-					if (E('ss_basic_mode')) { try { E('ss_basic_mode').value = '2'; } catch(e){} }
-					openssHint(220);
-				} else { alert('保存启用状态失败，请稍后重试。'); restoreSel(); }
-				render_split_enabled_state(); render_split_runtime_status();
-			});
-		};
-		if (typeof layer !== 'undefined' && layer.open) {
-			layer.open({
-				type: 1, title: '启用分流：模式冲突提醒', area: ['540px', 'auto'], shadeClose: false, closeBtn: 1,
-				content: '<div style=\"padding:18px 22px;line-height:1.8;font-size:13px;color:#111;background:#fff;\">' +
-					'<div style=\"margin-bottom:10px;\">当前主模式是 <b>xray分流模式 (mode 7)</b>，开启「分流」会与之冲突。请选择：</div>' +
-					'<ul style=\"margin:0 0 8px 20px;padding:0;\"><li>取消：保持现状，不切换</li>' +
-					'<li>仅启用分流：mode 7 保持不变（链式代理仍 fallback）</li>' +
-					'<li>自动切到大陆白名单 + 启用分流（推荐）</li></ul>' +
-					'<div style=\"color:#888;font-size:12px;\">详见 <a href=\"javascript:void(0);\" onclick=\"openssHint(221);\">说明</a>。</div></div>',
-				btn: ['取消', '仅启用分流', '自动切换'],
-				btn1: function(idx){ layer.close(idx); restoreSel(); },
-				btn2: function(idx){ layer.close(idx); applySplitOnly(); return false; },
-				btn3: function(idx){ layer.close(idx); applySwitchMode(); return false; },
-				cancel: function(){ restoreSel(); }
-			});
-		} else {
-			var choice = prompt('当前 mode 7 与新分流冲突。输入：1=仅启用分流 / 2=切到大陆白名单+启用分流 / 其它=取消', '1');
-			if (choice === '1') { applySplitOnly(); }
-			else if (choice === '2') { applySwitchMode(); }
-			else { restoreSel(); }
-		}
-		return;
-	}
-	// FORK doge.12 alpha.11 修 C-CRIT-1 + D5 race：变更即通过 dummy_script.sh 立刻持久化；同时 disable 控件直到 ajax 回来，
-	// 避免连点产生多 in-flight 请求乱序（服务端处理顺序非严格 FIFO → dbus 终态可能 ≠ 用户最后一次点击）。
-	// 重启代理仍由页脚 `保存&应用` 触发。
-	$sel.prop('disabled', true);
-	split_v2_persist({ss_split_enabled: v}, function(ok){
-		$sel.prop('disabled', false);
-		if (ok) {
-			// FORK doge.12 alpha.11 Wave2.5：ss_split_enabled 是路由层 fork 入口决策键（CLAUDE.md 硬规则 #14），
-			// 必须 ssconfig.sh restart 才能切换路由路径；dummy_script.sh 仅写 dbus 不重启代理，
-			// 故弹 hint 220 提醒用户去页脚点击 `保存并应用` 完成真正切换。
-			openssHint(220);
-		} else {
-			alert('保存启用状态失败，请稍后重试。');
-			$sel.val(db_ss['ss_split_enabled'] || '0');
-		}
-		render_split_enabled_state();
-		render_split_runtime_status();
-	});
-}); });
 // FORK doge.12 alpha.11 修 C-CRIT-1 同模式 (default_mode_id)：tab 0 主 save() 读空 select 会写 '' 覆盖 dbus；
 // 同样改走 split_v2_persist 立刻持久化，已 stale 的占位选项靠 change 不触发自然跳过。
 // + D5 race：disable 控件直到 ajax 回来，避免连点乱序。
@@ -8491,14 +8406,6 @@ function save() {
 	  "ss_basic_dns_hijack",
 	  "ss_basic_mcore",
 	  "ss_basic_shunt_hot_reload",
-	  "ss_basic_chng_china_dns_1_chk",
-	  "ss_basic_chng_china_dns_2_chk",
-	  "ss_basic_chng_china_dns_3_chk",
-	  "ss_basic_chng_trust_dns_1_chk",
-	  "ss_basic_chng_trust_dns_2_chk",
-	  "ss_basic_chng_trust_dns_3_chk",
-	  "ss_basic_chng_ipv6_drop_direc",
-	  "ss_basic_chng_ipv6_drop_proxy",
 	  "ss_basic_block_resov",
 	  "ss_basic_dns_serverx",
 	  "ss_basic_proxy_newb",
@@ -10051,90 +9958,6 @@ function update_visibility() {
 	showhide("ss_basic_node_update_day", b);
 	showhide("ss_basic_node_update_hr", b);
 	showhide("ss_basic_dig_opt_usr", f == "99");
-
-	// china-1
-	var i  = E("ss_basic_chng_china_dns_1_chk").checked;
-	var i0 = E("ss_basic_chng_china_net_1_typ").value;
-	var i1 = E("ss_basic_chng_china_udp_1_opt").value;
-	var i2 = E("ss_basic_chng_china_tcp_1_opt").value;
-	var i3 = E("ss_basic_chng_china_dot_1_opt").value;
-	showhide("ss_basic_chng_china_net_1_typ", i);
-	showhide("ss_basic_chng_china_udp_1_opt", (i && i0 == "udp"));
-	showhide("ss_basic_chng_china_udp_1_usr", (i && i0 == "udp" && i1 == "99"));
-	showhide("ss_basic_chng_china_tcp_1_opt", (i && i0 == "tcp"));
-	showhide("ss_basic_chng_china_tcp_1_usr", (i && i0 == "tcp" && i2 == "99"));
-	showhide("ss_basic_chng_china_dot_1_opt", (i && i0 == "dot"));
-	showhide("ss_basic_chng_china_dot_1_usr", (i && i0 == "dot" && i3 == "99"));
-	
-	// china-2
-	var j  = E("ss_basic_chng_china_dns_2_chk").checked;
-	var j0 = E("ss_basic_chng_china_net_2_typ").value;
-	var j1 = E("ss_basic_chng_china_udp_2_opt").value;
-	var j2 = E("ss_basic_chng_china_tcp_2_opt").value;
-	var j3 = E("ss_basic_chng_china_dot_2_opt").value;
-	showhide("ss_basic_chng_china_net_2_typ", j);
-	showhide("ss_basic_chng_china_udp_2_opt", (j && j0 == "udp"));
-	showhide("ss_basic_chng_china_udp_2_usr", (j && j0 == "udp" && j1 == "99"));
-	showhide("ss_basic_chng_china_tcp_2_opt", (j && j0 == "tcp"));
-	showhide("ss_basic_chng_china_tcp_2_usr", (j && j0 == "tcp" && j2 == "99"));
-	showhide("ss_basic_chng_china_dot_2_opt", (j && j0 == "dot"));
-	showhide("ss_basic_chng_china_dot_2_usr", (j && j0 == "dot" && j3 == "99"));
-	
-	// china-3
-	var k  = E("ss_basic_chng_china_dns_3_chk").checked;
-	var k0 = E("ss_basic_chng_china_net_3_typ").value;
-	var k1 = E("ss_basic_chng_china_udp_3_opt").value;
-	var k2 = E("ss_basic_chng_china_tcp_3_opt").value;
-	var k3 = E("ss_basic_chng_china_dot_3_opt").value;
-	showhide("ss_basic_chng_china_net_3_typ", k);
-	showhide("ss_basic_chng_china_udp_3_opt", (k && k0 == "udp"));
-	showhide("ss_basic_chng_china_udp_3_usr", (k && k0 == "udp" && k1 == "99"));
-	showhide("ss_basic_chng_china_tcp_3_opt", (k && k0 == "tcp"));
-	showhide("ss_basic_chng_china_tcp_3_usr", (k && k0 == "tcp" && k2 == "99"));
-	showhide("ss_basic_chng_china_dot_3_opt", (k && k0 == "dot"));
-	showhide("ss_basic_chng_china_dot_3_usr", (k && k0 == "dot" && k3 == "99"));
-
-	// trust-1
-	var l  = E("ss_basic_chng_trust_dns_1_chk").checked;
-	var l0 = E("ss_basic_chng_trust_net_1_typ").value;
-	var l1 = E("ss_basic_chng_trust_udp_1_opt").value;
-	var l2 = E("ss_basic_chng_trust_tcp_1_opt").value;
-	var l3 = E("ss_basic_chng_trust_dot_1_opt").value;
-	showhide("ss_basic_chng_trust_net_1_typ", l);
-	showhide("ss_basic_chng_trust_udp_1_opt", (l && l0 == "udp"));
-	showhide("ss_basic_chng_trust_udp_1_usr", (l && l0 == "udp" && l1 == "99"));
-	showhide("ss_basic_chng_trust_tcp_1_opt", (l && l0 == "tcp"));
-	showhide("ss_basic_chng_trust_tcp_1_usr", (l && l0 == "tcp" && l2 == "99"));
-	showhide("ss_basic_chng_trust_dot_1_opt", (l && l0 == "dot"));
-	showhide("ss_basic_chng_trust_dot_1_usr", (l && l0 == "dot" && l3 == "99"));
-
-	// trust-2
-	var m  = E("ss_basic_chng_trust_dns_2_chk").checked;
-	var m0 = E("ss_basic_chng_trust_net_2_typ").value;
-	var m1 = E("ss_basic_chng_trust_udp_2_opt").value;
-	var m2 = E("ss_basic_chng_trust_tcp_2_opt").value;
-	var m3 = E("ss_basic_chng_trust_dot_2_opt").value;
-	showhide("ss_basic_chng_trust_net_2_typ", m);
-	showhide("ss_basic_chng_trust_udp_2_opt", (m && m0 == "udp"));
-	showhide("ss_basic_chng_trust_udp_2_usr", (m && m0 == "udp" && m1 == "99"));
-	showhide("ss_basic_chng_trust_tcp_2_opt", (m && m0 == "tcp"));
-	showhide("ss_basic_chng_trust_tcp_2_usr", (m && m0 == "tcp" && m2 == "99"));
-	showhide("ss_basic_chng_trust_dot_2_opt", (m && m0 == "dot"));
-	showhide("ss_basic_chng_trust_dot_2_usr", (m && m0 == "dot" && m3 == "99"));
-
-	// trust-3
-	var n  = E("ss_basic_chng_trust_dns_3_chk").checked;
-	var n0 = E("ss_basic_chng_trust_net_3_typ").value;
-	var n1 = E("ss_basic_chng_trust_udp_3_opt").value;
-	var n2 = E("ss_basic_chng_trust_tcp_3_opt").value;
-	var n3 = E("ss_basic_chng_trust_dot_3_opt").value;
-	showhide("ss_basic_chng_trust_net_3_typ", n);
-	showhide("ss_basic_chng_trust_udp_3_opt", (n && n0 == "udp"));
-	showhide("ss_basic_chng_trust_udp_3_usr", (n && n0 == "udp" && n1 == "99"));
-	showhide("ss_basic_chng_trust_tcp_3_opt", (n && n0 == "tcp"));
-	showhide("ss_basic_chng_trust_tcp_3_usr", (n && n0 == "tcp" && n2 == "99"));
-	showhide("ss_basic_chng_trust_dot_3_opt", (n && n0 == "dot"));
-	showhide("ss_basic_chng_trust_dot_3_usr", (n && n0 == "dot" && n3 == "99"));
 
 	var t1 = E("ss_basic_lt_cru_opts").value == "1";
 	var t2 = E("ss_basic_lt_cru_opts").value == "2";
@@ -18349,82 +18172,6 @@ function toggleKeyMask(o, show){
 															{ title: '选择DNS主方案', hint:'153', class:'new_dns_main', multi: [
 																{ id: 'ss_basic_dns_plan', type:'select', func:'u', options:option_dnsp, style:'width:112px;', value:'1'},
 																{ suffix: '&nbsp;&nbsp;'}
-															]},
-															{ title: '&nbsp;&nbsp;*选择chinadns-ng策略', hint:'155', class:'new_dns chng', multi: [
-																{ id: 'ss_basic_chng', type:'select', func:'u', options:option_chng, style:'width:112px;', value:'3'},
-															]},
-															{ title: '&nbsp;&nbsp;*中国DNS-1 <em>(直连) 🎯</em>', hint:'133', class:'new_dns chng', multi: [
-																{ id: 'ss_basic_chng_china_dns_1_chk', type:'checkbox', func:'u', value:true},
-																{ id: 'ss_basic_chng_china_net_1_typ', type:'select', func:'u', options:["udp", "tcp", "dot"], style:'width:50px;', value:'udp'},
-																{ id: 'ss_basic_chng_china_udp_1_opt', type:'select', func:'u', options:[], style:'width:auto;'},
-																{ id: 'ss_basic_chng_china_udp_1_usr', type:'text', style:'width:120px;', ph:'114.114.114.114', value:'114.114.114.114' },
-																{ id: 'ss_basic_chng_china_tcp_1_opt', type:'select', func:'u', options:[], style:'width:auto;'},
-																{ id: 'ss_basic_chng_china_tcp_1_usr', type:'text', style:'width:120px;', ph:'114.114.114.114', value:'114.114.114.114' },
-																{ id: 'ss_basic_chng_china_dot_1_opt', type:'select', func:'u', options:[], style:'width:auto;'},
-																{ id: 'ss_basic_chng_china_dot_1_usr', type:'text', style:'width:180px;', ph:'dot.pub@1.12.12.21', value:'dot.pub@1.12.12.21' },
-																{ suffix:'&nbsp;&nbsp;'},
-															]},
-															{ title: '&nbsp;&nbsp;*中国DNS-2 <em>(直连) 🎯</em>', hint:'133', class:'new_dns chng', multi: [
-																{ id: 'ss_basic_chng_china_dns_2_chk', type:'checkbox', func:'u', value:true},
-																{ id: 'ss_basic_chng_china_net_2_typ', type:'select', func:'u', options:["udp", "tcp", "dot"], style:'width:50px;', value:'tcp'},
-																{ id: 'ss_basic_chng_china_udp_2_opt', type:'select', func:'u', options:[], style:'width:auto;'},
-																{ id: 'ss_basic_chng_china_udp_2_usr', type: 'text', style:'width:120px;', ph:'114.114.115.115', value:'114.114.115.115' },
-																{ id: 'ss_basic_chng_china_tcp_2_opt', type:'select', func:'u', options:[], style:'width:auto;'},
-																{ id: 'ss_basic_chng_china_tcp_2_usr', type: 'text', style:'width:120px;', ph:'114.114.115.115', value:'114.114.115.115' },
-																{ id: 'ss_basic_chng_china_dot_2_opt', type:'select', func:'u', options:[], style:'width:auto;'},
-																{ id: 'ss_basic_chng_china_dot_2_usr', type: 'text', style:'width:180px;', ph:'dot.pub@1.12.12.21', value:'dot.pub@1.12.12.21' },
-																{ suffix:'&nbsp;&nbsp;'},
-															]},
-															{ title: '&nbsp;&nbsp;*中国DNS-3 <em>(直连) 🎯</em>', hint:'133', class:'new_dns chng', multi: [
-																{ id: 'ss_basic_chng_china_dns_3_chk', type:'checkbox', func:'u', value:true},
-																{ id: 'ss_basic_chng_china_net_3_typ', type:'select', func:'u', options:["udp", "tcp", "dot"], style:'width:50px;', value:'dot'},
-																{ id: 'ss_basic_chng_china_udp_3_opt', type:'select', func:'u', options:[], style:'width:auto;'},
-																{ id: 'ss_basic_chng_china_udp_3_usr', type: 'text', style:'width:120px;', ph:'114.114.115.115', value:'114.114.115.115' },
-																{ id: 'ss_basic_chng_china_tcp_3_opt', type:'select', func:'u', options:[], style:'width:auto;'},
-																{ id: 'ss_basic_chng_china_tcp_3_usr', type: 'text', style:'width:120px;', ph:'114.114.115.115', value:'114.114.115.115' },
-																{ id: 'ss_basic_chng_china_dot_3_opt', type:'select', func:'u', options:[], style:'width:auto;'},
-																{ id: 'ss_basic_chng_china_dot_3_usr', type: 'text', style:'width:180px;', ph:'dot.pub@1.12.12.21', value:'dot.pub@1.12.12.21' },
-																{ suffix:'&nbsp;&nbsp;'},
-															]},
-															{ title: '&nbsp;&nbsp;*可信DNS-1 <font color="#FF0066">(代理) 🚀</font>', hint:'134', class:'new_dns chng', multi: [
-																{ id: 'ss_basic_chng_trust_dns_1_chk', type:'checkbox', func:'u', value:true},
-																{ id: 'ss_basic_chng_trust_net_1_typ', type:'select', func:'u', options:["udp", "tcp", "dot"], style:'width:50px;', value:'tcp'},
-																{ id: 'ss_basic_chng_trust_udp_1_opt', type:'select', func:'u', options:[], style:'width:auto;'},
-																{ id: 'ss_basic_chng_trust_udp_1_usr', type: 'text', style:'width:120px;', value:'8.8.8.8:53', ph:ph1 },
-																{ id: 'ss_basic_chng_trust_tcp_1_opt', type:'select', func:'u', options:[], style:'width:auto;'},
-																{ id: 'ss_basic_chng_trust_tcp_1_usr', type: 'text', style:'width:120px;', value:'8.8.8.8:53', ph:ph1 },
-																{ id: 'ss_basic_chng_trust_dot_1_opt', type:'select', func:'u', options:[], style:'width:auto;'},
-																{ id: 'ss_basic_chng_trust_dot_1_usr', type: 'text', style:'width:180px;', value:'one.one.one.one@1.1.1.1', ph:'one.one.one.one@1.1.1.1' },
-																{ suffix: '&nbsp;&nbsp;'},
-															]},
-															{ title: '&nbsp;&nbsp;*可信DNS-2 <font color="#FF0066">(代理) 🚀</font>', class:'new_dns chng', hint:'134', multi: [
-																{ id: 'ss_basic_chng_trust_dns_2_chk', type:'checkbox', func:'u', value:true},
-																{ id: 'ss_basic_chng_trust_net_2_typ', type:'select', func:'u', options:["udp", "tcp", "dot"], style:'width:50px;', value:'tcp'},
-																{ id: 'ss_basic_chng_trust_udp_2_opt', type:'select', func:'u', options:[], style:'width:auto;'},
-																{ id: 'ss_basic_chng_trust_udp_2_usr', type: 'text', style:'width:120px;', value:'8.8.8.8:53', ph:ph1 },
-																{ id: 'ss_basic_chng_trust_tcp_2_opt', type:'select', func:'u', options:[], style:'width:auto;'},
-																{ id: 'ss_basic_chng_trust_tcp_2_usr', type: 'text', style:'width:120px;', value:'8.8.8.8:53', ph:ph1 },
-																{ id: 'ss_basic_chng_trust_dot_2_opt', type:'select', func:'u', options:[], style:'width:auto;'},
-																{ id: 'ss_basic_chng_trust_dot_2_usr', type: 'text', style:'width:180px;', value:'one.one.one.one@1.1.1.1', ph:'one.one.one.one@1.1.1.1' },
-																{ suffix: '&nbsp;&nbsp;'},
-															]},
-															{ title: '&nbsp;&nbsp;*可信DNS-3 <font color="#FF0066">(代理) 🚀</font>', class:'new_dns chng', hint:'134', multi: [
-																{ id: 'ss_basic_chng_trust_dns_3_chk', type:'checkbox', func:'u', value:true},
-																{ id: 'ss_basic_chng_trust_net_3_typ', type:'select', func:'u', options:["udp", "tcp", "dot"], style:'width:50px;', value:'dot'},
-																{ id: 'ss_basic_chng_trust_udp_3_opt', type:'select', func:'u', options:[], style:'width:auto;'},
-																{ id: 'ss_basic_chng_trust_udp_3_usr', type: 'text', style:'width:120px;', value:'8.8.8.8:53', ph:ph1 },
-																{ id: 'ss_basic_chng_trust_tcp_3_opt', type:'select', func:'u', options:[], style:'width:auto;'},
-																{ id: 'ss_basic_chng_trust_tcp_3_usr', type: 'text', style:'width:120px;', value:'8.8.8.8:53', ph:ph1 },
-																{ id: 'ss_basic_chng_trust_dot_3_opt', type:'select', func:'u', options:[], style:'width:auto;'},
-																{ id: 'ss_basic_chng_trust_dot_3_usr', type: 'text', style:'width:180px;', value:'one.one.one.one@1.1.1.1', ph:'one.one.one.one@1.1.1.1' },
-																{ suffix: '&nbsp;&nbsp;'},
-															]},	
-															{ title: '&nbsp;&nbsp;*过滤AAAA记录（--no-ipv6）', class:'new_dns chng', hint:'145', multi: [
-																{ id: 'ss_basic_chng_ipv6_drop_direc', type:'checkbox', func:'u', value:false},
-																{ suffix: '<a>过滤直连</a>' },
-																{ suffix: '&nbsp;&nbsp;'},
-																{ id: 'ss_basic_chng_ipv6_drop_proxy', type:'checkbox', func:'u', value:true},
-																{ suffix: '<a>过滤代理</a>' },
 															]},
 															//{ title: '发送重复DNS查询包（--repeat-times）', class:'new_dns chng', id:'ss_basic_chng_dns_query_times', type:'text', value: '1'},
 															{ title: '&nbsp;&nbsp;*选择smartdns策略', hint:'154', class:'new_dns smrt', multi: [

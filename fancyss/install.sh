@@ -516,7 +516,6 @@ migrate_failover_v2(){
 # 触发条件：fss_split_migrated_v1 != "1"。幂等。
 # alpha 阶段 NOT 物理删除任何旧 key（ss_node_shunt_* / ss_basic_mode / ss_acl_mode_<i> 全保留），
 # NOT 销毁旧 ipset（旧路径仍在用），仅写入新 key + 内置 Rule 文件。
-# 总开关 ss_split_enabled 默认 0，路由层走旧逻辑——老用户升级零感知。
 # ============================================================================
 
 # helper: 写入单个内置 Rule（rule_<id>.txt 头注释 + dbus 元数据）
@@ -725,13 +724,9 @@ migrate_split_routing_v1(){
 	# ss_node_shunt_* / ss_basic_mode / ss_acl_mode_<i> / failover-combo 全保留——旧路径仍在用。
 	# 待 alpha 充分验证后由 doge.13+ 处理。
 
-	# ---------- Step 7.5: 销毁旧 ipset（alpha 跳过） ----------
-	# 跳过原因：alpha 阶段 ss_split_enabled 默认 0，路由层走旧路径，旧 ipset (chnlist/gfwlist/white_list 等)
-	# 仍由 ssconfig.sh 创建并使用。本步骤待 doge.13 默认 ss_split_enabled=1 时再启用。
-
 	# ---------- Step 9: 落幂等标志 ----------
 	dbus set fss_split_migrated_v1="1"
-	echo_date "✅ FORK doge.12 alpha: 分流架构迁移完成（fss_split_migrated_v1=1，ss_split_enabled 默认 0 不接管路由）"
+	echo_date "✅ FORK doge.12: 分流架构数据迁移完成（fss_split_migrated_v1=1）"
 }
 
 # FORK doge.13 beta：DNS upstream 迁移 v2（D1 兑现）
@@ -842,6 +837,55 @@ migrate_split_routing_v2(){
 
 	dbus set fss_split_migrated_v2="1"
 	echo_date "✅ FORK doge.13 beta: DNS upstream 迁移 v2 完成（fss_split_migrated_v2=1）"
+}
+
+# ============================================================================
+# FORK doge.14 beta: 节点分流退役 + DNS 老 key 清理 一次性迁移。
+# 详见 doc/design/doge14-deletion-scope-audit.md。
+# 触发条件：fss_doge14_migrated != "1"。幂等。
+# 内容：
+#   1) ss_basic_mode == 7（节点分流）→ 强制改 2（GFW List）——doge.14 物理删除 mode 7 整套路径。
+#   2) 清理 [DNS 设置] section 退役留下的 ss_basic_chng_* 老 key（v2 已把数据迁到 ss_split_dns_*_upstream）。
+#   3) 清理 ss_node_shunt_* 老 key（mode=7 节点分流运行时数据，doge.14 后无人读）。
+#   4) 清理 ss_split_enabled 总开关 dbus key（doge.14 起 ssconfig.sh 已不再读，dbus 残留无害但污染列表）。
+#   5) 落幂等标志 fss_doge14_migrated=1。
+# 注意：fss_doge14_migrated 用 fss_* 前缀（后端 hot-only key，不需要到前端，参考硬规则 #1）。
+# ============================================================================
+migrate_split_routing_v3(){
+	local migrated_flag cur_mode key
+	migrated_flag="$(dbus get fss_doge14_migrated)"
+	if [ "${migrated_flag}" = "1" ]; then
+		return 0
+	fi
+
+	# 1. ss_basic_mode == 7 (节点分流) → 2 (GFW List)
+	cur_mode="$(dbus get ss_basic_mode)"
+	if [ "${cur_mode}" = "7" ]; then
+		dbus set ss_basic_mode=2
+		logger -t "fancyss" "doge.14 migrate: ss_basic_mode 7 -> 2 (节点分流已退役，迁移到 GFW List 模式)"
+		echo_date "✅ FORK doge.14 migrate: ss_basic_mode 7 → 2（节点分流已退役）"
+	fi
+
+	# 2. 清理 [DNS 设置] section 退役留下的 ss_basic_chng_* 老 key
+	# 注意：dbus remove 是精确匹配，必须 list + cut + while read 循环（硬规则 #15）。
+	dbus list ss_basic_chng_ 2>/dev/null | cut -d= -f1 | while IFS= read -r key
+	do
+		[ -n "${key}" ] && dbus remove "${key}" >/dev/null 2>&1
+	done
+
+	# 3. 清理 ss_node_shunt_* 老 key（mode=7 节点分流运行时数据）
+	dbus list ss_node_shunt_ 2>/dev/null | cut -d= -f1 | while IFS= read -r key
+	do
+		[ -n "${key}" ] && dbus remove "${key}" >/dev/null 2>&1
+	done
+
+	# 4. 清理 ss_split_enabled 总开关 key（doge.14 已物理移除，无人读）
+	dbus remove ss_split_enabled >/dev/null 2>&1
+
+	# 5. 落幂等标志
+	dbus set fss_doge14_migrated="1"
+	logger -t "fancyss" "doge.14 migrate_split_routing_v3 完成"
+	echo_date "✅ FORK doge.14 migrate: 老 key 清理完成（fss_doge14_migrated=1）"
 }
 
 # FORK doge.13 beta.3: 清理 ss_split_dns_*_upstream 已被多层 base64 污染的值。
@@ -2301,7 +2345,22 @@ install_now(){
 
 	# remove some file first
 	echo_date "清理旧文件"
+	# FORK doge.14-beta.1: 保护用户自定义 Rule 文件（rule_100+）
+	# 老 `rm -rf /koolshare/ss/*` 会把 rules_user/ 一并清，doge.13 alpha 起新增的
+	# split routing 架构下用户自定义 Rule 内容（rule_<id>.txt，id>=9）会被吃掉。
+	# install.sh 后续 migrate_split_routing_v1 自愈只重建内置 1~8，user rules 永久丢失。
+	if [ -d /koolshare/ss/rules_user ]; then
+		mkdir -p /tmp/__fss_rules_user_backup_doge14
+		cp -af /koolshare/ss/rules_user/. /tmp/__fss_rules_user_backup_doge14/ 2>/dev/null || true
+		echo_date "🛡️ FORK doge.14: 备份 rules_user 到 /tmp/__fss_rules_user_backup_doge14"
+	fi
 	rm -rf /koolshare/ss/*
+	if [ -d /tmp/__fss_rules_user_backup_doge14 ]; then
+		mkdir -p /koolshare/ss/rules_user
+		cp -af /tmp/__fss_rules_user_backup_doge14/. /koolshare/ss/rules_user/ 2>/dev/null || true
+		rm -rf /tmp/__fss_rules_user_backup_doge14
+		echo_date "🛡️ FORK doge.14: rules_user 已恢复（含用户自定义 Rule 100+）"
+	fi
 	rm -rf /koolshare/scripts/ss_*
 	rm -rf /koolshare/webs/Module_shadowsocks*
 	rm -rf /koolshare/bin/rss-redir
@@ -2591,17 +2650,14 @@ install_now(){
 	migrate_failover_v2
 	# FORK doge.12 alpha：分流架构（Rule + Mode + per-User + 双轨 DNS）数据迁移
 	# 详见 doc/implementation/split-routing-implementation.md / doc/design/split-routing-architecture.md §14
-	# 仅写数据 + 拷规则文件；路由层是否走新逻辑由下方 ss_split_enabled flip switch 决定。
+	# 仅写数据 + 拷规则文件。doge.14 起路由层永远走新逻辑（总开关已物理移除）。
 	migrate_split_routing_v1
 	# FORK doge.13 beta：DNS upstream 老 key → 新 ss_split_dns_*_upstream 一次性迁移（base64 编码、不删老 key）
 	migrate_split_routing_v2
 	# FORK doge.13 beta.3: 清理 ss_split_dns_*_upstream 被多层 base64 污染的值（D1 asp 不对称漏洞 / 已修但需迁老数据）
 	unwrap_split_dns_multilayer_b64
-	# FORK doge.13 stable 总开关：=1 路由走新分流架构（默认）；=0 走旧路径（向后兼容）。
-	# 首次安装：种 1（V2 主线）。
-	# 升级老用户：已显式设置的值（含 alpha/beta 期间默认种下的 0）一律保留，
-	# 不强切 opt-out 用户。doge.14 物理移除旧路径时该开关变为常量永远 1。
-	[ -z "$(dbus get ss_split_enabled)" ] && dbus set ss_split_enabled="1"
+	# FORK doge.14 beta: 节点分流退役 (mode 7 → 2) + [DNS 设置] section 老 key 清理（一次性，幂等）
+	migrate_split_routing_v3
 	# FORK doge.12 alpha：分流 Rule 自动更新 cron（每 30 分钟扫一次；详见 doc/design/split-routing-architecture.md §10.3）。
 	# alpha 期内置 Rule 全部 update_hours=0，cron 跑等于 no-op；脚本里有守护跳过。
 	# 用户自定义 Rule + 设置 update_hours>0 + 配置 source_url 才会真正下载。

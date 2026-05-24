@@ -63,16 +63,8 @@ unset TERM
 alias echo_date='echo 【$(TZ=UTC-8 date -R +%Y%m%d\ %X)】:'
 
 get_runtime_proxy_mode() {
-	local mode="${ss_basic_mode}"
-
-	if [ "${ss_basic_mode}" = "7" ] && ! type fss_shunt_effective_mode >/dev/null 2>&1; then
-		fss_require_shunt_lib >/dev/null 2>&1 || true
-	fi
-	if type fss_shunt_effective_mode >/dev/null 2>&1; then
-		mode="$(fss_shunt_effective_mode 2>/dev/null)"
-		[ -n "${mode}" ] || mode="${ss_basic_mode}"
-	fi
-	echo "${mode}"
+	# doge.14: ss_basic_mode=7 (老节点分流) 已退役迁移到 mode=2，直接返回 ss_basic_mode。
+	echo "${ss_basic_mode}"
 }
 
 get_fancyss_default_furl() {
@@ -134,15 +126,8 @@ fss_base_load_current_node_env() {
 	local cur_node=""
 	local base_1=""
 	local base_2=""
-	if [ "${ss_basic_mode}" = "7" ]; then
-		fss_require_shunt_lib >/dev/null 2>&1 || true
-	fi
-	if [ "${ss_basic_mode}" = "7" ] && type fss_shunt_resolve_default_node_id >/dev/null 2>&1; then
-		fss_shunt_resolve_default_node_id >/dev/null 2>&1 || true
-		cur_node="${FSS_SHUNT_DEFAULT_NODE_ID_PICK}"
-	elif [ "${ss_basic_mode}" = "7" ] && type fss_shunt_get_default_node_id >/dev/null 2>&1; then
-		cur_node=$(fss_shunt_get_default_node_id)
-	elif type fss_resolve_current_node_id >/dev/null 2>&1; then
+	# doge.14: 老 mode=7 节点分流路径已退役（migrate 到 mode=2），不再走 fss_shunt_* 节点解析。
+	if type fss_resolve_current_node_id >/dev/null 2>&1; then
 		fss_resolve_current_node_id >/dev/null 2>&1 || true
 		cur_node="${FSS_CURRENT_NODE_ID_RESULT}"
 	else

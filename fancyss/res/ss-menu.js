@@ -1137,8 +1137,8 @@ function openssHint(itemNum, flag) {
 		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• LAN 内 hostname 解析（如 <code>&lt;asusrouter&gt;</code> / <code>*.lan</code>）可能在新架构下静默失败（dnsmasq 让位未实现，留 doge.14）<br />";
 		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• Mode/Rule 编辑、删除已通过弹窗实现<br />";
 		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• per-rule 链式代理（proxy_chain:Y:X）会被回退为主节点 outbound（当前简化实现）<br />";
-		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• 双轨 DNS 控件 readonly 占位；当前所有 Mode 走 chinadns 单实例 + 主页面 DNS 设置（doge.14 启用 per-Mode 双轨）<br /><br />";
-		statusmenu += "<b><font color='#CC0066'>失败降级：</font></b>新架构启动失败时，ssconfig.sh restart 会兜底回退到旧路径（保留 ss_split_enabled=1 但走旧 ss_basic_mode），日志告警。<br /><br />";
+		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• 双轨 DNS 后端实现已就绪，UI 控件 readonly 占位（Phase 3 UI 重设计开放编辑）<br /><br />";
+		statusmenu += "<b><font color='#CC0066'>doge.14 起：</font></b>分流架构成为唯一路径，老 ss_basic_mode 路径已物理删除，无 fallback；启动失败会直接报错而非静默降级。<br /><br />";
 		statusmenu += "<font color='#888888'>设计：doc/design/split-routing-architecture.md / 实施：doc/implementation/split-routing-implementation.md</font>";
 		_caption = "分流架构";
 	} else if (itemNum == 211) {
@@ -1230,45 +1230,6 @@ function openssHint(itemNum, flag) {
 		statusmenu += "<b><font color='#CC0066'>当前实现：</font></b>访问控制 UI 暂未改造，先通过 dbus_set 命令手动配 <code>ss_acl_split_mode_&lt;acl_node&gt;</code>。<br /><br />";
 		statusmenu += "<font color='#888888'>TODO(doge.14)：访问控制 UI 改造。</font>";
 		_caption = "per-MAC ACL";
-	} else if (itemNum == 218) {
-		width = "560px";
-		statusmenu = "<b>失败降级（fallback）</b>：新架构启动失败时自动回退到旧路径，避免「升级后断网」。<br /><br />";
-		statusmenu += "<b><font color='#669900'>触发场景：</font></b><br />";
-		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• xray sniffing 配置生成失败<br />";
-		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• per-Mode TPROXY 端口绑定冲突<br />";
-		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• chinadns-ng 双轨实例启动失败<br />";
-		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• 内置 Rule 文件缺失<br /><br />";
-		statusmenu += "<b><font color='#669900'>降级行为：</font></b><br />";
-		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• 保留 <code>ss_split_enabled=1</code>（用户的选择不变）<br />";
-		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• 但实际运行走旧 <code>ss_basic_mode</code> 路径<br />";
-		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• 日志输出 <code>[WARN] split routing fallback to legacy</code><br /><br />";
-		statusmenu += "<font color='#888888'>详见 doc/implementation/split-routing-implementation.md §0</font>";
-		_caption = "失败降级";
-	} else if (itemNum == 220) {
-		width = "560px";
-		statusmenu = "<b>分流开关状态已保存</b>，但<font color='#CC0066'><b>尚未生效</b></font>。<br /><br />";
-		statusmenu += "<b><font color='#669900'>为什么？</font></b><br />";
-		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• <code>ss_split_enabled</code> 仅写入 dbus 配置，代理服务（xray / chinadns-ng / iptables）需重启后才会按新配置运行<br />";
-		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• 当前实际数据包仍走原配置路径，UI 显示的「已启用 / 已停用」与运行时不一致<br /><br />";
-		statusmenu += "<b><font color='#CC0066'>必须操作：</font></b><br />";
-		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• 滚动到页面<b>底部</b>，点击「<b>保存并应用</b>」按钮触发 <code>ssconfig.sh restart</code><br />";
-		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• 重启完成后配置才真正生效<br /><br />";
-		statusmenu += "<font color='#888888'>如不点击「保存并应用」就关闭页面，开关状态会保留在 dbus 但运行时仍按旧配置运行。</font>";
-		_caption = "分流开关需重启代理生效";
-	} else if (itemNum == 221) {
-		width = "600px";
-		statusmenu = "<b><font color='#CC0066'>分流架构与链式代理冲突</font></b><br /><br />";
-		statusmenu += "<b><font color='#669900'>检测到：</font></b><br />";
-		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• 当前 <code>ss_basic_mode=7</code>（xray 半成品分流模式）<br />";
-		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• <code>ss_basic_mode=7</code> 与新分流架构共用 xray 主进程<br /><br />";
-		statusmenu += "<b><font color='#CC0066'>冲突后果：</font></b><br />";
-		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• 若同时启用分流，<code>fss_chain_apply</code> 内部检测到 <code>mode=7</code> 后直接 fallback<br />";
-		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• 前置节点（链式代理）将<b>静默失效</b><br /><br />";
-		statusmenu += "<b><font color='#669900'>请选择：</font></b><br />";
-		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• <b>取消</b>：不启用分流，保持现状<br />";
-		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• <b>仅启用分流</b>：链式代理在 <code>mode=7</code> 下继续 fallback（前置节点功能不可用）<br />";
-		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• <b>自动切换</b>：把 <code>ss_basic_mode</code> 改为 <code>2</code>（大陆白名单）再启用分流，链式代理恢复<br />";
-		_caption = "分流架构 + 链式代理冲突警告";
 	}
 	return overlib(statusmenu, OFFSETX, 30, OFFSETY, 10, RIGHT, STICKY, WIDTH, 'width', CAPTION, _caption, CLOSETITLE, '');
 

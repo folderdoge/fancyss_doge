@@ -281,14 +281,8 @@ GET_CHAIN_PROXY_STATUS(){
 	echo "前置节点 ID=${front_id}（${front_name}${type_name}），运行状态：${status_str}"
 }
 
-# FORK doge.12: 分流架构 V2 状态行
+# FORK doge.14: 分流架构成为唯一路径，状态行不再判 enabled
 GET_SPLIT_V2_STATUS(){
-	local enabled="${ss_split_enabled}"
-	[ -z "${enabled}" ] && enabled="0"
-	if [ "${enabled}" != "1" ]; then
-		echo "未启用（走 doge.10/11 老路径）"
-		return
-	fi
 	local mode_count="$(dbus get ss_split_mode_count 2>/dev/null)"
 	[ -z "${mode_count}" ] && mode_count="0"
 	local rule_count="$(dbus get ss_split_rule_count 2>/dev/null)"

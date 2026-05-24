@@ -34,11 +34,7 @@ ARG_OBFS=""
 OUTBOUNDS="[]"
 LINUX_VER=$(uname -r|awk -F"." '{print $1$2}')
 
-# FORK doge.12 alpha: 分流架构总开关。详见 doc/implementation/split-routing-implementation.md §0
-# ss_* 前缀的 key 已经被 ss_base.sh 的 `eval $(dbus export ss ...)` 导入；
-# 这里只是兜底确保未配置时默认为 "0"（沿用旧路径，零感知）。
-ss_split_enabled="${ss_split_enabled:-$(dbus get ss_split_enabled 2>/dev/null)}"
-[ -z "${ss_split_enabled}" ] && ss_split_enabled="0"
+# doge.14: 分流架构成为唯一路径，ss_split_enabled 总开关已物理移除
 # 分流架构 per-Mode TPROXY/REDIRECT 端口基址（详见 split-routing-architecture.md §5.1）
 SS_SPLIT_PORT_BASE="13333"
 # 双轨 chinadns-ng 实例端口（详见 split-routing-architecture.md §6.2）
@@ -240,16 +236,9 @@ compare_time(){
 test_xray_conf(){
 	#uset _test_ret
 	local conf=$1
-	local xray_asset_dir=""
 	echo_date "测试xray配置文件..."
-	if [ "$(get_runtime_proxy_mode)" = "7" ] && type fss_shunt_xray_asset_dir >/dev/null 2>&1; then
-		xray_asset_dir="$(fss_shunt_xray_asset_dir 2>/dev/null || true)"
-	fi
-	if [ -n "${xray_asset_dir}" ]; then
-		local test_ret=$(run env "xray.location.asset=${xray_asset_dir}" /koolshare/bin/xray run -config="${conf}" -test 2>&1)
-	else
-		local test_ret=$(run /koolshare/bin/xray run -config="${conf}" -test 2>&1)
-	fi
+	# doge.14: 旧 mode=7 xray 分流模式 asset_dir 探测已物理移除
+	local test_ret=$(run /koolshare/bin/xray run -config="${conf}" -test 2>&1)
 	local ret_1=$(echo "$test_ret" | grep "Configuration OK.")
 	local ret_2=$(echo "$test_ret" | grep "does not support fingerprint")
 	#local ret_2=$(echo $test_ret | grep "Old version of XTLS does not support fingerprint")
@@ -1389,13 +1378,8 @@ kill_process() {
 }
 
 shunt_hot_restart_eligible() {
-	[ "${ss_basic_status}" = "1" ] || return 1
-	[ "${ss_basic_mode}" = "7" ] || return 1
-	[ "${ss_basic_shunt_hot_reload}" = "1" ] || return 1
-	[ -x "/koolshare/scripts/ss_shunt_hot_reload.sh" ] || return 1
-	[ -s "/koolshare/ss/xray.json" ] || return 1
-	pidof xray >/dev/null 2>&1 || return 1
-	return 0
+	# doge.14: 旧 mode=7 xray 分流模式已物理移除，hot-reload 路径永远不再启用
+	return 1
 }
 
 shunt_configs_equivalent() {
@@ -1649,12 +1633,8 @@ start_dns_x(){
 			fi
 		fi
 
-		# FORK doge.12 alpha: 分流架构走双轨 chinadns-ng
-		if [ "${ss_split_enabled}" = "1" ]; then
-			start_chinadns_ng_split
-		else
-			start_chinadns_ng
-		fi
+		# doge.14: 分流架构唯一路径
+		start_chinadns_ng_split
 	elif [ "${dns_plan_runtime}" == "2" ];then
 		# DNS分流模式和iptables分流需要匹配，不然效果不好，这里需要检测用户当前代理模式和当前DNS模式
 		if [ "${runtime_mode}" == "1" ];then
@@ -1984,14 +1964,7 @@ $(fss_airport_special_iter_active_tsv 2>/dev/null)
 	[ -s /tmp/ss_node_domains.txt ] && echo "domain-set -name node_direct -file /tmp/ss_node_domains.txt" >> "${outfile}"
 	[ "${ss_basic_block_resov}" = "1" ] && echo "domain-set -name block_list -file /tmp/block_list.txt" >> "${outfile}"
 
-	local shunt_proxy_file=""
-	if [ "$(get_runtime_proxy_mode)" = "7" ] && type fss_shunt_resolve_proxy_domain_file >/dev/null 2>&1; then
-		fss_shunt_resolve_proxy_domain_file >/dev/null 2>&1 || true
-		shunt_proxy_file="${FSS_SHUNT_PROXY_DOMAIN_FILE_RESULT}"
-	elif [ "$(get_runtime_proxy_mode)" = "7" ] && type fss_shunt_get_proxy_domain_file >/dev/null 2>&1; then
-		shunt_proxy_file="$(fss_shunt_get_proxy_domain_file 2>/dev/null)"
-	fi
-	[ -n "${shunt_proxy_file}" ] && [ -s "${shunt_proxy_file}" ] && echo "domain-set -name shunt_proxy -file ${shunt_proxy_file}" >> "${outfile}"
+	# doge.14: 旧 mode=7 xray 分流模式 shunt_proxy_file domain-set 已物理移除
 
 	[ "${mode}" = "3" ] && echo "conf-file /tmp/whitelist_ip.txt" >> "${outfile}"
 	echo "" >> "${outfile}"
@@ -2014,9 +1987,7 @@ $(fss_airport_special_iter_active_tsv 2>/dev/null)
 domain-rules /domain-set:chnlist/ -p #4:chnlist,#6:chnlist6 -c ping,tcp:80,tcp:443 -r first-ping -d yes -n chn
 domain-rules /domain-set:white_list/ -p #4:white_list,#6:white_list6 -c ping,tcp:80,tcp:443 -r first-ping -d yes -n chn
 EOF
-	if [ "$(get_runtime_proxy_mode)" = "7" ] && [ -n "${shunt_proxy_file}" ] && [ -s "${shunt_proxy_file}" ]; then
-		echo "domain-rules /domain-set:shunt_proxy/ -p #4:gfwlist,#6:gfwlist6 -c none -n gfw" >> "${outfile}"
-	fi
+	# doge.14: 旧 mode=7 xray 分流模式 shunt_proxy domain-rules 已物理移除
 	cat >> "${outfile}" <<-'EOF'
 domain-rules /domain-set:gfwlist/ -p #4:gfwlist,#6:gfwlist6 -c none -n gfw
 domain-rules /domain-set:black_list/ -p #4:black_list,#6:black_list6 -c none -n gfw
@@ -2149,13 +2120,11 @@ start_smartdns(){
 }
 
 # ============================================================================
-# FORK doge.12 alpha: 双轨 DNS（chinadns-ng × 2）
+# doge.14: 双轨 DNS（chinadns-ng × 2）—— 分流架构唯一路径
 # 详见 doc/design/split-routing-architecture.md §6 与
 #      doc/implementation/split-routing-implementation.md §1.6
 # ----------------------------------------------------------------------------
-# 旧 start_chinadns_ng() 与本节函数共存。`ss_split_enabled=0` 时走旧函数；
-# `=1` 时由 start_chinadns_ng_split / stop_chinadns_ng_split 接管，并启动两个
-# 实例：
+# start_chinadns_ng_split / stop_chinadns_ng_split 接管，启动两个实例：
 #   分流实例 chinadns-ng @127.0.0.1:65353 → 服务 dns_mode=split 的 Mode
 #   全局实例 chinadns-ng @127.0.0.1:65354 → 服务 dns_mode=global 的 Mode
 # ============================================================================
@@ -2172,12 +2141,7 @@ start_smartdns(){
 # - reject 由 xray blackhole outbound 完成（alpha.15 移除原 DNS 层 group reject）
 # - LAN 域名 → 127.0.0.1:65355 (dnsmasq let-port，由 split 路径在 start_dns_x
 #   阶段配合 ss_basic_dns_serverx=1 把 dnsmasq 让到该端口)
-# alpha 简化：本函数复用 start_chinadns_ng() 内部已构造的 CDNS_LINE / FDNS_LINE
-# 变量（通过把它们提升为 globals）。因为这两条线索的生成依赖大量校验逻辑，
-# 重写代价过高。所以"调用顺序"是：先 start_chinadns_ng() 走一遍校验链构造
-# 出 CDNS_LINE/FDNS_LINE → 然后我们 dump 到 split conf。
-# 但 start_chinadns_ng() 还会真起一个进程。所以这里采用另一思路：
-# 把 CDNS/FDNS 直接从 dbus 读 + 简化拼接，跳过 fixup（fixup 由旧路径承担）。
+# doge.14: 老 start_chinadns_ng() 已物理移除，本节直接从 dbus 读 CDNS/FDNS + 简化拼接。
 # doge.13 beta D1 helper：解码 dbus base64 multi-line 值到 stdout，
 # 一行一条 DNS server。给新的 ss_split_dns_*_upstream key 反查用。
 __get_split_dns_lines() {
@@ -2210,46 +2174,16 @@ generate_chinadns_split_conf() {
 	local conf="/tmp/chinadns_ng_split.conf"
 	local CDNS_LINE=""
 	local FDNS_LINE=""
-	local CDNS_1=""
-	local CDNS_2=""
-	local CDNS_3=""
-	local FDNS_1=""
-	local FDNS_2=""
-	local FDNS_3=""
 
-	# doge.13 beta D1: 优先读新 key ss_split_dns_china_upstream / overseas_upstream
-	# 双轨保留：新 key 非空 → 用新值；新 key 空 → 回退老路径 get_dns china/trust <n>
-	# (doge.14 删老路径)。
+	# doge.14: 分流 DNS 上游永远从 ss_split_dns_china_upstream / overseas_upstream 读
+	# (老 ss_basic_chng_*_chk fallback 已物理移除，兑现 audit §D)
 	local _new_china_b64=$(dbus get ss_split_dns_china_upstream 2>/dev/null)
 	local _new_oversea_b64=$(dbus get ss_split_dns_overseas_upstream 2>/dev/null)
 	local _new_china_lines=$(__get_split_dns_lines "${_new_china_b64}")
 	local _new_oversea_lines=$(__get_split_dns_lines "${_new_oversea_b64}")
 
-	if [ -n "${_new_china_lines}" ]; then
-		CDNS_LINE=$(__join_split_dns_lines "${_new_china_lines}")
-	else
-		# 老路径：复用现有 get_dns() 拼接国内上游
-		[ "${ss_basic_chng_china_dns_1_chk}" = "1" ] && CDNS_1=$(get_dns china 1)
-		[ "${ss_basic_chng_china_dns_2_chk}" = "1" ] && CDNS_2=$(get_dns china 2)
-		[ "${ss_basic_chng_china_dns_3_chk}" = "1" ] && CDNS_3=$(get_dns china 3)
-		for v in "${CDNS_1}" "${CDNS_2}" "${CDNS_3}"; do
-			[ -n "${v}" ] || continue
-			[ -z "${CDNS_LINE}" ] && CDNS_LINE="${v}" || CDNS_LINE="${CDNS_LINE},${v}"
-		done
-	fi
-
-	if [ -n "${_new_oversea_lines}" ]; then
-		FDNS_LINE=$(__join_split_dns_lines "${_new_oversea_lines}")
-	else
-		# 老路径：复用现有 get_dns() 拼接可信上游
-		[ "${ss_basic_chng_trust_dns_1_chk}" = "1" ] && FDNS_1=$(get_dns trust 1)
-		[ "${ss_basic_chng_trust_dns_2_chk}" = "1" ] && FDNS_2=$(get_dns trust 2)
-		[ "${ss_basic_chng_trust_dns_3_chk}" = "1" ] && FDNS_3=$(get_dns trust 3)
-		for v in "${FDNS_1}" "${FDNS_2}" "${FDNS_3}"; do
-			[ -n "${v}" ] || continue
-			[ -z "${FDNS_LINE}" ] && FDNS_LINE="${v}" || FDNS_LINE="${FDNS_LINE},${v}"
-		done
-	fi
+	[ -n "${_new_china_lines}" ] && CDNS_LINE=$(__join_split_dns_lines "${_new_china_lines}")
+	[ -n "${_new_oversea_lines}" ] && FDNS_LINE=$(__join_split_dns_lines "${_new_oversea_lines}")
 
 	# 兜底：上游空时填补
 	[ -z "${CDNS_LINE}" ] && CDNS_LINE="223.5.5.5"
@@ -2350,26 +2284,13 @@ generate_chinadns_split_conf() {
 generate_chinadns_global_conf() {
 	local conf="/tmp/chinadns_ng_global.conf"
 	local FDNS_LINE=""
-	local FDNS_1=""
-	local FDNS_2=""
-	local FDNS_3=""
 
-	# doge.13 beta D1: 优先读新 key ss_split_dns_global_upstream（单行单值，
-	# 用 head -1 即可——全局模式不像分流那样有多上游平衡）。新 key 空 → 回退老路径。
+	# doge.14: 全局 DNS 上游永远从 ss_split_dns_global_upstream 读（单行单值，
+	# 用 head -1 即可——全局模式不像分流那样有多上游平衡）。
+	# (老 ss_basic_chng_trust_dns_*_chk fallback 已物理移除，兑现 audit §D)
 	local _new_global_b64=$(dbus get ss_split_dns_global_upstream 2>/dev/null)
 	local _new_global_lines=$(__get_split_dns_lines "${_new_global_b64}")
-	if [ -n "${_new_global_lines}" ]; then
-		FDNS_LINE=$(echo "${_new_global_lines}" | head -1 | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
-	else
-		# 老路径
-		[ "${ss_basic_chng_trust_dns_1_chk}" = "1" ] && FDNS_1=$(get_dns trust 1)
-		[ "${ss_basic_chng_trust_dns_2_chk}" = "1" ] && FDNS_2=$(get_dns trust 2)
-		[ "${ss_basic_chng_trust_dns_3_chk}" = "1" ] && FDNS_3=$(get_dns trust 3)
-		for v in "${FDNS_1}" "${FDNS_2}" "${FDNS_3}"; do
-			[ -n "${v}" ] || continue
-			[ -z "${FDNS_LINE}" ] && FDNS_LINE="${v}" || FDNS_LINE="${FDNS_LINE},${v}"
-		done
-	fi
+	[ -n "${_new_global_lines}" ] && FDNS_LINE=$(echo "${_new_global_lines}" | head -1 | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
 	[ -z "${FDNS_LINE}" ] && FDNS_LINE="tcp://1.1.1.1"
 
 	rm -f "${conf}" >/dev/null 2>&1
@@ -2458,19 +2379,16 @@ start_chinadns_ng_split() {
 	start_dnsmasq_lan_listener
 	echo_date "💾 生成分流 DNS 实例配置 /tmp/chinadns_ng_split.conf ..."
 	if ! generate_chinadns_split_conf; then
-		echo_date "❌ 分流 DNS 实例配置生成失败，回退到旧 chinadns-ng 路径！"
+		echo_date "❌ 分流 DNS 实例配置生成失败！(doge.14: 旧 chinadns-ng 路径已物理移除，fail loud)"
 		dbus set ss_split_dns_split_status="down"
-		# 失败降级：调用旧函数
 		stop_dnsmasq_lan_listener
-		start_chinadns_ng
 		return 1
 	fi
 	echo_date "💾 生成全局 DNS 实例配置 /tmp/chinadns_ng_global.conf ..."
 	if ! generate_chinadns_global_conf; then
-		echo_date "❌ 全局 DNS 实例配置生成失败，回退到旧 chinadns-ng 路径！"
+		echo_date "❌ 全局 DNS 实例配置生成失败！(doge.14: 旧 chinadns-ng 路径已物理移除，fail loud)"
 		dbus set ss_split_dns_global_status="down"
 		stop_dnsmasq_lan_listener
-		start_chinadns_ng
 		return 1
 	fi
 	echo_date "⚡️ 启动分流 chinadns-ng 实例 @127.0.0.1:${SS_SPLIT_DNS_SPLIT_PORT} ..."
@@ -2514,683 +2432,8 @@ stop_chinadns_ng_split() {
 	stop_dnsmasq_lan_listener
 }
 
-start_chinadns_ng(){
-	# 0. set default var
-	local CDNS_LINE=""
-	local FDNS_LINE=""
-	local CHINA_DNS_1=""
-	local CHINA_DNS_2=""
-	local CHINA_DNS_3=""
-	local TRUST_DNS_1=""
-	local TRUST_DNS_2=""
-	local TRUST_DNS_3=""
-	local DNS_REPEATS=""
-	local ISP_DNS1=$(nvram get wan0_dns | sed 's/ /\n/g' | grep -v 0.0.0.0 | grep -v 127.0.0.1 | sed -n 1p | grep -E "([0-9]{1,3}[\.]){3}[0-9]{1,3}|:")
-
-	# 1. set default value incase of ssconfig.sh restart after upgrade form old verison below 3.3.8
-	set_default "ss_basic_chng" "3"
-	set_default "ss_basic_smrt" "3"
-	
-	set_default "ss_basic_chng_china_dns_1_chk" "1"
-	set_default "ss_basic_chng_china_dns_2_chk" "1"
-	set_default "ss_basic_chng_china_dns_3_chk" "1"
-	set_default "ss_basic_chng_china_net_1_typ" "udp"
-	set_default "ss_basic_chng_china_net_2_typ" "tcp"
-	set_default "ss_basic_chng_china_net_3_typ" "dot"
-
-	if [ -n "${ISP_DNS1}" ]; then
-		set_default "ss_basic_chng_china_udp_1_opt" "${ISP_DNS1}"
-	else
-		set_default "ss_basic_chng_china_udp_1_opt" "223.5.5.5"
-	fi
-	set_default "ss_basic_chng_china_udp_1_usr" "114.114.114.114"
-	set_default "ss_basic_chng_china_udp_2_opt" "223.5.5.5"
-	set_default "ss_basic_chng_china_udp_2_usr" "114.114.115.115"
-	set_default "ss_basic_chng_china_udp_3_opt" "223.5.5.5"
-	set_default "ss_basic_chng_china_udp_3_usr" "114.114.115.115"
-	
-	set_default "ss_basic_chng_china_tcp_1_opt" "119.28.28.28"
-	set_default "ss_basic_chng_china_tcp_1_usr" "114.114.114.114"
-	set_default "ss_basic_chng_china_tcp_2_opt" "119.28.28.28"
-	set_default "ss_basic_chng_china_tcp_2_usr" "114.114.115.115"
-	set_default "ss_basic_chng_china_tcp_3_opt" "119.28.28.28"
-	set_default "ss_basic_chng_china_tcp_3_usr" "114.114.115.115"
-
-	set_default "ss_basic_chng_china_dot_1_opt" "dns.alidns.com@223.5.5.5"
-	set_default "ss_basic_chng_china_dot_1_usr" "114.114.114.114"
-	set_default "ss_basic_chng_china_dot_2_opt" "dns.alidns.com@223.5.5.5"
-	set_default "ss_basic_chng_china_dot_2_usr" "114.114.115.115"
-	set_default "ss_basic_chng_china_dot_3_opt" "dns.alidns.com@223.5.5.5"
-	set_default "ss_basic_chng_china_dot_3_usr" "114.114.115.115"
-	
-	set_default "ss_basic_chng_trust_dns_1_chk" "1"
-	set_default "ss_basic_chng_trust_dns_2_chk" "1"
-	set_default "ss_basic_chng_trust_dns_3_chk" "1"
-	set_default "ss_basic_chng_trust_net_1_typ" "udp"
-	set_default "ss_basic_chng_trust_net_2_typ" "tcp"
-	set_default "ss_basic_chng_trust_net_3_typ" "dot"
-
-	set_default "ss_basic_chng_trust_udp_1_opt" "8.8.8.8"
-	set_default "ss_basic_chng_trust_udp_1_usr" "8.8.8.8:53"
-	set_default "ss_basic_chng_trust_udp_2_opt" "1.1.1.1"
-	set_default "ss_basic_chng_trust_udp_2_usr" "8.8.8.8:53"
-	set_default "ss_basic_chng_trust_udp_3_opt" "9.9.9.9"
-	set_default "ss_basic_chng_trust_udp_3_usr" "8.8.8.8:53"
-	
-	set_default "ss_basic_chng_trust_tcp_1_opt" "1.1.1.1"
-	set_default "ss_basic_chng_trust_tcp_1_usr" "8.8.8.8:53"
-	set_default "ss_basic_chng_trust_tcp_2_opt" "8.8.8.8"
-	set_default "ss_basic_chng_trust_tcp_2_usr" "8.8.8.8:53"
-	set_default "ss_basic_chng_trust_tcp_3_opt" "9.9.9.9"
-	set_default "ss_basic_chng_trust_tcp_3_usr" "8.8.8.8:53"
-
-	set_default "ss_basic_chng_trust_dot_1_opt" "dns.google.com@8.8.8.8"
-	set_default "ss_basic_chng_trust_dot_1_usr" "dns.google.com@8.8.8.8"
-	set_default "ss_basic_chng_trust_dot_2_opt" "dns.google.com@8.8.8.8"
-	set_default "ss_basic_chng_trust_dot_2_usr" "dns.google.com@8.8.8.8"
-	set_default "ss_basic_chng_trust_dot_3_opt" "dns.google.com@8.8.8.8"
-	set_default "ss_basic_chng_trust_dot_3_usr" "dns.google.com@8.8.8.8"
-
-	set_default "ss_basic_chng_ipv6_drop_direc" "0"
-	set_default "ss_basic_chng_ipv6_drop_proxy" "1"
-	set_default "ss_basic_chng_dns_query_times" "1"
-
-	echo_date "----------------------- start chinadns-ng -----------------------"
-	echo_date "💾 生成chinadns-ng配置文件，用于国内外DNS分流..."
-
-	check_fix_isp(){
-		local dns_para=$1
-		local dns_seq=$2
-		local dns_default=$3
-		local dns_addr dns_port dns_explicit
-
-		if [ "${dns_para}" == "99" ];then
-			return 0
-		fi
-
-		{
-			read -r dns_addr
-			read -r dns_port
-			read -r dns_explicit
-		} <<-EOF
-		$(parse_dns_addr_port "${dns_para}")
-		EOF
-		
-		__valid_ip46 "${dns_addr}"
-		if [ "$?" == "0" ]; then
-			# ipv4
-			ipset test chnroute "${dns_addr}" >/dev/null 2>&1
-			if [ "$?" != "0" ]; then
-				# 不是国内ip
-				ipset test ignlist "${dns_addr}" >/dev/null 2>&1
-				if [ "$?" != "0" ]; then
-					# 不是局域网地址
-					echo_date "⚠️ 检测到中国DNS-${dns_seq}的udp DNS：${dns_para}不是国内ip，切换为${dns_default}！"
-					eval "ss_basic_chng_china_udp_${dns_seq}_opt=\$dns_default"
-					dbus set "ss_basic_chng_china_udp_${dns_seq}_opt=$dns_default"
-				fi
-			fi
-		elif [ "$?" == "1" ]; then
-			# ipv6
-			ipset test chnroute6 "${dns_addr}" >/dev/null 2>&1
-			if [ "$?" != "0" ]; then
-				# 不是国内ip
-				ipset test ignlist6 "${dns_addr}" >/dev/null 2>&1
-				if [ "$?" != "0" ]; then
-					echo_date "⚠️ 检测到中国DNS-${dns_seq}的udp DNS：${dns_para}不是国内ip，切换为${dns_default}！"
-					eval "ss_basic_chng_china_udp_${dns_seq}_opt=\$dns_default"
-					dbus set "ss_basic_chng_china_udp_${dns_seq}_opt=$dns_default"
-				fi
-			fi
-		else
-			# 不是ip，帮忙纠正
-			echo_date "⚠️ 检测到中国DNS-${dns_seq}的udp DNS：${dns_para}不是正确的ip，切换为${dns_default}！"
-			eval "ss_basic_chng_china_udp_${dns_seq}_opt=\$dns_default"
-			dbus set "ss_basic_chng_china_udp_${dns_seq}_opt=$dns_default"
-		fi
-	}
-
-	# 非回国模式下，检测用户的isp dns是否为国外dns（是否在中国dns-1/-2/-3中使用了国外dns）
-	if [ "${ss_basic_mode}" != "6" ]; then
-		if [ "${ss_basic_chng_china_dns_1_chk}" == "1" -a "${ss_basic_chng_china_net_1_typ}" == "udp" ];then
-			check_fix_isp ${ss_basic_chng_china_udp_1_opt} 1 223.5.5.5
-		fi
-		if [ "${ss_basic_chng_china_dns_2_chk}" == "1" -a "${ss_basic_chng_china_net_2_typ}" == "udp" ];then
-			check_fix_isp ${ss_basic_chng_china_udp_2_opt} 2 223.6.6.6
-		fi
-		if [ "${ss_basic_chng_china_dns_3_chk}" == "1" -a "${ss_basic_chng_china_net_3_typ}" == "udp" ];then
-			check_fix_isp ${ss_basic_chng_china_udp_3_opt} 3 119.29.29.29
-		fi
-	fi
-
-	check_user_dns(){
-		local dns_para=$1
-		local dns_seq=$2
-		local dns_default=$3
-		local dns_type=$4
-		local addr port explicit_port
-
-		{
-			read -r addr
-			read -r port
-			read -r explicit_port
-		} <<-EOF
-		$(parse_dns_addr_port "${dns_para}")
-		EOF
-
-		__valid_ip46 "${addr}"
-		if [ "$?" == "0" ]; then
-			# ipv4
-			ipset test chnroute ${addr} >/dev/null 2>&1
-			if [ "$?" != "0" ]; then
-				# 不是国内ip
-				ipset test ignlist ${addr} >/dev/null 2>&1
-				if [ "$?" != "0" ]; then
-					echo_date "⚠️ 检测到中国DNS-${dns_seq}的${dns_type} DNS：${dns_para}不是国内ip，切换为${dns_default}！"
-					eval "ss_basic_chng_china_${dns_type}_${dns_seq}_usr=\$dns_default"
-					dbus set "ss_basic_chng_china_${dns_type}_${dns_seq}_usr=$dns_default"
-				fi
-			fi
-		elif [ "$?" == "1" ]; then
-			# ipv6
-			ipset test chnroute6 ${addr} >/dev/null 2>&1
-			if [ "$?" != "0" ]; then
-				# 不是国内ip
-				ipset test ignlist6 ${addr} >/dev/null 2>&1
-				if [ "$?" != "0" ]; then
-					echo_date "⚠️ 检测到中国DNS-${dns_seq}的${dns_type} DNS：${dns_para}不是国内ip，切换为${dns_default}！"
-					eval "ss_basic_chng_china_${dns_type}_${dns_seq}_usr=\$dns_default"
-					dbus set "ss_basic_chng_china_${dns_type}_${dns_seq}_usr=$dns_default"
-				fi
-			fi
-		else
-			# 不是ip，帮忙纠正
-			echo_date "⚠️ 检测到中国DNS-${dns_seq}的${dns_type} DNS：${dns_para}不是正确的ip，切换为${dns_default}！"
-			eval "ss_basic_chng_china_${dns_type}_${dns_seq}_usr=\$dns_default"
-			dbus set "ss_basic_chng_china_${dns_type}_${dns_seq}_usr=$dns_default"
-		fi
-	}
-	
-	# 检测用户设置的中国udp/tcp DNS-1/-2/-3，自定义dns是否为国外dns
-	if [ "${ss_basic_mode}" != "6" ]; then
-		# udp
-		if [ "${ss_basic_chng_china_dns_1_chk}" == "1" -a "${ss_basic_chng_china_net_1_typ}" == "udp" -a "${ss_basic_chng_china_udp_1_opt}" == "99" ];then
-			check_user_dns ${ss_basic_chng_china_udp_1_usr} 1 223.5.5.5 udp
-		fi
-		if [ "${ss_basic_chng_china_dns_2_chk}" == "1" -a "${ss_basic_chng_china_net_2_typ}" == "udp" -a "${ss_basic_chng_china_udp_2_opt}" == "99" ];then
-			check_user_dns ${ss_basic_chng_china_udp_2_usr} 2 223.6.6.6 udp
-		fi
-		if [ "${ss_basic_chng_china_dns_3_chk}" == "1" -a "${ss_basic_chng_china_net_3_typ}" == "udp" -a "${ss_basic_chng_china_udp_3_opt}" == "99" ];then
-			check_user_dns ${ss_basic_chng_china_udp_3_usr} 3 119.29.29.29 udp
-		fi
-
-		# tcp
-		if [ "${ss_basic_chng_china_dns_1_chk}" == "1" -a "${ss_basic_chng_china_net_1_typ}" == "tcp" -a "${ss_basic_chng_china_tcp_1_opt}" == "99" ];then
-			check_user_dns ${ss_basic_chng_china_tcp_1_usr} 1 223.5.5.5 tcp
-		fi
-		if [ "${ss_basic_chng_china_dns_2_chk}" == "1" -a "${ss_basic_chng_china_net_2_typ}" == "tcp" -a "${ss_basic_chng_china_tcp_2_opt}" == "99" ];then
-			check_user_dns ${ss_basic_chng_china_tcp_2_usr} 2 223.6.6.6 tcp
-		fi
-		if [ "${ss_basic_chng_china_dns_3_chk}" == "1" -a "${ss_basic_chng_china_net_3_typ}" == "tcp" -a "${ss_basic_chng_china_tcp_3_opt}" == "99" ];then
-			check_user_dns ${ss_basic_chng_china_tcp_3_usr} 3 119.28.28.28 tcp
-		fi
-		
-	fi
-
-	# 1. 避免用户乱设置给关掉，强制要求中国DNS不能三个都不选
-	if [ "${ss_basic_chng_china_dns_1_chk}" != "1" -a "${ss_basic_chng_china_dns_2_chk}" != "1" -a "${ss_basic_chng_china_dns_3_chk}" != "1" ];then
-		echo_date "⚠️ 检测到中国DNS-1、中国DNS-2和中国DNS-3均未开启，至少需要指定一个国内上游DNS！"
-		echo_date "⤴️ 自动开启中国DNS-1和中国DNS-2！"
-		ss_basic_chng_china_dns_1_chk=1
-		dbus set ss_basic_chng_china_dns_1_chk=1
-		ss_basic_chng_china_dns_2_chk=1
-		dbus set ss_basic_chng_china_dns_2_chk=1
-	fi
-
-	# 2. 避免用户乱设置给关掉，强制要求可信DNS不能三个都不选
-	if [ "${ss_basic_chng_trust_dns_1_chk}" != "1" -a "${ss_basic_chng_trust_dns_2_chk}" != "1" -a "${ss_basic_chng_trust_dns_3_chk}" != "1" ];then
-		echo_date "⚠️ 检测到可信DNS-1、可信DNS-2和可信DNS-3均未开启，至少需要指定一个可信上游DNS！"
-		echo_date "⤴️ 自动开启可信DNS-1和可信DNS-2！"
-		ss_basic_chng_trust_dns_1_chk="1"
-		dbus set ss_basic_chng_trust_dns_1_chk="1"
-		ss_basic_chng_trust_dns_2_chk="1"
-		dbus set ss_basic_chng_trust_dns_2_chk="1"
-	fi
-	
-	# 3. chinadns-ng的启动参数检查
-	# if [ -n "${ss_basic_chng_dns_query_times}" ];then
-	# 	if [ $(number_test ${ss_basic_chng_dns_query_times}) != "0" ];then
-	# 		echo_date "⚠️ chinadns-ng重复发包次数填写错误，自动更正为1！"
-	# 		ss_basic_chng_dns_query_times="1"
-	# 		dbus set ss_basic_chng_dns_query_times="1"
-	# 	fi
-	# 	if [ ${ss_basic_chng_dns_query_times} -gt "3" ];then
-	# 		echo_date "⚠️ chinadns-ng重复发包次数填为${ss_basic_chng_dns_query_times}！建议此处设置不超过3！继续！"
-	# 	fi
-	# 	local DNS_REPEATS="repeat-times ${ss_basic_chng_dns_query_times}"
-	# fi
-
-	# 4. 生成chinadns-ng的国内DNS
-	# 中国DNS-1 (直连) 🌏
-	if [ "${ss_basic_chng_china_dns_1_chk}" == "1" ];then
-		local CDNS_1=$(get_dns china 1)
-		if [ "${ss_basic_dns_serverx}" == "1" ];then
-			echo_date "🔍️ → chinadns-ng (china) → ${CDNS_1%%\?*}"
-		else
-			echo_date "🔍️ → dnsmasq → chinadns-ng (china) → ${CDNS_1%%\?*}"
-		fi
-	fi
-
-	# 中国DNS-2 (直连) 🌏
-	if [ "${ss_basic_chng_china_dns_2_chk}" == "1" ];then
-		local CDNS_2=$(get_dns china 2)
-		if [ "${ss_basic_dns_serverx}" == "1" ];then
-			echo_date "🔍️ → chinadns-ng (china) → ${CDNS_2%%\?*}"
-		else
-			echo_date "🔍️ → dnsmasq → chinadns-ng (china) → ${CDNS_2%%\?*}"
-		fi
-	fi
-
-	# 中国DNS-3 (直连) 🌏
-	if [ "${ss_basic_chng_china_dns_3_chk}" == "1" ];then
-		local CDNS_3=$(get_dns china 3)
-		if [ "${ss_basic_dns_serverx}" == "1" ];then
-			echo_date "🔍️ → chinadns-ng (china) → ${CDNS_3%%\?*}"
-		else
-			echo_date "🔍️ → dnsmasq → chinadns-ng (china) → ${CDNS_3%%\?*}"
-		fi
-	fi
-
-	if [ "$CDNS_1" == "$CDNS_2" ] && [ "$CDNS_2" == "$CDNS_3" ]; then
-		# 三个变量都相同
-		if [ -n "$CDNS_1" ]; then
-			#三个变量都相同，且都是非空
-			echo_date "⚠️检测到三个中国DNS设置相同！请更改设置，本次仅使用第一个，关闭其余两个！"
-			dbus set ss_basic_chng_china_dns_2_chk=0
-			dbus set ss_basic_chng_china_dns_3_chk=0
-			unset CDNS_2
-			unset CDNS_3
-		fi
-	elif [ "$CDNS_1" == "$CDNS_2" ]; then
-		# 第1和第2变量相同，但与第3不同
-		if [ -n "$CDNS_1" ]; then
-			echo_date "⚠️ 检测到中国DNS-1和中国DNS-2设置相同，自动关闭中国DNS-2！"
-			dbus set ss_basic_chng_china_dns_2_chk=0
-			unset CDNS_2
-		fi
-	elif [ "$CDNS_1" == "$CDNS_3" ]; then
-		# 第1和第3变量相同，但与第2不同
-		if [ -n "$CDNS_1" ]; then
-			echo_date "⚠️ 检测到中国DNS-1和中国DNS-3设置相同，自动关闭中国DNS-3！"
-			dbus set ss_basic_chng_china_dns_3_chk=0
-			unset CDNS_3
-		fi
-	elif [ "$CDNS_2" == "$CDNS_3" ]; then
-		# 第2和第3变量相同，但与第1不同
-		if [ -n "$CDNS_2" ]; then
-			echo_date "⚠️ 检测到中国DNS-2和中国DNS-3设置相同，自动关闭中国DNS-3！"
-			dbus set ss_basic_chng_china_dns_3_chk=0
-			unset CDNS_3
-		fi
-	fi
-
-	# 5. 生成chinadns-ng的可信DNS
-	local FDNS_SKIPPED_UDP_COUNT=0
-	# 可信DNS-1 (代理) 🚀
-	if [ "${ss_basic_chng_trust_dns_1_chk}" == "1" ];then
-		local FDNS_1=$(get_dns trust 1)
-		if [ -n "${FDNS_1}" ];then
-			if [ "${ss_basic_dns_serverx}" == "1" ];then
-				echo_date "🔍️ → chinadns-ng (trust) → $(get_proxy_type "$(get_dns_effective_net trust 1)") → ${FDNS_1%%\?*}"
-			else
-				echo_date "🔍️ → dnsmasq → chinadns-ng (trust) → $(get_proxy_type "$(get_dns_effective_net trust 1)") → ${FDNS_1%%\?*}"
-			fi
-		else
-			FDNS_SKIPPED_UDP_COUNT=$((FDNS_SKIPPED_UDP_COUNT + 1))
-		fi
-	fi
-
-	# 可信DNS-2 (代理) 🚀
-	if [ "${ss_basic_chng_trust_dns_2_chk}" == "1" ];then
-		local FDNS_2=$(get_dns trust 2)
-		if [ -n "${FDNS_2}" ];then
-			if [ "${ss_basic_dns_serverx}" == "1" ];then
-				echo_date "🔍️ → chinadns-ng (trust) → $(get_proxy_type "$(get_dns_effective_net trust 2)") → ${FDNS_2%%\?*}"
-			else
-				echo_date "🔍️ → dnsmasq → chinadns-ng (trust) → $(get_proxy_type "$(get_dns_effective_net trust 2)") → ${FDNS_2%%\?*}"
-			fi
-		else
-			FDNS_SKIPPED_UDP_COUNT=$((FDNS_SKIPPED_UDP_COUNT + 1))
-		fi
-	fi
-
-	# 可信DNS-3 (代理) 🚀
-	if [ "${ss_basic_chng_trust_dns_3_chk}" == "1" ];then
-		local FDNS_3=$(get_dns trust 3)
-		if [ -n "${FDNS_3}" ];then
-			if [ "${ss_basic_dns_serverx}" == "1" ];then
-				echo_date "🔍️ → chinadns-ng (trust) → $(get_proxy_type "$(get_dns_effective_net trust 3)") → ${FDNS_3%%\?*}"
-			else
-				echo_date "🔍️ → dnsmasq → chinadns-ng (trust) → $(get_proxy_type "$(get_dns_effective_net trust 3)") → ${FDNS_3%%\?*}"
-			fi
-		else
-			FDNS_SKIPPED_UDP_COUNT=$((FDNS_SKIPPED_UDP_COUNT + 1))
-		fi
-	fi
-
-	if ! proxy_core_supports_udp && [ "${FDNS_SKIPPED_UDP_COUNT}" -gt 0 ];then
-		echo_date "⚠️chinadns-ng：已跳过 ${FDNS_SKIPPED_UDP_COUNT} 个可信 UDP DNS。"
-	fi
-	if ! proxy_core_supports_udp && [ -z "${FDNS_1}${FDNS_2}${FDNS_3}" ];then
-		FDNS_1="tcp://8.8.8.8"
-		echo_date "⚠️chinadns-ng：可信组没有可用 TCP/DoT DNS，已使用 tcp://8.8.8.8 兜底。"
-	fi
-
-	if [ "$FDNS_1" == "$FDNS_2" ] && [ "$FDNS_2" == "$FDNS_3" ]; then
-		# 三个变量都相同
-		if [ -n "$FDNS_1" ]; then
-			#三个变量都相同，且都是非空
-			echo_date "⚠️ 检测到三个可信DNS设置相同！请更改设置，本次仅使用第一个，关闭其余两个！"
-			dbus set ss_basic_chng_trust_dns_2_chk=0
-			dbus set ss_basic_chng_trust_dns_3_chk=0
-			unset FDNS_2
-			unset FDNS_3
-		fi
-	elif [ "$FDNS_1" == "$FDNS_2" ]; then
-		# 第1和第2变量相同，但与第3不同
-		if [ -n "$FDNS_1" ]; then
-			echo_date "⚠️ 检测到可信DNS-1和可信DNS-2设置相同，自动关闭可信DNS-2！"
-			dbus set ss_basic_chng_trust_dns_2_chk=0
-			unset FDNS_2
-		fi
-	elif [ "$FDNS_1" == "$FDNS_3" ]; then
-		# 第1和第3变量相同，但与第2不同
-		if [ -n "$FDNS_1" ]; then
-			echo_date "⚠️ 检测到可信DNS-1和可信DNS-3设置相同，自动关闭可信DNS-3！"
-			dbus set ss_basic_chng_trust_dns_3_chk=0
-			unset FDNS_3
-		fi
-	elif [ "$FDNS_2" == "$FDNS_3" ]; then
-		# 第2和第3变量相同，但与第1不同
-		if [ -n "$FDNS_2" ]; then
-			echo_date "⚠️ 检测到可信DNS-2和可信DNS-3设置相同，自动关闭可信DNS-3！"
-			dbus set ss_basic_chng_trust_dns_3_chk=0
-			unset FDNS_3
-		fi
-	fi
-
-	# [ -n "$CDNS_1" ] && echo_date "CDNS_1: $CDNS_1"
-	# [ -n "$CDNS_2" ] && echo_date "CDNS_2: $CDNS_2"
-	# [ -n "$CDNS_3" ] && echo_date "CDNS_3: $CDNS_3"
-	# [ -n "$FDNS_1" ] && echo_date "FDNS_1: $FDNS_1"
-	# [ -n "$FDNS_2" ] && echo_date "FDNS_2: $FDNS_2"
-	# [ -n "$FDNS_3" ] && echo_date "FDNS_3: $FDNS_3"
-
-
-	if [ -n "${CDNS_1}" -a -n "${CDNS_2}" -a -n "${CDNS_3}" ]; then
-		local CDNS_LINE=${CDNS_1},${CDNS_2},${CDNS_3}
-	elif [ -n "${CDNS_1}" -a -n "${CDNS_2}" -a -z "${CDNS_3}" ]; then
-		local CDNS_LINE=${CDNS_1},${CDNS_2}
-	elif [ -n "${CDNS_1}" -a -z "${CDNS_2}" -a -n "${CDNS_3}" ]; then
-		local CDNS_LINE=${CDNS_1},${CDNS_3}
-	elif [ -z "${CDNS_1}" -a -n "${CDNS_2}" -a -n "${CDNS_3}" ]; then
-		local CDNS_LINE=${CDNS_2},${CDNS_3}
-	elif [ -n "${CDNS_1}" -a -z "${CDNS_2}" -a -z "${CDNS_3}" ]; then
-		local CDNS_LINE=${CDNS_1}
-	elif [ -z "${CDNS_1}" -a -n "${CDNS_2}" -a -z "${CDNS_3}" ]; then
-		local CDNS_LINE=${CDNS_2}
-	elif [ -z "${CDNS_1}" -a -z "${CDNS_2}" -a -n "$CDN{}S_3" ]; then
-		local CDNS_LINE=${CDNS_3}
-	fi
-	
-	if [ -n "${FDNS_1}" -a -n "${FDNS_2}" -a -n "${FDNS_3}" ]; then
-		local FDNS_LINE=${FDNS_1},${FDNS_2},${FDNS_3}
-	elif [ -n "${FDNS_1}" -a -n "${FDNS_2}" -a -z "${FDNS_3}" ]; then
-		local FDNS_LINE=${FDNS_1},${FDNS_2}
-	elif [ -n "${FDNS_1}" -a -z "${FDNS_2}" -a -n "${FDNS_3}" ]; then
-		local FDNS_LINE=${FDNS_1},${FDNS_3}
-	elif [ -z "${FDNS_1}" -a -n "${FDNS_2}" -a -n "${FDNS_3}" ]; then
-		local FDNS_LINE=${FDNS_2},${FDNS_3}
-	elif [ -n "${FDNS_1}" -a -z "${FDNS_2}" -a -z "${FDNS_3}" ]; then
-		local FDNS_LINE=${FDNS_1}
-	elif [ -z "${FDNS_1}" -a -n "${FDNS_2}" -a -z "${FDNS_3}" ]; then
-		local FDNS_LINE=${FDNS_2}
-	elif [ -z "${FDNS_1}" -a -z "${FDNS_2}" -a -n "${FDNS_3}" ]; then
-		local FDNS_LINE=${FDNS_3}
-	fi
-
-	# 3. 给出警告，可信DNS里至少需要一个tcp/dot服务器（避免因全部使用udp服务器，而服务器不支持udp导致问题）
-	local F_RET=$(echo ${FDNS_LINE} | grep -E "tcp|tls")
-	if [ -z "${F_RET}" ];then
-		echo_date "⚠️ 警告：建议可信DNS里至少启用一个tcp/dot服务器，以避免代理节点不支持udp"
-	fi
-
-	if [ "${ss_basic_dns_serverx}" == "1" ];then
-		local chng_bind_port=53
-	else
-		local chng_bind_port=7913
-	fi
-
-	# gen chinadns-ng conf
-	rm -rf /tmp/chinadns_ng.conf
-	cat >>"/tmp/chinadns_ng.conf" <<-EOF
-		# 监听地址和端口
-		bind-addr ::
-		bind-port ${chng_bind_port}@udp
-
-		proxy-server socks5://127.0.0.1:23456
-		proxy-group gfw,black,router
-		proxy-protocol tcp,tls
-		
-	EOF
-
-	echo "# 国内上游" >>/tmp/chinadns_ng.conf
-	[ -n "$CDNS_1" ] && echo "china-dns $CDNS_1" >>/tmp/chinadns_ng.conf
-	[ -n "$CDNS_2" ] && echo "china-dns $CDNS_2" >>/tmp/chinadns_ng.conf
-	[ -n "$CDNS_3" ] && echo "china-dns $CDNS_3" >>/tmp/chinadns_ng.conf
-	echo "" >>/tmp/chinadns_ng.conf
-	echo "# 可信上游" >>/tmp/chinadns_ng.conf
-	[ -n "$FDNS_1" ] && echo "trust-dns $FDNS_1" >>/tmp/chinadns_ng.conf
-	[ -n "$FDNS_2" ] && echo "trust-dns $FDNS_2" >>/tmp/chinadns_ng.conf
-	[ -n "$FDNS_3" ] && echo "trust-dns $FDNS_3" >>/tmp/chinadns_ng.conf
-		
-	if [ "${ss_basic_chng}" == "1" ];then
-		cat >>"/tmp/chinadns_ng.conf" <<-EOF
-			
-			# 国内优先：gfwlist黑名单模式
-			chnlist-file /koolshare/ss/rules/chnlist.gz
-			gfwlist-file /koolshare/ss/rules/gfwlist.gz
-			default-tag chn
-						
-			# 收集 tag:gfw 域名的 IP，用于走代理
-			add-tagchn-ip chnlist,chnlist6
-			add-taggfw-ip gfwlist,gfwlist6
-			
-		EOF
-	elif [ "${ss_basic_chng}" == "2" ];then
-		cat >>"/tmp/chinadns_ng.conf" <<-EOF
-			
-			# 国外优先：chnlist白名单模式
-			chnlist-file /koolshare/ss/rules/chnlist.gz
-			gfwlist-file /koolshare/ss/rules/gfwlist.gz
-			default-tag gfw
-						
-			# 收集 tag:chn域名的 IP，用于不走代理
-			add-tagchn-ip chnlist,chnlist6
-			add-taggfw-ip gfwlist,gfwlist6
-			
-		EOF
-	elif [ "${ss_basic_chng}" == "3" ];then
-		# 智能判断：chnroute模式
-		# 1. 先匹配chnlist.txt内域名，用国内上游解析，并将解析ip结果存于ipset:chnlist,chnlist6中，此部分流量走直连（即使解析到海外ip）
-		# 2. 再匹配gfwlist.txt内域名，用可信上游解析，并将解析ip结果存于ipset:gfwlist,gfwlist6中，此部分流量走代理（即使解析到大陆ip）
-		# 3. 其余域名请求，即chnlist和gfwlist均为匹配上的，同时用国内和可信上游解析，解析结果如果是大陆ip，则走直连，如果是海外ip则走代理
-		cat >>"/tmp/chinadns_ng.conf" <<-EOF
-			
-			# 智能判断：chnroute模式
-			chnlist-file /koolshare/ss/rules/chnlist.gz
-			gfwlist-file /koolshare/ss/rules/gfwlist.gz
-			chnlist-first
-			
-			# 收集 tag:chn、tag:gfw 域名的 IP
-			add-tagchn-ip chnlist,chnlist6
-			add-taggfw-ip gfwlist,gfwlist6
-			
-		EOF
-	fi
-	
-	# defalut
-	cat >>"/tmp/chinadns_ng.conf" <<-EOF
-		# 当前节点服务器域名直连解析
-	EOF
-	if [ -s /tmp/ss_node_domains.txt ];then
-		cat >>"/tmp/chinadns_ng.conf" <<-EOF
-			group node
-			group-dnl /tmp/ss_node_domains.txt
-			group-upstream ${CDNS_LINE}
-
-		EOF
-	fi
-
-	cat >>"/tmp/chinadns_ng.conf" <<-EOF
-		# 域名白名单
-		group white
-		group-dnl /tmp/white_list.txt
-		group-upstream ${CDNS_LINE}
-		group-ipset white_list,white_list6
-
-		# 域名黑名单
-		group black
-		group-dnl /tmp/black_list.txt
-		group-upstream ${FDNS_LINE}
-		group-ipset black_list,black_list6
-
-		# 控制路由器内部哪些域名需要走代理
-		group router
-		group-dnl /koolshare/ss/rules/rotlist.txt
-		group-upstream ${FDNS_LINE}
-		group-ipset router,router6
-		
-	EOF
-
-	if [ "${ss_basic_block_resov}" == "1" ]; then
-		cat >>"/tmp/chinadns_ng.conf" <<-EOF
-			group null
-			group-dnl /tmp/block_list.txt
-			
-		EOF
-	fi
-
-	# 未匹配域名判决
-	cat >>"/tmp/chinadns_ng.conf" <<-EOF
-		# 测试 tag:none 域名的 IP (针对国内上游)
-		ipset-name4 chnroute
-		ipset-name6 chnroute6
-		
-	EOF
-	
-	if [ "${INTERNET6}" == "0" ];then
-		# 检测到系统未开启ipv6功能，默认关闭所有ipv6解析
-		dbus set ss_basic_internet6_flag=0
-		cat >>"/tmp/chinadns_ng.conf" <<-EOF
-			# ipv6请求行为：全部过滤
-			no-ipv6
-		EOF
-	else
-		dbus set ss_basic_internet6_flag=1
-		local chng_drop_direc="${ss_basic_chng_ipv6_drop_direc}"
-		local chng_drop_proxy="${ss_basic_chng_ipv6_drop_proxy}"
-		if ipv6_proxy_enabled; then
-			chng_drop_proxy="0"
-			echo_date "检测到IPv6透明代理已开启，代理域名的AAAA过滤将自动关闭。"
-		fi
-		if [ "${chng_drop_direc}" == "0" -a "${chng_drop_proxy}" == "1" ];then
-			cat >>"/tmp/chinadns_ng.conf" <<-EOF
-				# ipv6请求行为，过滤代理域名
-				no-ipv6 tag:gfw,tag:router,tag:black,tag:none@ip:non_china
-			EOF
-		elif [ "${chng_drop_direc}" == "1" -a "${chng_drop_proxy}" == "1" ];then
-			cat >>"/tmp/chinadns_ng.conf" <<-EOF
-				# ipv6请求行为：过滤全部业务域名，保留节点服务器域名直连解析
-				no-ipv6 tag:chn,tag:white,tag:gfw,tag:router,tag:black,tag:none@ip:china,tag:none@ip:non_china
-			EOF
-		elif [ "${chng_drop_direc}" == "1" -a "${chng_drop_proxy}" == "0" ];then
-			cat >>"/tmp/chinadns_ng.conf" <<-EOF
-				# ipv6请求行为：全部直连域名
-				no-ipv6 tag:chn,tag:white,tag:none@ip:china
-			EOF
-		fi
-	fi
-
-	# for hosts file
-	cp -rf /tmp/etc/hosts /tmp/etc/chng_hosts
-	sed -i 's/\.[[:space:]]/ /g' /etc/chng_hosts
-	
-	cat >>"/tmp/chinadns_ng.conf" <<-EOF
-	
-		# 过滤dns
-		filter-qtype 64,65
-
-		# hosts
-		hosts /etc/chng_hosts
-		
-		# dns 缓存
-		cache 8192
-		cache-stale 86400
-		cache-refresh 20
-		cache-ignore asuscomm.com
-		#cache-db /tmp/chinadns_cache.db
-		
-		# verdict 缓存 (用于 tag:none 域名)
-		verdict-cache 8192
-		verdict-cache-db /tmp/chinadns_verdict_cache.db
-		
-		# dns重复发包
-		${DNS_REPEATS}
-		
-		# 详细日志
-		#verbose
-	EOF
-	echo_date "🆗 chinadns-ng配置文件生成完毕，位于/tmp/chinadns_ng.conf"
-	echo_date "⚡️ 开启chinadns-ng，用于所有域名的DNS解析..."
-	rm -rf /tmp/chinadns@cache.db >/dev/null 2>&1
-	rm -rf /tmp/chinadns@verdict-cache.db >/dev/null 2>&1
-	rm -rf /tmp/chinadns_log.txt >/dev/null 2>&1
-
-	local pkg_arch=$(cat /koolshare/webs/Module_shadowsocks.asp | tr -d '\r' | grep -Eo "PKG_ARCH=.+"|awk -F "=" '{print $2}'|sed 's/"//g')
-	local pkg_type=$(cat /koolshare/webs/Module_shadowsocks.asp | tr -d '\r' | grep -Eo "PKG_TYPE=.+"|awk -F "=" '{print $2}'|sed 's/"//g')
-	local pkg_exta=$(cat /koolshare/webs/Module_shadowsocks.asp | tr -d '\r' | grep -Eo "PKG_EXTA=.+"|awk -F "=" '{print $2}'|sed 's/"//g')
-
-	if [ "${pkg_arch}" == "hnd_v8" -o "${pkg_arch}" == "mtk" -o "${pkg_arch}" == "ipq64" ];then
-		if [ "${pkg_type}" == "full" -a "${pkg_exta}" == "_debug" ];then
-			echo_date "⚡️ 开启chinadns-ng debug模式..."
-			local _debug_mode=1
-			#sed -i 's/#verbose/verbose/g' /tmp/chinadns_ng.conf
-			#sed -i 's/#cache-db \/tmp\/chinadns_cache.db/cache-db \/tmp\/chinadns_cache.db/g' /tmp/chinadns_ng.conf
-		fi
-	fi
-	
-	if [ "${_debug_mode}" == "1" ];then
-		ulimit -c unlimited
-		cd /tmp
-		env -i PATH=${PATH} chinadns-ng -C /tmp/chinadns_ng.conf >/tmp/chinadns_log.txt 2>&1 &
-	else
-		env -i PATH=${PATH} chinadns-ng -C /tmp/chinadns_ng.conf >/dev/null 2>&1 &
-	fi
-	
-	detect_running_status chinadns-ng
-	# alpha.17 P1-4: chinadns-ng 启动结果实地探测（detect_running_status 内部已 sleep，
-	# 这里再补一次 pid/port 检查给出明确成败回执）
-	sleep 1
-	local _cdns_pid=$(pidof chinadns-ng | awk '{print $1}')
-	local _cdns_port=$(netstat -lnup 2>/dev/null | grep chinadns-ng | grep -Eo ':[0-9]+' | head -1 | tr -d ':')
-	if [ -n "${_cdns_pid}" ] && [ -n "${_cdns_port}" ]; then
-		echo_date "✅ chinadns-ng 启动完成 pid=${_cdns_pid} listen=127.0.0.1:${_cdns_port}"
-	else
-		echo_date "❌ chinadns-ng 启动失败！pid=${_cdns_pid:-N/A} listen=${_cdns_port:-未探测到}"
-	fi
-	echo_date "---------------------------------------------------------"
-}
+# doge.14: 老 start_chinadns_ng() (677 行) 已物理移除，
+# 分流架构唯一使用 start_chinadns_ng_split / stop_chinadns_ng_split。
 
 parse_dns_addr_port(){
 	local dns_raw="$1"
@@ -3627,19 +2870,10 @@ add_white_black() {
 	rm -rf /tmp/chnroute6.txt
 
 	# copy gfwlist.txt & chnlist.txt to tmp
+	# doge.14: 旧 mode=7 xray 分流模式 geotool 导出分支已物理移除
 	echo_date "创建/tmp/chnlist.txt 和 /tmp/gfwlist.txt！"
-	if [ "${ss_basic_mode}" = "7" ] && type fss_shunt_export_runtime_base_rules >/dev/null 2>&1; then
-		if fss_shunt_export_runtime_base_rules; then
-			echo_date "通过geotool批量导出基础规则：chnlist / gfwlist / chnroute / chnroute6。"
-		else
-			echo_date "geotool批量导出基础规则失败，回退使用内置txt/gz规则。"
-			gzip -d -c /koolshare/ss/rules/chnlist.gz >/tmp/chnlist.txt
-			gzip -d -c /koolshare/ss/rules/gfwlist.gz >/tmp/gfwlist.txt
-		fi
-	else
-		gzip -d -c /koolshare/ss/rules/chnlist.gz >/tmp/chnlist.txt
-		gzip -d -c /koolshare/ss/rules/gfwlist.gz >/tmp/gfwlist.txt
-	fi
+	gzip -d -c /koolshare/ss/rules/chnlist.gz >/tmp/chnlist.txt
+	gzip -d -c /koolshare/ss/rules/gfwlist.gz >/tmp/gfwlist.txt
 	#cp -rf /koolshare/ss/rules/chnlist.txt /tmp/chnlist.txt
 	#cp -rf /koolshare/ss/rules/gfwlist.txt /tmp/gfwlist.txt
 	
@@ -3697,27 +2931,12 @@ add_white_black() {
 	fi
 
 	# {black_list}, black domain
-	local shunt_proxy_file=""
-	local shunt_proxy_count="0"
+	# doge.14: 旧 mode=7 xray 分流模式 shunt_proxy_file 分支已物理移除
 	echo_date "生成域名黑名单！"
-	if [ "${ss_basic_mode}" = "7" ] && type fss_shunt_resolve_proxy_domain_file >/dev/null 2>&1; then
-		fss_shunt_resolve_proxy_domain_file >/dev/null 2>&1 || true
-		shunt_proxy_file="${FSS_SHUNT_PROXY_DOMAIN_FILE_RESULT}"
-	elif [ "${ss_basic_mode}" = "7" ]; then
-		shunt_proxy_file="$(fss_shunt_get_proxy_domain_file 2>/dev/null)"
-	fi
 	{
 		printf '%s\n' ip.sb api.skk.moe ip.skk.moe ipinfo.io ip-api.com us.ip111.cn
 		[ "${ss_basic_proxy_newb}" = "1" ] && printf '%s\n' "bing.com"
 	} > /tmp/black_list.txt
-	if [ -n "${shunt_proxy_file}" ] && [ -s "${shunt_proxy_file}" ]; then
-		shunt_proxy_count="$(wc -l < "${shunt_proxy_file}" | tr -d ' ')"
-		[ -n "${shunt_proxy_count}" ] || shunt_proxy_count="0"
-		echo_date "ℹ️分流运行时代理域名 ${shunt_proxy_count} 条，并入域名黑名单。"
-		cat "${shunt_proxy_file}" >> /tmp/black_list.txt
-	elif [ "${ss_basic_mode}" = "7" ]; then
-		echo_date "ℹ️当前没有额外分流代理域名并入域名黑名单。"
-	fi
 	if [ -n "${ss_wan_black_domain}" ]; then
 		fss_b64_decode "${ss_wan_black_domain}" | awk '
 			{
@@ -5015,48 +4234,10 @@ ${xray_user_json}
 }
 
 creat_shunt_json() {
-	local current_id=""
-	local shunt_config="/koolshare/ss/xray.json"
-
-	current_id="$(fss_shunt_get_default_node_id)"
-	[ -n "${current_id}" ] || current_id="${ssconf_basic_node}"
-	echo_date "创建xray分流配置文件到${shunt_config}"
-	rm -f "${shunt_config}"
-	fss_shunt_build_xray_config "${shunt_config}" "${current_id}" || {
-		echo_date "错误：xray分流配置生成失败，请检查兜底节点和分流规则设置。"
-		close_in_five flag
-	}
-	test_xray_conf "${shunt_config}"
-	case "$?" in
-	0)
-		echo_date "测试结果：${_test_ret}"
-		echo_date "xray分流配置文件通过测试。"
-		;;
-	2)
-		echo_date "测试结果：${_test_ret}"
-		echo_date "检测到当前Xray-core版本不支持fingerprint，自动移除后重试。"
-		run jq 'del(.. | .fingerprint?)' "${shunt_config}" | run sponge "${shunt_config}"
-		test_xray_conf "${shunt_config}"
-		case "$?" in
-		0)
-			echo_date "测试结果：${_test_ret}"
-			echo_date "xray分流配置文件通过测试。"
-			;;
-		*)
-			echo_date "测试结果：${_test_ret}"
-			echo_date "xray分流配置文件没有通过测试，请检查当前节点和分流规则。"
-			rm -f "${shunt_config}"
-			close_in_five flag
-			;;
-		esac
-		;;
-	*)
-		echo_date "测试结果：${_test_ret}"
-		echo_date "xray分流配置文件没有通过测试，请检查当前节点和分流规则。"
-		rm -f "${shunt_config}"
-		close_in_five flag
-		;;
-	esac
+	# doge.14: dead code (mode=7 节点分流退役，唯一调用方已删)。
+	# 函数体改为 no-op 避免任何误调触发 fss_shunt_build_xray_config stub 的 return 1 → close_in_five 弹窗。
+	# 整函数 doge.15 物理删除（连同 ss_node_shunt.sh 整文件）。
+	return 0
 }
 
 # ============================================================================
@@ -5736,42 +4917,27 @@ start_xray() {
 	# 若用户在路由器上误删目录（或 jffs 出问题），dbus 标志位仍是 1，迁移不再重跑
 	# 会让 split 整段静默跳过。alpha.8 实地踩过这个坑。
 	# mode 内 rule_count=0 时不需要任何 rule 文件，所以目录存在即可，无需重 seed。
-	if [ "${ss_split_enabled}" = "1" ]; then
-		if [ ! -d /koolshare/ss/rules_user ]; then
-			echo_date "⚠️ split: /koolshare/ss/rules_user 目录不存在，自动创建（若曾装过 doge.12，install.sh 应该建过；可能是被误删或文件系统问题）"
-			mkdir -p /koolshare/ss/rules_user 2>/dev/null
-			chmod 755 /koolshare/ss/rules_user 2>/dev/null
-		fi
-		if ! generate_xray_json_split; then
-			echo_date "⚠️ split: 新生成器失败，回退到基线 xray.json + 旧链式注入。"
-		fi
+	# doge.14: 分流架构唯一路径
+	if [ ! -d /koolshare/ss/rules_user ]; then
+		echo_date "⚠️ split: /koolshare/ss/rules_user 目录不存在，自动创建（若曾装过 doge.12，install.sh 应该建过；可能是被误删或文件系统问题）"
+		mkdir -p /koolshare/ss/rules_user 2>/dev/null
+		chmod 755 /koolshare/ss/rules_user 2>/dev/null
+	fi
+	if ! generate_xray_json_split; then
+		echo_date "⚠️ split: 新生成器失败，回退到基线 xray.json + 旧链式注入。"
 	fi
 	# xray start
 	echo_date "开启Xray主进程..."
 	cd /koolshare/bin
-	local xray_asset_dir=""
-	if [ "$(get_runtime_proxy_mode)" = "7" ] && type fss_shunt_xray_asset_dir >/dev/null 2>&1; then
-		xray_asset_dir="$(fss_shunt_xray_asset_dir 2>/dev/null || true)"
-	fi
+	# doge.14: 旧 mode=7 xray 分流模式已物理移除，xray_asset_dir 探测分支删
 	# 链式代理（前置节点）注入：
 	# split 路径下 generate_xray_json_split 只动主 outbound tag（→ out_main）和追加
 	# direct/reject 两个 outbound，**不注入链式 outbound**。链式由 fss_chain_apply
 	# 唯一一次注入——在 split 产物的 out_main 上覆盖 streamSettings.sockopt.dialerProxy
 	# 并追加 proxy_front outbound（其 tag 在 xray.json 此前不存在），无 duplicate tag
-	# 冲突。alpha.14 validation 确认无回归（用户实测 outbound=3+chain=4 启动成功）。
-	# split=0/1 两条分支调用一致，差异仅在 generate_xray_json_split 是否跑过。
-	# 注：fss_chain_apply 内部检查 ss_basic_mode=7 (xray分流模式) 时直接 return 0
-	# 并设 ss_chain_status=fallback。alpha 阶段两键独立，若用户开 split_enabled=1
-	# 但保留旧 ss_basic_mode=7 的混合状态，链式会被静默禁用（设计内行为，doge.13
-	# UI 引导会避免该组合）。
-	# split=0/1 两条分支调用一致（fss_chain_apply 内部自己判断 ss_basic_mode/split 状态）；
-	# alpha.17 reviewer W6 标记的 dead if/else，alpha.18 清理为单一行
+	# 冲突。
 	type fss_chain_apply >/dev/null 2>&1 && fss_chain_apply /koolshare/ss/xray.json
-	if [ -n "${xray_asset_dir}" ]; then
-		run_bg env "xray.location.asset=${xray_asset_dir}" /koolshare/bin/xray run -c /koolshare/ss/xray.json
-	else
-		run_bg /koolshare/bin/xray run -c /koolshare/ss/xray.json
-	fi
+	run_bg /koolshare/bin/xray run -c /koolshare/ss/xray.json
 	# alpha.17 P1-2: VERBOSE=1 让 detect_running_status3 打印探测结果；启动后探 pid/监听端口
 	detect_running_status3 xray 23456 1 force
 	local _xray_pid=$(pidof xray | awk '{print $1}')
@@ -6362,75 +5528,9 @@ load_tproxy() {
 }
 
 flush_ipset() {
-	# FORK doge.12 alpha: 分流架构只 flush 极简 ignlist_minimal
-	if [ "${ss_split_enabled}" = "1" ]; then
-		flush_ipset_split
-		return $?
-	fi
-	# flush ipset
-	local existing_sets=""
-	local set_name=""
-	local restore_file="/tmp/fss_ipset_flush.$$"
-	local restore_ok="0"
-
-	existing_sets="$(ipset list -name 2>/dev/null)"
-	if [ -n "${existing_sets}" ]; then
-		: > "${restore_file}" || true
-		while IFS= read -r set_name
-		do
-			case "${set_name}" in
-			ignlist|ignlist6|white_list|white_list6|black_list|black_list6|chnlist|chnlist6|gfwlist|gfwlist6|router|router6|chnroute|chnroute6)
-				printf 'flush %s\ndestroy %s\n' "${set_name}" "${set_name}" >> "${restore_file}"
-				;;
-			esac
-		done <<EOF
-${existing_sets}
-EOF
-		if [ -s "${restore_file}" ]; then
-			echo_date "清除ipset规则集..."
-			if ipset -R < "${restore_file}" >/dev/null 2>&1; then
-				restore_ok="1"
-			fi
-		fi
-		rm -f "${restore_file}" >/dev/null 2>&1
-	fi
-
-	if [ "${restore_ok}" != "1" ]; then
-		echo_date "清除ipset规则集..."
-		ipset -F ignlist >/dev/null 2>&1 && ipset -X ignlist >/dev/null 2>&1
-		ipset -F ignlist6 >/dev/null 2>&1 && ipset -X ignlist6 >/dev/null 2>&1
-
-		ipset -F white_list >/dev/null 2>&1 && ipset -X white_list >/dev/null 2>&1
-		ipset -F white_list6 >/dev/null 2>&1 && ipset -X white_list6 >/dev/null 2>&1
-
-		ipset -F black_list >/dev/null 2>&1 && ipset -X black_list >/dev/null 2>&1
-		ipset -F black_list6 >/dev/null 2>&1 && ipset -X black_list6 >/dev/null 2>&1
-
-		ipset -F chnlist >/dev/null 2>&1 && ipset -X chnlist >/dev/null 2>&1
-		ipset -F chnlist6 >/dev/null 2>&1 && ipset -X chnlist6 >/dev/null 2>&1
-
-		ipset -F gfwlist >/dev/null 2>&1 && ipset -X gfwlist >/dev/null 2>&1
-		ipset -F gfwlist6 >/dev/null 2>&1 && ipset -X gfwlist6 >/dev/null 2>&1
-
-		ipset -F router >/dev/null 2>&1 && ipset -X router >/dev/null 2>&1
-		ipset -F router6 >/dev/null 2>&1 && ipset -X router6 >/dev/null 2>&1
-
-		ipset -F chnroute >/dev/null 2>&1 && ipset -X chnroute >/dev/null 2>&1
-		ipset -F chnroute6 >/dev/null 2>&1 && ipset -X chnroute6 >/dev/null 2>&1
-	fi
-	#remove_redundant_rule
-	local ip_rule_exist=$(ip rule show | grep "lookup 310" | grep -c 310)
-	if [ -n "${ip_rule_exist}" ]; then
-		#echo_date 清除重复的ip rule规则.
-		until [ "${ip_rule_exist}" == "0" ]; do
-			IP_ARG=$(ip rule show | grep "lookup 310" | head -n 1 | cut -d " " -f3,4,5,6)
-			ip rule del $IP_ARG
-			ip_rule_exist=$(expr $ip_rule_exist - 1)
-		done
-	fi
-	#remove_route_table
-	#echo_date 删除ip route规则.
-	ip route del local 0.0.0.0/0 dev lo table 310 >/dev/null 2>&1
+	# doge.14: 分流架构唯一路径，直接走 split 实现（只 flush ignlist_minimal）
+	flush_ipset_split
+	return $?
 }
 
 # FORK doge.12 alpha: 极简化 ipset flush（只清 ignlist_minimal / 6）
@@ -6540,14 +5640,7 @@ creat_ipset() {
 	echo_date "创建ipset名单"
 	local chnroute4_file="/koolshare/ss/rules/chnroute.txt"
 	local chnroute6_file="/koolshare/ss/rules/chnroute6.txt"
-	if [ "${ss_basic_mode}" = "7" ] && type fss_shunt_get_runtime_chnroute4_file >/dev/null 2>&1; then
-		local runtime_chnroute4=""
-		local runtime_chnroute6=""
-		runtime_chnroute4="$(fss_shunt_get_runtime_chnroute4_file 2>/dev/null || true)"
-		runtime_chnroute6="$(fss_shunt_get_runtime_chnroute6_file 2>/dev/null || true)"
-		[ -n "${runtime_chnroute4}" ] && chnroute4_file="${runtime_chnroute4}"
-		[ -n "${runtime_chnroute6}" ] && chnroute6_file="${runtime_chnroute6}"
-	fi
+	# doge.14: 旧 mode=7 xray 分流模式 runtime chnroute 覆盖已物理移除
 
 	# 使用ipset restore批量创建/清空并导入网段，减少大量 ipset 子进程调用，加快启动速度
 	{
@@ -6614,11 +5707,8 @@ get_action_chain() {
 		echo "SHADOWSOCKS_HOM"
 		;;
 	7)
-		if [ "${ss_basic_mode}" = "7" ]; then
-			echo "SHADOWSOCKS_SHU"
-		else
-			get_action_chain "$(get_runtime_proxy_mode)"
-		fi
+		# doge.14: 旧 xray 分流模式已物理移除，case 选项保留 stub 防 default
+		:
 		;;
 	esac
 }
@@ -6644,11 +5734,8 @@ get_action_chain6() {
 		echo "SHADOWSOCKS6_HOM"
 		;;
 	7)
-		if [ "${ss_basic_mode}" = "7" ]; then
-			echo "SHADOWSOCKS6_SHU"
-		else
-			get_action_chain6 "$(get_runtime_proxy_mode)"
-		fi
+		# doge.14: 旧 xray 分流模式已物理移除，case 选项保留 stub 防 default
+		:
 		;;
 	esac
 }
@@ -7263,35 +6350,9 @@ fallback_ipv6_proxy_to_ipv4() {
 }
 
 load_iptables() {
-	# FORK doge.12 alpha: 分流架构 iptables 简化路径
-	if [ "${ss_split_enabled}" = "1" ]; then
-		load_iptables_split
-		return $?
-	fi
-	#local nat_ready=$(ip6tables -t nat -L PREROUTING -v -n --line-numbers | grep -v PREROUTING | grep -v destination)
-	local nat_ready=$(iptables -t nat -L PREROUTING -v -n --line-numbers | grep -v PREROUTING | grep -v destination)
-	i=300
-	until [ -n "$nat_ready" ]; do
-		i=$(($i - 1))
-		if [ "$i" -lt 1 ]; then
-			echo_date "错误：不能正确加载nat规则!"
-			close_in_five
-		fi
-		usleep 100000
-		local nat_ready=$(iptables -t nat -L PREROUTING -v -n --line-numbers | grep -v PREROUTING | grep -v destination)
-	done
-	# creat_ipset
-	# add_white_black
-	if ! _start_iptables; then
-		# alpha.17 P1-5: 失败时先 dump iptables nat/mangle 链残留状态再回滚，便于诊断
-		echo_date "❌ 错误：写入iptables透明代理规则失败！当前 iptables nat/mangle 残留状态："
-		iptables -t nat -L SHADOWSOCKS -n --line-numbers 2>&1 | head -20 | while IFS= read -r _l; do echo_date "    ${_l}"; done
-		iptables -t mangle -L SHADOWSOCKS -n --line-numbers 2>&1 | head -10 | while IFS= read -r _l; do echo_date "    ${_l}"; done
-		echo_date "正在回滚..."
-		flush_iptables
-		flush_ipset
-		close_in_five flag
-	fi
+	# doge.14: 分流架构唯一路径，直接走 split 实现
+	load_iptables_split
+	return $?
 }
 
 # ============================================================================
@@ -8662,7 +7723,7 @@ apply_ss() {
 	echo_date ======================= 梅林固件 - 【科学上网】 ========================
 	echo_date
 	# alpha.17 P1-1: 启动时打印运行参数总览（用户最高优先级运维体验改进）
-	echo_date "运行参数: enable=${ss_basic_enable} mode=${ss_basic_mode}(type=${ss_basic_type}) node=${ssconf_basic_node} front=${ssconf_basic_node_front:-(无)} split_enabled=${ss_split_enabled:-0} failover=${ss_failover_enable:-0}"
+	echo_date "运行参数: enable=${ss_basic_enable} mode=${ss_basic_mode}(type=${ss_basic_type}) node=${ssconf_basic_node} front=${ssconf_basic_node_front:-(无)} failover=${ss_failover_enable:-0}"
 	if [ "${ss_basic_status}" == "1" ];then
 		if shunt_hot_restart_eligible; then
 			shunt_prev_xray_json="/tmp/fss_shunt_prev_xray.json.$$"
@@ -8694,28 +7755,21 @@ apply_ss() {
 	prepare_system
 	resolv_server_ip
 	load_module
-	# FORK doge.12 alpha: split 路径下不创建旧版 ipset 大全（chnlist/chnroute/...）
-	# load_iptables_split 会自己创建 ignlist_minimal
-	if [ "${ss_split_enabled}" != "1" ]; then
-		creat_ipset
-	fi
+	# doge.14: 分流唯一路径；不再创建旧版 ipset 大全（chnlist/chnroute/...），
+	# load_iptables_split 自己创建 ignlist_minimal。
 	create_dnsmasq_conf
 	# FORK doge.12 alpha: split 路径下白/黑名单数据由 generate_xray_json_split 内联消费，
 	# 不再写入 ipset；但 add_white_black 还会做一些 /tmp 文件准备工作（chinadns 用），
 	# 在 ss_basic_dns_serverx=1 时被分流 DNS 实例间接依赖，保留调用。
 	add_white_black
-	# 生成代理主程序配置
-	if [ "${ss_basic_mode}" = "7" ]; then
-		creat_shunt_json
-	else
-		[ "${ss_basic_type}" == "0" ] && creat_xray_ss_json
-		# FORK: cut in doge.10, see doc/design/protocol-roadmap.md §2 (SSR type=1)
-		# [ "${ss_basic_type}" == "1" ] && creat_ssr_json
-		[ "${ss_basic_type}" == "3" ] && creat_vmess_json
-		[ "${ss_basic_type}" == "4" ] && creat_vless_json
-		[ "${ss_basic_type}" == "5" ] && creat_trojan_json
-		[ "${ss_basic_type}" == "8" ] && creat_hy2_json
-	fi
+	# 生成代理主程序配置（doge.14: 旧 mode=7 creat_shunt_json 分支已物理移除）
+	[ "${ss_basic_type}" == "0" ] && creat_xray_ss_json
+	# FORK: cut in doge.10, see doc/design/protocol-roadmap.md §2 (SSR type=1)
+	# [ "${ss_basic_type}" == "1" ] && creat_ssr_json
+	[ "${ss_basic_type}" == "3" ] && creat_vmess_json
+	[ "${ss_basic_type}" == "4" ] && creat_vless_json
+	[ "${ss_basic_type}" == "5" ] && creat_trojan_json
+	[ "${ss_basic_type}" == "8" ] && creat_hy2_json
 
 	local bootstrap_dns_first="0"
 	if should_bootstrap_dns_before_proxy; then
@@ -8727,30 +7781,17 @@ apply_ss() {
 		fi
 	fi
 
-	# 开启代理主程序
-	if [ "${ss_basic_mode}" = "7" ]; then
-		if [ "${shunt_hot_restart}" = "1" ] && shunt_configs_equivalent "${shunt_prev_xray_json}" "/koolshare/ss/xray.json"; then
-			echo_date "[hot-reload] 检测到 xray 配置未变化，保留当前 xray 进程并复用已有运行时统计。"
-		else
-			if [ "${shunt_hot_restart}" = "1" ]; then
-				echo_date "[hot-reload] 检测到 xray 配置已变化，回退为重启 xray 主进程。"
-				FSS_SKIP_XRAY_PORT_CLEANUP=""
-				kill_process
-			fi
-			start_xray
-		fi
-	else
-		[ "${ss_basic_type}" == "0" ] && start_xray
-		# FORK: cut in doge.10, see doc/design/protocol-roadmap.md §2 (SSR type=1 / Naive type=6 / Tuic type=7)
-		# [ "${ss_basic_type}" == "1" ] && start_ssr_redir
-		[ "${ss_basic_type}" == "3" ] && start_xray
-		[ "${ss_basic_type}" == "4" ] && start_xray
-		[ "${ss_basic_type}" == "5" ] && start_trojan
-		# [ "${ss_basic_type}" == "6" ] && start_naive
-		# [ "${ss_basic_type}" == "7" ] && start_tuic
-		[ "${ss_basic_type}" == "8" ] && start_hy2
-		[ "${ss_basic_type}" == "9" ] && start_anytls
-	fi
+	# 开启代理主程序（doge.14: 旧 mode=7 xray 分流模式分支已物理移除）
+	[ "${ss_basic_type}" == "0" ] && start_xray
+	# FORK: cut in doge.10, see doc/design/protocol-roadmap.md §2 (SSR type=1 / Naive type=6 / Tuic type=7)
+	# [ "${ss_basic_type}" == "1" ] && start_ssr_redir
+	[ "${ss_basic_type}" == "3" ] && start_xray
+	[ "${ss_basic_type}" == "4" ] && start_xray
+	[ "${ss_basic_type}" == "5" ] && start_trojan
+	# [ "${ss_basic_type}" == "6" ] && start_naive
+	# [ "${ss_basic_type}" == "7" ] && start_tuic
+	[ "${ss_basic_type}" == "8" ] && start_hy2
+	[ "${ss_basic_type}" == "9" ] && start_anytls
 
 	if [ "${bootstrap_dns_first}" != "1" ]; then
 		restart_dnsmasq
@@ -8767,23 +7808,19 @@ apply_ss() {
 	finish_start
 	ss_post_start
 	check_status
-	if [ "${ss_basic_mode}" = "7" ] && [ "${ss_basic_shunt_hot_reload}" = "1" ] && [ -x "/koolshare/scripts/ss_shunt_hot_reload.sh" ]; then
-		sh /koolshare/scripts/ss_shunt_hot_reload.sh seed >/dev/null 2>&1 || true
-	fi
-	# split 路径诊断（alpha 阶段保留，doge.13 转默认开启时移除或加开关守护）：
+	# doge.14: mode=7 (旧 xray 分流模式) 已物理移除；hot-reload 钩子整段删
+	# doge.14: 分流路径诊断（保留供 split 路径调试用）：
 	# xray inbound TPROXY 端口是否真在 listen，方便实机定位 "iptables TPROXY 计数有但客户端不通"。
-	if [ "${ss_split_enabled}" = "1" ]; then
-		sleep 1
-		local _split_listen=$(netstat -lntup 2>/dev/null | grep -E "[: ](13333|13334|13335|13336|23456)\b" | head -10)
-		if [ -n "${_split_listen}" ]; then
-			echo_date "🔎 split 诊断: xray 监听端口 ↓"
-			echo "${_split_listen}" | while IFS= read -r _line; do echo_date "    ${_line}"; done
-		else
-			echo_date "⚠️ split 诊断: 未探测到 xray 在 13333~13336/23456 上 listen，xray 可能 inbound 启动失败"
-			if [ -f /tmp/upload/xray.log ]; then
-				echo_date "    /tmp/upload/xray.log 尾部 ↓"
-				tail -8 /tmp/upload/xray.log 2>/dev/null | while IFS= read -r _line; do echo_date "    ${_line}"; done
-			fi
+	sleep 1
+	local _split_listen=$(netstat -lntup 2>/dev/null | grep -E "[: ](13333|13334|13335|13336|23456)\b" | head -10)
+	if [ -n "${_split_listen}" ]; then
+		echo_date "🔎 split 诊断: xray 监听端口 ↓"
+		echo "${_split_listen}" | while IFS= read -r _line; do echo_date "    ${_line}"; done
+	else
+		echo_date "⚠️ split 诊断: 未探测到 xray 在 13333~13336/23456 上 listen，xray 可能 inbound 启动失败"
+		if [ -f /tmp/upload/xray.log ]; then
+			echo_date "    /tmp/upload/xray.log 尾部 ↓"
+			tail -8 /tmp/upload/xray.log 2>/dev/null | while IFS= read -r _line; do echo_date "    ${_line}"; done
 		fi
 	fi
 	# store current status
@@ -9006,13 +8043,9 @@ start_nat)
 	unset_lock
 	;;
 restart_chinadns_ng)
-	# FORK doge.12 alpha: 分流架构走双轨
-	if [ "${ss_split_enabled}" = "1" ]; then
-		stop_chinadns_ng_split
-		start_chinadns_ng_split
-	else
-		start_chinadns_ng
-	fi
+	# doge.14: 分流架构唯一路径
+	stop_chinadns_ng_split
+	start_chinadns_ng_split
 	;;
 refresh_node_direct_dns)
 	set_lock

@@ -30,6 +30,15 @@
 # 自包含 helper（被 source 时不重定义；命令行直跑时兜底定义）
 # ----------------------------------------------------------------------------
 
+# doge.14-beta.1 BLOCKER fix: koolshare base.sh:7 + ss_*/dns_test/rule_update 等
+# 文件定义 `alias echo_date='echo 【$(...)】:'`（含 $() 复杂展开）。
+# busybox sh 1.25.1 解析下面的 `echo_date(){` 函数定义时会展开 alias，把它变成
+# `echo 【$(...)】:(){` → syntax error: unexpected "(" (expecting "fi")。
+# 修法：先 unalias 让 alias 离场，再 type 检测 + 定义 function。
+# sh 逐 statement parse+execute，unalias 这行先跑，下面的 function 定义 parse 时
+# 已经没 alias 干扰。下游 caller 之后调 echo_date 用 function 等价 alias。
+unalias echo_date >/dev/null 2>&1
+
 if ! type echo_date >/dev/null 2>&1; then
 	# 与 install.sh::echo_date 同语义
 	echo_date(){

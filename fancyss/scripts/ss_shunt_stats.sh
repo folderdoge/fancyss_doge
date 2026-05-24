@@ -349,10 +349,9 @@ main() {
 	local uptime_secs="-1"
 	local uptime_text=""
 
-	[ "${ss_basic_mode}" = "7" ] || {
-		emit_response "ok"
-		return 0
-	}
+	# doge.14: 老 mode=7 (节点分流) 已退役，本脚本短路为 no-op；doge.15 整体删除。
+	emit_response "ok"
+	return 0
 	pid="$(get_main_xray_pid)"
 	if [ -z "${pid}" ]; then
 		write_process_state_payload 1 1 0 "" -1 "xray not running!"

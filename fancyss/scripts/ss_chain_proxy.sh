@@ -206,14 +206,7 @@ fss_chain_apply() {
 	front_id=$(fss_chain_get_front_id)
 	[ -n "${front_id}" ] || return 0
 
-	# 当前主模式是分流模式（7）时，本版不支持链式
-	local main_mode
-	main_mode=$(dbus get ss_basic_mode 2>/dev/null)
-	if [ "${main_mode}" = "7" ]; then
-		fss_chain_log "当前为 xray 分流模式，链式代理本版本暂不支持，已跳过"
-		fss_chain_set_status "fallback" ""
-		return 0
-	fi
+	# doge.14: 老 mode=7 (节点分流) 已退役，原先的链式代理 fallback 分支整段删除。
 
 	# 防御：不与落地节点相同
 	local landing_id=""
