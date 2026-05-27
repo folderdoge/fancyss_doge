@@ -34,7 +34,6 @@ ARG_OBFS=""
 OUTBOUNDS="[]"
 LINUX_VER=$(uname -r|awk -F"." '{print $1$2}')
 
-# doge.14: 分流架构成为唯一路径，ss_split_enabled 总开关已物理移除
 # 分流架构 per-Mode TPROXY/REDIRECT 端口基址（详见 split-routing-architecture.md §5.1）
 SS_SPLIT_PORT_BASE="13333"
 # 双轨 chinadns-ng 实例端口（详见 split-routing-architecture.md §6.2）
@@ -237,7 +236,6 @@ test_xray_conf(){
 	#uset _test_ret
 	local conf=$1
 	echo_date "测试xray配置文件..."
-	# doge.14: 旧 mode=7 xray 分流模式 asset_dir 探测已物理移除
 	local test_ret=$(run /koolshare/bin/xray run -config="${conf}" -test 2>&1)
 	local ret_1=$(echo "$test_ret" | grep "Configuration OK.")
 	local ret_2=$(echo "$test_ret" | grep "does not support fingerprint")
@@ -1377,11 +1375,6 @@ kill_process() {
 	fi
 }
 
-shunt_hot_restart_eligible() {
-	# doge.14: 旧 mode=7 xray 分流模式已物理移除，hot-reload 路径永远不再启用
-	return 1
-}
-
 shunt_configs_equivalent() {
 	local old_file="$1"
 	local new_file="$2"
@@ -1597,19 +1590,7 @@ start_dns_x(){
 	fi
 	[ -n "${special_dns_hint}" ] && echo_date "${special_dns_hint}"
 	if ! proxy_core_supports_udp;then
-		local trust_udp_fallback=""
-		local n=""
-		if [ "${dns_plan_runtime}" = "1" ];then
-			for n in 1 2 3
-			do
-				if [ "$(eval echo \$ss_basic_chng_trust_dns_${n}_chk)" = "1" ] && [ "$(get_dns_selected_net trust "${n}")" = "udp" ];then
-					trust_udp_fallback="1"
-				fi
-			done
-			if [ -n "${trust_udp_fallback}" ];then
-				echo_date "⚠️检测到 $(proxy_core_udp_unsupported_name) 不支持 UDP 代理，chinadns-ng 的可信 UDP DNS 将不会写入运行配置。"
-			fi
-		elif [ "${dns_plan_runtime}" = "2" ];then
+		if [ "${dns_plan_runtime}" = "2" ];then
 			if [ -n "$(smartdns_iter_gfw_udp_relays 2>/dev/null | sed -n '1p')" ];then
 				echo_date "⚠️检测到 $(proxy_core_udp_unsupported_name) 不支持 UDP 代理，smartdns gfw 组中的 UDP DNS 将不会写入运行配置。"
 			fi
@@ -1964,8 +1945,6 @@ $(fss_airport_special_iter_active_tsv 2>/dev/null)
 	[ -s /tmp/ss_node_domains.txt ] && echo "domain-set -name node_direct -file /tmp/ss_node_domains.txt" >> "${outfile}"
 	[ "${ss_basic_block_resov}" = "1" ] && echo "domain-set -name block_list -file /tmp/block_list.txt" >> "${outfile}"
 
-	# doge.14: 旧 mode=7 xray 分流模式 shunt_proxy_file domain-set 已物理移除
-
 	[ "${mode}" = "3" ] && echo "conf-file /tmp/whitelist_ip.txt" >> "${outfile}"
 	echo "" >> "${outfile}"
 	[ "${ss_basic_block_resov}" = "1" ] && echo "address /domain-set:block_list/#" >> "${outfile}"
@@ -1987,7 +1966,6 @@ $(fss_airport_special_iter_active_tsv 2>/dev/null)
 domain-rules /domain-set:chnlist/ -p #4:chnlist,#6:chnlist6 -c ping,tcp:80,tcp:443 -r first-ping -d yes -n chn
 domain-rules /domain-set:white_list/ -p #4:white_list,#6:white_list6 -c ping,tcp:80,tcp:443 -r first-ping -d yes -n chn
 EOF
-	# doge.14: 旧 mode=7 xray 分流模式 shunt_proxy domain-rules 已物理移除
 	cat >> "${outfile}" <<-'EOF'
 domain-rules /domain-set:gfwlist/ -p #4:gfwlist,#6:gfwlist6 -c none -n gfw
 domain-rules /domain-set:black_list/ -p #4:black_list,#6:black_list6 -c none -n gfw
@@ -2141,7 +2119,7 @@ start_smartdns(){
 # - reject 由 xray blackhole outbound 完成（alpha.15 移除原 DNS 层 group reject）
 # - LAN 域名 → 127.0.0.1:65355 (dnsmasq let-port，由 split 路径在 start_dns_x
 #   阶段配合 ss_basic_dns_serverx=1 把 dnsmasq 让到该端口)
-# doge.14: 老 start_chinadns_ng() 已物理移除，本节直接从 dbus 读 CDNS/FDNS + 简化拼接。
+# 双轨 DNS 路径直接从 dbus 读 CDNS/FDNS + 简化拼接。
 # doge.13 beta D1 helper：解码 dbus base64 multi-line 值到 stdout，
 # 一行一条 DNS server。给新的 ss_split_dns_*_upstream key 反查用。
 __get_split_dns_lines() {
@@ -2175,8 +2153,7 @@ generate_chinadns_split_conf() {
 	local CDNS_LINE=""
 	local FDNS_LINE=""
 
-	# doge.14: 分流 DNS 上游永远从 ss_split_dns_china_upstream / overseas_upstream 读
-	# (老 ss_basic_chng_*_chk fallback 已物理移除，兑现 audit §D)
+	# 分流 DNS 上游从 ss_split_dns_china_upstream / overseas_upstream 读
 	local _new_china_b64=$(dbus get ss_split_dns_china_upstream 2>/dev/null)
 	local _new_oversea_b64=$(dbus get ss_split_dns_overseas_upstream 2>/dev/null)
 	local _new_china_lines=$(__get_split_dns_lines "${_new_china_b64}")
@@ -2285,9 +2262,8 @@ generate_chinadns_global_conf() {
 	local conf="/tmp/chinadns_ng_global.conf"
 	local FDNS_LINE=""
 
-	# doge.14: 全局 DNS 上游永远从 ss_split_dns_global_upstream 读（单行单值，
+	# 全局 DNS 上游从 ss_split_dns_global_upstream 读（单行单值，
 	# 用 head -1 即可——全局模式不像分流那样有多上游平衡）。
-	# (老 ss_basic_chng_trust_dns_*_chk fallback 已物理移除，兑现 audit §D)
 	local _new_global_b64=$(dbus get ss_split_dns_global_upstream 2>/dev/null)
 	local _new_global_lines=$(__get_split_dns_lines "${_new_global_b64}")
 	[ -n "${_new_global_lines}" ] && FDNS_LINE=$(echo "${_new_global_lines}" | head -1 | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
@@ -2379,14 +2355,14 @@ start_chinadns_ng_split() {
 	start_dnsmasq_lan_listener
 	echo_date "💾 生成分流 DNS 实例配置 /tmp/chinadns_ng_split.conf ..."
 	if ! generate_chinadns_split_conf; then
-		echo_date "❌ 分流 DNS 实例配置生成失败！(doge.14: 旧 chinadns-ng 路径已物理移除，fail loud)"
+		echo_date "❌ 分流 DNS 实例配置生成失败！"
 		dbus set ss_split_dns_split_status="down"
 		stop_dnsmasq_lan_listener
 		return 1
 	fi
 	echo_date "💾 生成全局 DNS 实例配置 /tmp/chinadns_ng_global.conf ..."
 	if ! generate_chinadns_global_conf; then
-		echo_date "❌ 全局 DNS 实例配置生成失败！(doge.14: 旧 chinadns-ng 路径已物理移除，fail loud)"
+		echo_date "❌ 全局 DNS 实例配置生成失败！"
 		dbus set ss_split_dns_global_status="down"
 		stop_dnsmasq_lan_listener
 		return 1
@@ -2431,9 +2407,6 @@ stop_chinadns_ng_split() {
 	# doge.13 beta D5: 停 chinadns 后顺手停 dnsmasq_lan 子实例（互锁启停语义）
 	stop_dnsmasq_lan_listener
 }
-
-# doge.14: 老 start_chinadns_ng() (677 行) 已物理移除，
-# 分流架构唯一使用 start_chinadns_ng_split / stop_chinadns_ng_split。
 
 parse_dns_addr_port(){
 	local dns_raw="$1"
@@ -2581,17 +2554,7 @@ get_dns_para(){
 
 iter_dns_udp_relay_targets(){
 	local sep="$(printf '\037')"
-	if [ "${ss_basic_dns_plan}" = "1" ];then
-		local numb=""
-		for numb in 1 2 3
-		do
-			local chk="$(eval echo \$ss_basic_chng_trust_dns_${numb}_chk)"
-			local net="$(get_dns_selected_net trust "${numb}")"
-			if [ "${chk}" = "1" ] && [ "${net}" = "udp" ] && proxy_core_supports_udp;then
-				printf '%s\037%s\037%s\037%s\037%s\n' "$((SMARTDNS_RELAY_PORT_BASE + numb - 1))" "$(get_dns_para trust "${numb}" addr)" "$(get_dns_para trust "${numb}" port)" "chinadns-ng trust DNS ${numb}" ""
-			fi
-		done
-	elif [ "${ss_basic_dns_plan}" = "2" ] && proxy_core_supports_udp;then
+	if [ "${ss_basic_dns_plan}" = "2" ] && proxy_core_supports_udp;then
 		smartdns_iter_gfw_udp_relays
 	fi
 }
@@ -2870,7 +2833,6 @@ add_white_black() {
 	rm -rf /tmp/chnroute6.txt
 
 	# copy gfwlist.txt & chnlist.txt to tmp
-	# doge.14: 旧 mode=7 xray 分流模式 geotool 导出分支已物理移除
 	echo_date "创建/tmp/chnlist.txt 和 /tmp/gfwlist.txt！"
 	gzip -d -c /koolshare/ss/rules/chnlist.gz >/tmp/chnlist.txt
 	gzip -d -c /koolshare/ss/rules/gfwlist.gz >/tmp/gfwlist.txt
@@ -2931,7 +2893,6 @@ add_white_black() {
 	fi
 
 	# {black_list}, black domain
-	# doge.14: 旧 mode=7 xray 分流模式 shunt_proxy_file 分支已物理移除
 	echo_date "生成域名黑名单！"
 	{
 		printf '%s\n' ip.sb api.skk.moe ip.skk.moe ipinfo.io ip-api.com us.ip111.cn
@@ -4233,13 +4194,6 @@ ${xray_user_json}
 	esac
 }
 
-creat_shunt_json() {
-	# doge.14: dead code (mode=7 节点分流退役，唯一调用方已删)。
-	# 函数体改为 no-op 避免任何误调触发 fss_shunt_build_xray_config stub 的 return 1 → close_in_five 弹窗。
-	# 整函数 doge.15 物理删除（连同 ss_node_shunt.sh 整文件）。
-	return 0
-}
-
 # ============================================================================
 # FORK doge.12 alpha: generate_xray_json_split
 # 详见 doc/design/split-routing-architecture.md §4
@@ -4929,7 +4883,6 @@ start_xray() {
 	# xray start
 	echo_date "开启Xray主进程..."
 	cd /koolshare/bin
-	# doge.14: 旧 mode=7 xray 分流模式已物理移除，xray_asset_dir 探测分支删
 	# 链式代理（前置节点）注入：
 	# split 路径下 generate_xray_json_split 只动主 outbound tag（→ out_main）和追加
 	# direct/reject 两个 outbound，**不注入链式 outbound**。链式由 fss_chain_apply
@@ -5640,7 +5593,6 @@ creat_ipset() {
 	echo_date "创建ipset名单"
 	local chnroute4_file="/koolshare/ss/rules/chnroute.txt"
 	local chnroute6_file="/koolshare/ss/rules/chnroute6.txt"
-	# doge.14: 旧 mode=7 xray 分流模式 runtime chnroute 覆盖已物理移除
 
 	# 使用ipset restore批量创建/清空并导入网段，减少大量 ipset 子进程调用，加快启动速度
 	{
@@ -5706,10 +5658,6 @@ get_action_chain() {
 	6)
 		echo "SHADOWSOCKS_HOM"
 		;;
-	7)
-		# doge.14: 旧 xray 分流模式已物理移除，case 选项保留 stub 防 default
-		:
-		;;
 	esac
 }
 
@@ -5732,10 +5680,6 @@ get_action_chain6() {
 		;;
 	6)
 		echo "SHADOWSOCKS6_HOM"
-		;;
-	7)
-		# doge.14: 旧 xray 分流模式已物理移除，case 选项保留 stub 防 default
-		:
 		;;
 	esac
 }
@@ -7717,28 +7661,15 @@ disable_ss() {
 }
 
 apply_ss() {
-	local shunt_hot_restart="0"
-	local shunt_prev_xray_json=""
-
 	echo_date ======================= 梅林固件 - 【科学上网】 ========================
 	echo_date
 	# alpha.17 P1-1: 启动时打印运行参数总览（用户最高优先级运维体验改进）
 	echo_date "运行参数: enable=${ss_basic_enable} mode=${ss_basic_mode}(type=${ss_basic_type}) node=${ssconf_basic_node} front=${ssconf_basic_node_front:-(无)} failover=${ss_failover_enable:-0}"
 	if [ "${ss_basic_status}" == "1" ];then
-		if shunt_hot_restart_eligible; then
-			shunt_prev_xray_json="/tmp/fss_shunt_prev_xray.json.$$"
-			cp -f /koolshare/ss/xray.json "${shunt_prev_xray_json}" >/dev/null 2>&1 || shunt_prev_xray_json=""
-			if [ -s "${shunt_prev_xray_json}" ]; then
-				shunt_hot_restart="1"
-				echo_date "[hot-reload] 检测到 xray 分流热重载已启用，将在新配置生成后判断是否可保留当前 xray 进程。"
-			fi
-		fi
 		echo_date ------------------------- 关闭【科学上网】 -----------------------------
 		ss_pre_stop
 		stop_status
-		if [ "${shunt_hot_restart}" != "1" ]; then
-			kill_process
-		fi
+		kill_process
 		remove_ss_trigger_job
 		remove_ss_reboot_job
 		restore_conf
@@ -7751,7 +7682,6 @@ apply_ss() {
 	echo_date ------------------------- 启动【科学上网】 -----------------------------
 	# start
 	FSS_SKIP_XRAY_PORT_CLEANUP=""
-	[ "${shunt_hot_restart}" = "1" ] && FSS_SKIP_XRAY_PORT_CLEANUP="1"
 	prepare_system
 	resolv_server_ip
 	load_module
@@ -7762,7 +7692,7 @@ apply_ss() {
 	# 不再写入 ipset；但 add_white_black 还会做一些 /tmp 文件准备工作（chinadns 用），
 	# 在 ss_basic_dns_serverx=1 时被分流 DNS 实例间接依赖，保留调用。
 	add_white_black
-	# 生成代理主程序配置（doge.14: 旧 mode=7 creat_shunt_json 分支已物理移除）
+	# 生成代理主程序配置
 	[ "${ss_basic_type}" == "0" ] && creat_xray_ss_json
 	# FORK: cut in doge.10, see doc/design/protocol-roadmap.md §2 (SSR type=1)
 	# [ "${ss_basic_type}" == "1" ] && creat_ssr_json
@@ -7781,7 +7711,7 @@ apply_ss() {
 		fi
 	fi
 
-	# 开启代理主程序（doge.14: 旧 mode=7 xray 分流模式分支已物理移除）
+	# 开启代理主程序
 	[ "${ss_basic_type}" == "0" ] && start_xray
 	# FORK: cut in doge.10, see doc/design/protocol-roadmap.md §2 (SSR type=1 / Naive type=6 / Tuic type=7)
 	# [ "${ss_basic_type}" == "1" ] && start_ssr_redir
@@ -7808,9 +7738,8 @@ apply_ss() {
 	finish_start
 	ss_post_start
 	check_status
-	# doge.14: mode=7 (旧 xray 分流模式) 已物理移除；hot-reload 钩子整段删
-	# doge.14: 分流路径诊断（保留供 split 路径调试用）：
-	# xray inbound TPROXY 端口是否真在 listen，方便实机定位 "iptables TPROXY 计数有但客户端不通"。
+	# 分流路径诊断：xray inbound TPROXY 端口是否真在 listen，
+	# 方便实机定位 "iptables TPROXY 计数有但客户端不通"。
 	sleep 1
 	local _split_listen=$(netstat -lntup 2>/dev/null | grep -E "[: ](13333|13334|13335|13336|23456)\b" | head -10)
 	if [ -n "${_split_listen}" ]; then
@@ -7829,7 +7758,6 @@ apply_ss() {
 	echo_date "📋 启动状态摘要: status=1 mode=${ss_basic_mode} dns_plan=${ss_basic_dns_plan:-1} chain_status=$(dbus get ss_chain_status 2>/dev/null || echo disabled) split_xray_warn=$(dbus get fss_split_xray_warn 2>/dev/null || echo OK)"
 	echo_date ------------------------ 【科学上网】 启动完毕 ------------------------
 	FSS_SKIP_XRAY_PORT_CLEANUP=""
-	rm -f "${shunt_prev_xray_json}" >/dev/null 2>&1
 }
 
 # for debug

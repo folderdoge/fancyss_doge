@@ -317,12 +317,14 @@ grep -c 'ssconf_basic_node_front' /koolshare/webs/Module_shadowsocks.asp # 应 �
 - 前端 `refresh_options` 不需要改，因为 transport 不影响节点是否能作前置（已经在 type 层面过滤）。
 - 注意 xray 各 transport 的字段名：`grpcSettings`、`wsSettings`、`tcpSettings`、`kcpSettings`、`httpSettings` 等。
 
-### 8.3 支持 xray 分流模式
+### 8.3 ~~支持 xray 分流模式~~（doge.14 已退役，本节失效）
 
-`ss_basic_mode=7` 走 `fss_shunt_build_xray_config`（在 `scripts/ss_node_shunt.sh`），本版本对它直接 no-op。要支持的话：
-- 找到 shunt 模式的 outbound 列表生成位置
-- 针对**每一条** shunt 规则匹配的 outbound（可能有多条），都注入对应的 `dialerProxy`
-- 要想清楚：所有 shunt outbound 都共享同一个前置节点？还是每条规则可以独立配前置？UI 也要相应改
+> **doge.14 起本节不再适用**。`ss_basic_mode=7` xray 节点分流路径已在 doge.14 sprint Phase 1+2 中物理移除（`ss_node_shunt.sh` 整文件物理删除、`creat_shunt_json` 删除、14 处 `mode=7` case 清理、`migrate_split_routing_v3` 把 mode=7 老用户自动迁到 mode=2）。链式代理在 doge.13+ 分流架构下走 split path：`fss_chain_apply` 注入到 `out_main`（默认主节点 outbound），per-rule chain landing 走 `dialerProxy=chain_front_<Y>`（详见 [split-routing-implementation.md §6.2 D7 / D12](../implementation/split-routing-implementation.md)）。本节描述的 doge.6 时代 "xray 分流模式" 在新架构下已被 split routing 统一接管。
+
+~~`ss_basic_mode=7` 走 `fss_shunt_build_xray_config`（在 `scripts/ss_node_shunt.sh`），本版本对它直接 no-op。要支持的话：~~
+- ~~找到 shunt 模式的 outbound 列表生成位置~~
+- ~~针对**每一条** shunt 规则匹配的 outbound（可能有多条），都注入对应的 `dialerProxy`~~
+- ~~要想清楚：所有 shunt outbound 都共享同一个前置节点？还是每条规则可以独立配前置？UI 也要相应改~~
 
 ### 8.4 支持把前置节点 IP 加到 ipset
 

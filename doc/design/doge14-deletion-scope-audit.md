@@ -10,9 +10,25 @@
 
 ---
 
+## 🏁 ARCHIVE (2026-05-27)
+
+本 audit 已完成全部 Phase 1+2+3 收尾。工作交付：
+- **commit 025b118**（"WIP doge.14-beta.1 (未发版): Phase 1+2 物理删除 ~-3310 行"）—— Phase 1+2 实施
+- **Phase 3 收尾 commit**（待主代理填）—— 物理删除 + 文档大重写
+
+**实际净删除：-3310 行**（vs 估计 -2786，偏高 ~19%）。详细落地记录已迁移到 [../implementation/split-routing-implementation.md §6.3 D17-D26 + §7](../implementation/split-routing-implementation.md)（doge.14 物理删除范围总结）。
+
+doge.14 stable 发版后本 audit 进入只读归档状态。doge.14.x / doge.15 后续清理工作（如 W3 ASP 11 处 mode=7 真业务逻辑分支扫一遍 / I5 params_input 14 个 ss_basic_chng_* 引用清理 / W1 install.sh 历史注释清理 / per-rule chain outbound 真实 build / UI 重设计 — 含 `<select id="ss_split_enabled">` disabled placeholder 一并清等）**另开 audit**，不在本文档继续累加。
+
+> **措辞精确化（2026-05-27 W6）**：本 audit 多处称「`ss_split_enabled` 物理移除/变常量」属于简化表述。**精确表述**：路由层 fork 入口（ssconfig.sh 6 处 else 分支）+ dbus key（migrate_v3 step 4 `dbus remove`）+ install.sh state read + ASP JS handler 已物理移除；ASP `<select id="ss_split_enabled">` UI 元素（L18308）保留作 disabled placeholder（init JS L6838 锁定），doge.14.x UI 重设计阶段一并清。
+
+各小节状态见每段标 ✅ 完成 / ⏳ 留 doge.14.x 标记。
+
+---
+
 ## 0. 总览
 
-doge.14 目标：物理移除 doge.12 alpha 起作为回退兜底保留的所有旧路径，让分流架构成为**唯一路径**。`ss_split_enabled` 开关变常量永远 `1`。
+doge.14 目标：物理移除 doge.12 alpha 起作为回退兜底保留的所有旧路径，让分流架构成为**唯一路径**。`ss_split_enabled` 路由层 fork 入口 + dbus key 物理移除（ASP UI `<select>` 元素保留作 disabled placeholder，doge.14.x UI 重设计阶段一并清）。
 
 **估算总删除行数：-2786 行**（vs +少量 stub / migrate 代码）。
 
@@ -23,7 +39,7 @@ doge.14 目标：物理移除 doge.12 alpha 起作为回退兜底保留的所有
 
 ---
 
-## A. `ss_split_enabled` fork 入口（11 处，比早期估计的 14 少）
+## A. `ss_split_enabled` fork 入口（11 处，比早期估计的 14 少） ✅ 完成
 
 | 文件 | 行号 | 类型 |
 |---|---|---|
@@ -40,7 +56,7 @@ doge.14 目标：物理移除 doge.12 alpha 起作为回退兜底保留的所有
 
 ---
 
-## B. `ss_basic_mode=7` 引用（14 处，分布 6 个文件）
+## B. `ss_basic_mode=7` 引用（14 处，分布 6 个文件） ✅ 完成 / ⏳ W3 11 处 ASP 真业务逻辑分支留 doge.14.x
 
 | 文件 | 行号 | 类型 |
 |---|---|---|
@@ -55,7 +71,7 @@ doge.14 目标：物理移除 doge.12 alpha 起作为回退兜底保留的所有
 
 ---
 
-## C. `ss_node_shunt.sh` 调用方
+## C. `ss_node_shunt.sh` 调用方 ✅ 完成（Phase 1+2 stub → Phase 3 物理删整文件 + 3 sourcer 同步删）
 
 | 项 | 值 |
 |---|---|
@@ -72,7 +88,7 @@ doge.14 目标：物理移除 doge.12 alpha 起作为回退兜底保留的所有
 
 ---
 
-## D. 老 `start_chinadns_ng()` 单实例
+## D. 老 `start_chinadns_ng()` 单实例 ✅ 完成（含 B1 P0 fix：chng_* fallback 分支 + 未用 local CDNS/FDNS 声明删除）
 
 | 函数 | 行号 | 状态 |
 |---|---|---|
@@ -87,7 +103,7 @@ doge.14 目标：物理移除 doge.12 alpha 起作为回退兜底保留的所有
 
 ---
 
-## E. 老 iptables 老分支
+## E. 老 iptables 老分支 ✅ 完成（D16 老路径残留 bug 一并消失）
 
 | 函数 | 行号 | 净删 |
 |---|---|---|
@@ -101,7 +117,7 @@ doge.14 目标：物理移除 doge.12 alpha 起作为回退兜底保留的所有
 
 ---
 
-## F. 老 [DNS 设置] section（ASP）
+## F. 老 [DNS 设置] section（ASP） ✅ 完成 / ⏳ I5 14 个 params_input 引用清理留 doge.14.x
 
 精确范围：`fancyss/webs/Module_shadowsocks.asp:18353-18428` (~95 行)
 
@@ -118,7 +134,7 @@ doge.14 目标：物理移除 doge.12 alpha 起作为回退兜底保留的所有
 
 ---
 
-## G. hint 220 / 221 退役
+## G. hint 220 / 221 退役 ✅ 完成
 
 | 位置 | 行号 |
 |---|---|
@@ -131,13 +147,13 @@ doge.14 目标：物理移除 doge.12 alpha 起作为回退兜底保留的所有
 
 ---
 
-## H. AnyTLS TODO
+## H. AnyTLS TODO ✅ 完成（已在 doge.13 beta D7 解决，doge.14 无残留）
 
 **搜索结果：无匹配**。`ss_split_node_outbound.sh` 和 `ss_chain_proxy.sh` 均无 anytls 字串。早期 handoff 的 D7 残留 TODO 已在 doge.13 beta 期解决，doge.14 不需要再做。
 
 ---
 
-## I. UI 重设计范围（用户脑暴范围，非必做）
+## I. UI 重设计范围（用户脑暴范围，非必做） ⏳ 留 doge.14.x / doge.15
 
 doge.14 用户提出可顺手做 UI 重设计，候选范围：
 - **[DNS 设置]** tab：老 schema（F 段 18353-18428）删除后该 tab 内容空了大半，自然变成"分流 V2 DNS upstream 编辑面板"。可借机做卡片化 / chip UI 替代散乱的 select+input 组合。
@@ -280,7 +296,7 @@ build #1 装机时报 `line 35: syntax error: unexpected "(" (expecting "fi")`�
 
 ---
 
-## N. Phase 3 范围（doge.14 stable 发版前）
+## N. Phase 3 范围（doge.14 stable 发版前） ✅ 完成（详见 split-routing-implementation.md §6.3 D17-D26 + §7）
 
 ### N.1 物理删除 + 注释清理（必做）
 
@@ -314,7 +330,7 @@ build #1 装机时报 `line 35: syntax error: unexpected "(" (expecting "fi")`�
 - `doc/design/split-routing-architecture.md` §4 sniffing-routing：更新为 doge.14 之后无 fallback
 - 本 audit doc 改 archive 标记（任务完成）
 
-### N.6 不在 doge.14 范围（留 doge.14.x 或 doge.15）
+### N.6 不在 doge.14 范围（留 doge.14.x 或 doge.15） ⏳
 
 - 共享 lib 抽 `has_dbus_forbidden_chars` 等 helper DRY 化
 - 双轨 DNS per-Mode UI 编辑（仅 readonly 占位，Phase 3 开放编辑）

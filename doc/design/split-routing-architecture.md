@@ -1,8 +1,8 @@
 # 分流架构重构 — 设计定稿（Rule + Mode + per-User + 双轨 DNS）
 
-> **状态**：**已与用户达成共识，待 doge.10/11 完成后启动实施**。本文是 doge.12+ 的核心架构蓝图，固化了 2026-05-15 经过完整 Q1~Q19 决议轮 + sniffing-based routing + 双轨 DNS 双重核心变更后的最终方案。
+> **状态**：**doge.14 stable 已落地，分流架构成为唯一路径**。本文是 doge.12 → doge.14 的核心架构蓝图，固化了 2026-05-15 经过完整 Q1~Q19 决议轮 + sniffing-based routing + 双轨 DNS 双重核心变更后的最终方案。doge.14 阶段物理移除 `ss_split_enabled` 总开关 + `ss_node_shunt.sh` + `ss_basic_mode=7` + 老 DNS 设置 section 等旧路径回退兜底，让本架构成为唯一执行路径。
 >
-> **目标版本区间**：doge.12 ~ doge.13（具体切片实施时细化）。doge.10 完成"砍协议"清理代码基（[protocol-roadmap.md §2](protocol-roadmap.md)），doge.11 完成 G1/G6/R1 硬编码出土（详见 [protocol-roadmap.md §7](protocol-roadmap.md)），二者为本设计扫清前置障碍。
+> **目标版本区间**：doge.12 ~ doge.14（doge.12 alpha 落地、doge.13 stable 默认启用、doge.14 物理删除旧路径）。doge.10 完成"砍协议"清理代码基（[protocol-roadmap.md §2](protocol-roadmap.md)），doge.11 完成 G1/G6/R1 硬编码出土（详见 [protocol-roadmap.md §7](protocol-roadmap.md)），二者为本设计扫清前置障碍。
 >
 > **核心设计**：把当前 fancyss 的"GFW/CHN/HOM/GAM/全局" 5 个硬编码模式 + "半成品 xray 分流" + 散落 16 处的硬编码强制直连/代理，统一重构为 **Clash/Mihomo 风格**的三层模型 + 路由层迁移到 **xray sniffing**（不再依赖 ipset 域名匹配）：
 >
@@ -15,7 +15,8 @@
 > - [protocol-roadmap.md](protocol-roadmap.md) — §5 自定义分流的总体战略位置
 > - [chain-proxy-implementation.md](../implementation/chain-proxy-implementation.md) — 链式代理实现，本设计的 Action「代理（链式 Y→Z）」直接基于其 `dialerProxy` 注入机制
 > - [failover-combo-implementation.md](../implementation/failover-combo-implementation.md) — 现有故障转移；按 Q8 决议（注释保留）与本架构**解耦**，不在 doge.12 主线
-> - [CLAUDE.md](../../CLAUDE.md) — 硬规则 #1（dbus 前缀）/ #9（select 不静默清空）/ #10（运行状态 dbus 不新鲜）/ #11（chinadns tag 优先级——**本架构使其不再适用**，详见 §6.5）
+> - [doge14-deletion-scope-audit.md](doge14-deletion-scope-audit.md) — doge.14 物理删除范围 audit（archive 状态，sprint 收尾归档）
+> - [CLAUDE.md](../../CLAUDE.md) — 硬规则 #1（dbus 前缀）/ #9（select 不静默清空）/ #10（运行状态 dbus 不新鲜）/ #11（chinadns tag 优先级——**doge.14 起作历史警示保留，分流架构下不影响最终路由结果**，详见 §6.5）/ #14（**doge.14 起物理移除 `ss_split_enabled` 旧路径回退**）
 
 ---
 
@@ -254,7 +255,9 @@ JSON schema 示例：
                 └─────────────────────────────┘
 ```
 
-### 4.2 Sniffing 配置（**架构核心变更 1**）
+### 4.2 Sniffing 配置（**架构核心变更 1，doge.14 起唯一路由决策机制**）
+
+> **doge.14 起 xray sniffing 是分流架构的唯一路由决策机制**——doge.12 alpha 阶段保留的"ipset 域名匹配"老路径已在 doge.14 sprint 中物理移除（详见 [split-routing-implementation.md §6.3 D20](../implementation/split-routing-implementation.md)）。`load_iptables` 老分支 + `flush_ipset` 老分支 + `apply_ss` fork 入口全部物理删除，路由层无 ipset 决策回退兜底。
 
 每个 inbound 启用 sniffing：
 
@@ -280,7 +283,7 @@ JSON schema 示例：
 - xray 看到真实域名后按 Mode rules 匹配 → 路由到对应 outbound
 - IP CIDR 类 Rule 仍用 routing 的 `ip:` matcher（嗅探不到域名时回退到目的 IP 匹配）
 
-**xray sniffing 性能开销**：参考 v2ray-core 社区数据估算 +5% CPU（fancyss 当前未启用 sniffing，PoC 验证留 doge.12 实施期）。家用场景可忽略。
+**xray sniffing 性能开销**：参考 v2ray-core 社区数据估算 +5% CPU。doge.12 alpha 期 PoC 验证 + doge.13 / doge.14 实地真机运行已证家用场景可忽略。
 
 ### 4.3 Outbound 去重算法（**核心性能保障**）
 
@@ -392,20 +395,22 @@ for acl in users:
 
 per-Mode 端口分配同时适用于 nat REDIRECT 链（TCP）和 mangle TPROXY 链（UDP）。
 
-### 5.3 ipset 在新架构中的角色（**大幅瘦身**）
+### 5.3 ipset 在新架构中的角色（**大幅瘦身，doge.14 起完成迁移**）
 
-**旧架构**：ipset (`white_list`/`black_list`/`chnroute`/`chnlist`/`gfwlist`/`router`/`ignlist` 等) 由 iptables `-m set --match-set X dst -j RETURN/REDIRECT` 直接决定路由。
+**旧架构（doge.11 及之前）**：ipset (`white_list`/`black_list`/`chnroute`/`chnlist`/`gfwlist`/`router`/`ignlist` 等) 由 iptables `-m set --match-set X dst -j RETURN/REDIRECT` 直接决定路由。
 
-**新架构**：iptables 只负责"用户 → Mode 端口"分流，**不再**做"域名/IP → 走代理/直连"匹配——这部分完全交给 xray sniffing + routing。所以：
+**doge.12 alpha → doge.13 stable 过渡期**：fork-not-replace 策略，新架构（per-Mode TPROXY + xray sniffing）与旧 ipset 决策路径并存，由 `ss_split_enabled` 总开关决定走哪条；老 ipset (`chnlist` / `gfwlist` / `chnroute` / `white_list` / `black_list` / `router` / `ignlist`) 在 `ss_split_enabled=0` 时仍由 `flush_ipset` 老分支重建。
 
-**删除的 ipset**：
+**doge.14 起（**唯一路径**）**：iptables 只负责"用户 → Mode 端口"分流，**不再**做"域名/IP → 走代理/直连"匹配——这部分完全交给 xray sniffing + routing。`flush_ipset` 老分支 + `load_iptables` 老分支物理移除（`ss_split_enabled` 路由层 fork 入口 + dbus key 一并物理删除；ASP `<select id="ss_split_enabled">` UI 元素保留作 disabled placeholder，doge.14.x UI 重设计阶段一并清）后，老 ipset 不再被任何代码路径重建：
+
+**已删除的 ipset（doge.14 物理移除）**：
 - `chnlist` / `chnroute` — 国内 IP/域名走直连改由 xray routing 的 `geoip:cn` 和 chnlist Rule 完成
 - `gfwlist` — 同理由 Rule 完成
 - `black_list` / `white_list` — 由 §4.4 的 routing 规则 2a/2b 完成
 - `router` — Mode 数据可替代（详见 §5.4 机内流量）
 - `ignlist` 大部分内容 — 移到 xray routing 的 R1 直连段
 
-**保留的 ipset**：
+**保留的 ipset（doge.14 仍在用）**：
 - `ignlist_minimal` —— **仅保留**绝对必要的 RFC1918 + 链路本地 + 多播段（精简版 R1），用于 iptables PREROUTING 提前 RETURN（保险机制，xray 万一挂了也不致内网流量打到代理）
 - IP CIDR 类 Rule 数据 **不进 ipset**，直接写入 xray routing 的 `ip:` 字段（domain matcher 也是同理）
 
@@ -551,9 +556,14 @@ for vlan_if in br1, br2, ...:  # 访客网络 / IoT 网络等
 
 (a) **对最终路由结果不再产生不可控影响**——路由决策迁到 xray sniffing 层。即使 X.com 被 chnlist tag 抢走、解析成国内 IP，xray 仍能从 sniffing 拿到真实域名 X.com，按用户配置的 Rule 路由。
 
-(b) **chinadns-ng 实例内部行为仍受 #11 约束**——chnlist > gfwlist > group 的 tag 优先级在 DNS 解析阶段仍存在。**关键推论**：`reject` 动作必须在 xray routing 层做（generate `blackhole` outbound），不能在 chinadns 内通过 reject group 做——否则会被 chnlist/gfwlist tag 抢走，reject 静默失效。本架构 §4.6 已规定 reject 走 xray blackhole outbound，与该约束自洽。
+(b) **chinadns-ng 实例内部行为仍受 #11 约束**——chnlist > gfwlist > group 的 tag 优先级在 DNS 解析阶段仍存在。**关键推论**：`reject` 动作必须在 xray routing 层做（generate `blackhole` outbound），不能在 chinadns 内通过 reject group 做——否则会被 chnlist/gfwlist tag 抢走，reject 静默失效。本架构 §4.6 已规定 reject 走 xray blackhole outbound，与该约束自洽（doge.12 alpha.15 也验证了 chinadns-ng 没有 `group-tag-noip` 这种语法，DNS 层 reject 整套已删除，详见 [split-routing-implementation.md §6.2 D10](../implementation/split-routing-implementation.md)）。
 
-**结论**：**在 doge.12 实施完成且 install.sh 走过 migrate_split_routing_v1 之后**，新架构代码不再受 #11 约束。doge.12 之前（包括 doge.11 期间）以及任何向 ipset 模型的回退路径上，#11 仍然适用——向 white_list/black_list/router 等 ipset 添加域名前必须双查 chnlist/gfwlist。
+**结论**：
+
+- **doge.12 → doge.13 stable 阶段**：fork-not-replace 兼容旧路径回退；`ss_split_enabled=0` 显式 opt-out 用户走的老 ipset 路径仍受 #11 约束。
+- **doge.14 起（**当前状态**）**：旧路径已物理移除（`load_iptables` 老分支 + `flush_ipset` 老分支删除，`ss_split_enabled` 路由层 fork 入口 + dbus key 物理 remove；ASP `<select id="ss_split_enabled">` UI 元素保留作 disabled placeholder，doge.14.x UI 重设计阶段一并清），新装机和升级老用户全部走分流路径。**#11 在 doge.14 起作"历史警示"保留**——指导未来如果有人再次引入 ipset 决策时需注意 chinadns tag 优先级；分流路径下不影响最终路由结果。
+
+**向后兼容**：doge.12 之前（包括 doge.11 期间）以及任何理论上向 ipset 模型回退的场景，#11 仍然适用——向 white_list/black_list/router 等 ipset 添加域名前必须双查 chnlist/gfwlist。
 
 ### 6.6 旧 chinadns 配置生成代码改造
 
@@ -1102,28 +1112,71 @@ migrate_split_routing_v1() {
 
 ### 14.2 旧 key 处理
 
-| 旧 key | 处置 |
+#### 14.2.1 doge.12 alpha → doge.13 stable 阶段处置（历史）
+
+| 旧 key | doge.12/13 处置 |
 |---|---|
-| `ss_basic_mode` | doge.12 期间保留（生成器优先读新 key，缺失时回退）；doge.13 起 `dbus remove` |
+| `ss_basic_mode` | doge.12 期间保留（生成器优先读新 key，缺失时回退）；doge.13 stable `ss_split_enabled` 默认翻 1 后仍保留 dbus 值（仅 mode=7 路径不再可达，由 ss_split_enabled fork 控制） |
 | `ss_acl_mode_<i>` | 同上 |
-| `ssconf_basic_node` / `ssconf_basic_node_front` | 保留——它们是"当前生效节点"的概念，新架构下作为"快速节点设置"的兜底（§8.4） |
-| `ss_node_shunt_*` | doge.12 物理移除（xray 半成品分流彻底切除） |
+| `ssconf_basic_node` / `ssconf_basic_node_front` | 保留——它们是"当前生效节点"的概念，新架构下作为"快速节点设置"的兜底（§8.4）+ doge.13 beta `proxy_main` sentinel 实时查 |
+| `ss_node_shunt_*` | doge.12 alpha 阶段**未**物理移除（与原 §7 计划偏离，保留 mode=7 旧路径作回退兜底）；doge.13 stable 仍保留 |
 | `ss_failover_combo_*` / `fss_failover_*` | 保留（Q8 决议；含 `fss_failover_internal_restart` / `fss_failover_last_switch_ts` / `fss_failover_cool_down_sec` / `fss_failover_migrated_v1` + `ss_failover_combo_migrated_v2` + `ss_failover_main_combo_seeded`） |
+| `ss_basic_chng_*` | doge.13 beta migrate_v2 把核心 DNS upstream 切到 `ss_split_dns_*`，**保留**老 key 作 fallback |
+
+#### 14.2.2 doge.14 stable 阶段处置（**唯一路径**）
+
+由 [install.sh::migrate_split_routing_v3](../../fancyss/install.sh) 一次性执行（`fss_doge14_migrated=1` 幂等标志）：
+
+| 旧 key | doge.14 处置 |
+|---|---|
+| `ss_basic_mode=7` | `migrate_v3` step 1：**存量值自动迁到 `2`（大陆白名单）**，case 物理删除；新装机默认 `2` |
+| `ss_acl_mode_<i>=7` | 同上规则迁移（acl 行 mode=7 → mode=2） |
+| `ss_basic_mode` (其他 0/1/2/3/5/6) | **保留 dbus 值不动**，行为不变（分流路径已是唯一路径，mode 值不再控制路由层） |
+| `ss_acl_mode_<i>` (其他) | 同上 |
+| `ssconf_basic_node` / `ssconf_basic_node_front` | **保留**——`proxy_main` sentinel 解析路径下仍需要 |
+| `ss_node_shunt_*` | `migrate_v3` step 3：**物理 `dbus remove` 全清**；`ss_node_shunt.sh` 整文件物理删除 |
+| `ss_basic_chng_china_dns_*` / `_trust_dns_*` / `_china_udp/tcp/dot_*` / `_ipv6_drop_*` | `migrate_v3` step 2：**物理 `dbus remove` 全清** 40+ 个老 key；老 [DNS 设置] section ASP 物理删除 |
+| `ss_split_enabled` | `migrate_v3` step 4：**物理 `dbus remove`**，路由层无 fork 入口可回退 |
+| `ss_failover_*` / `fss_failover_*` | **不动**（Q8 决议沿用）；备用组合数据与本架构解耦 |
 
 ### 14.3 升级验收清单
 
-- [ ] 升级后 `dbus get ss_split_default_mode_id` 返回非空且非 0
-- [ ] 升级后 `dbus list ss_split_mode_` 至少有 2 个 Mode（id=1 和 id=2）
-- [ ] 升级后 `dbus list ss_split_rule_` 至少有内置预设 Rule（chnlist_v1 / gfwlist_v1 等）
-- [ ] 升级后路由器实际行为与升级前一致（用户感受不到行为变化）
-- [ ] 升级后 `dbus get fss_split_migrated_v1` = "1"
-- [ ] 二次跑 install.sh 不重复迁移（幂等）
-- [ ] 老 GLO 模式用户升级后 default_mode 是"全局代理"且 dns_mode=global
-- [ ] 老 GFW/CHN/HOM/GAM 模式用户升级后 default_mode 是"大陆白名单"且 dns_mode=split
+#### 14.3.1 doge.12 → doge.13 stable 验收（历史）
+
+- [x] 升级后 `dbus get ss_split_default_mode_id` 返回非空且非 0
+- [x] 升级后 `dbus list ss_split_mode_` 至少有 2 个 Mode（id=1 和 id=2）
+- [x] 升级后 `dbus list ss_split_rule_` 至少有内置预设 Rule（chnlist_v1 / gfwlist_v1 等）
+- [x] 升级后路由器实际行为与升级前一致（用户感受不到行为变化）
+- [x] 升级后 `dbus get fss_split_migrated_v1` = "1"
+- [x] 二次跑 install.sh 不重复迁移（幂等）
+- [x] 老 GLO 模式用户升级后 default_mode 是"全局代理"且 dns_mode=global
+- [x] 老 GFW/CHN/HOM/GAM 模式用户升级后 default_mode 是"大陆白名单"且 dns_mode=split
+
+#### 14.3.2 doge.13 → doge.14 验收（**当前**）
+
+- [x] 升级后 `dbus get fss_doge14_migrated` = "1"（幂等标志落定）
+- [x] 升级前 mode=7 用户：`dbus get ss_basic_mode` = "2"（migrate_v3 step 1 完成）
+- [x] 升级后 `dbus get ss_split_enabled` 返回空（migrate_v3 step 4 物理 remove）
+- [x] 升级后 `dbus list ss_node_shunt_` 返回空（migrate_v3 step 3 物理 remove）
+- [x] 升级后 `dbus list ss_basic_chng_` 返回空（migrate_v3 step 2 物理 remove）
+- [x] 升级后用户自定义 Rule 文件（rule_100+.txt）保留不丢（D25 rules_user 保护 fix）
+- [x] 升级后 xray 监听 4 端口（23456 + 13333 + 13334 + 13335）
+- [x] 升级后 chinadns 双轨工作（split @65353 + global @65354）
+- [x] 升级后 LAN curl 出口符合 Mode default_action 配置
+- [x] 二次跑 install.sh 不重复迁移（幂等）
+- [x] 升级后无任何 `source ss_node_shunt.sh` 报错（doge.14 stable Phase 3 物理删除 3 个 sourcer 调用点同步删）
 
 ---
 
 ## 修订记录
 
+- **2026-05-27 doge.14 stable 落地（架构成为唯一路径）** ⭐ milestone：
+  - **§4.2 sniffing-routing 段**：明确"doge.14 起 xray sniffing 是分流架构的唯一路由决策机制"，老 ipset 决策路径已物理移除。
+  - **§5.3 ipset 角色段**：三段时间线明确（doge.11 之前 = 完整 ipset 决策 / doge.12-13 = fork-not-replace 并存 / doge.14 起 = 仅保留 `ignlist_minimal` 极简兜底）。
+  - **§6.5 硬规则 #11 结论段**：分阶段细化（doge.12-13 fork-not-replace 期 `ss_split_enabled=0` 仍受约束 / doge.14 起作"历史警示"保留，分流路径下不影响最终路由）。
+  - **§14.2 旧 key 处理**：拆 14.2.1 (doge.12-13 历史) + 14.2.2 (doge.14 唯一路径，含 migrate_v3 step 1-4 详表)。
+  - **§14.3 升级验收清单**：拆 14.3.1 (doge.12-13 历史) + 14.3.2 (doge.13 → doge.14 新增 11 项验收清单)。
+  - **文档顶部 frontmatter**：状态从"已与用户达成共识，待 doge.10/11 完成后启动实施"改为"doge.14 stable 已落地，分流架构成为唯一路径"。
+  - **关联文档**新增 audit doc 链接 + CLAUDE.md #14 引用更新。
 - **2026-05-15 重写**：基于 Q1-Q19 全部决议 + sniffing-based routing + 双轨 DNS 双重核心变更。第一稿（基于 ipset 架构）被本稿完全取代。新增 §6.5 解释硬规则 #11 为何不适用、§12 多用户冲突场景验证、§14 老用户升级路径。Q1~Q19 从"待用户确认"全部转为已固化决议。
 - 2026-05-15 初稿：基于"Rule + Mode + per-User"架构共识（已被本稿取代）。

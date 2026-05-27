@@ -1,30 +1,53 @@
-# 分流架构实施说明 (doge.12 alpha → doge.13 stable)
+# 分流架构实施说明 (doge.12 alpha → doge.13 stable → doge.14 唯一路径)
 
-> **状态**：**doge.13 stable 已发版**——`ss_split_enabled` install.sh 默认值翻成 `1`（CLAUDE.md 硬规则 #14 同步更新），新分流架构正式成为主线路径。alpha/beta 期所有 P0/P1 + UI 方案 A 已兑现，剩余 doge.14 物理删除旧路径任务见 §6.1。**会随实施进度持续更新**。
+> **状态**：**doge.14 stable 已落地**——`ss_split_enabled` 总开关物理移除、`ss_node_shunt.sh` 整文件物理删除、`ss_basic_mode=7` 全部 case 物理清理、老 [DNS 设置] section 退役、`migrate_split_routing_v3` 完成 mode=7 → mode=2 + 老 `ss_basic_chng_*` 清理。**分流架构成为唯一路径**，无兼容旧路径回退。Phase 1+2+3 历史记录与 alpha/beta 演进保留在本文档（§6 / 修订记录）作为后人审计参考。
 > 关联设计：[../design/split-routing-architecture.md](../design/split-routing-architecture.md)
 > 关联路线图：[../design/protocol-roadmap.md §8](../design/protocol-roadmap.md)
+> 关联 audit：[../design/doge14-deletion-scope-audit.md](../design/doge14-deletion-scope-audit.md)（archive 标记，doge.14 sprint 收尾）
 >
-> **冷开必读** —— 历史 alpha 修订与已知漂移在 §6.2（D1-D15）：
+> **冷开必读** —— 历史 alpha 修订与已知漂移在 §6.2（D1-D16）+ doge.14 物理删除收尾在 §6.3（D17+）：
 > - D9 = alpha.13/.14 `ss_split_rule_to_json` ARG_MAX + awk O(n²) 双修
 > - D10 = alpha.15 chinadns-ng DNS 层 reject 整套删除（伪语法）
 > - D11 = alpha.16 Mode 级 `block_quic` / `udp_proxy` 接通 iptables 层
 > - **D1 / D5 / D8 端口分配 gate / D12-D15** = doge.13 beta 兑现段（per-rule 独立 outbound 解 collapse + sentinel `proxy_main` + ASP preflight + 节点删除清理 + dnsmasq_lan 子实例 + DNS upstream migrate_v2）
+> - **D16** = doge.13-beta.4 LAN DNS 在 mangle+nat PREROUTING 双跳被 xray FakeUDP 抢 65353
+> - **D17+ doge.14 物理删除收尾** = `ss_split_enabled` 总开关 + `ss_node_shunt.sh` + `ss_basic_mode=7` 全部 case + 老 [DNS 设置] section + 老 chinadns 单实例 + 老 iptables 分支 + hint 220/221（详见 §6.3）
 > 文末「修订记录」按时间倒序列出版本里程碑。
 
 ---
 
-## 0. 范围与"新旧并存"演进
+## 0. 范围与演进历程（doge.12 alpha → doge.13 stable → doge.14 唯一路径）
 
-doge.12 是 1-2 周量级的架构跃迁，单次 release 全切风险极大。alpha 版本（doge.12.alpha）采用**新旧并存**策略，doge.13 stable 翻成默认走新路径，doge.14 物理删除旧路径完成迁移：
+doge.12 是 1-2 周量级的架构跃迁，单次 release 全切风险极大。本节记录三阶段演进历程：
 
-- **总开关** `ss_split_enabled` (dbus, **doge.13 起新装机默认 `1`**)
-  - `=1`：路由层走新分流架构（per-Mode TPROXY + sniffing + 双轨 DNS）。**doge.13 起新装机的默认选择。**
-  - `=0`：路由层完全走旧路径（沿用 `ss_basic_mode` GFW/CHN/HOM/GAM/全局/回国/xray分流）。alpha/beta 老用户显式 opt-out 升级到 doge.13 时该值保留不动。
-- **migrate 总是跑**（写 dbus + 拷规则文件），install.sh 仅在 dbus 完全未设置时种 `1`（已有值——含 alpha/beta 期默认种下的 `0`——一律保留，避免强切显式 opt-out 用户）。
-- **失败降级**：新架构启动失败时，`ssconfig.sh restart` 兜底回退到旧路径（保留 `ss_split_enabled=1`，日志告警）。
-- **doge.14 完成切换**：物理移除旧路径代码（含 `ss_node_shunt.sh` 物理删除 + `ss_basic_mode=7` 所有路径 + 14 处 `if ss_split_enabled=1` fork 删 else 分支 + 老 [DNS设置] section 等），`ss_split_enabled` 变常量永远 `1`。预计 -2300 行净瘦身。
+### 0.1 阶段时间线
 
-> **设计文档 §7 "ss_node_shunt 物理移除" 的修订**：alpha/beta/stable 三阶段**不物理删除** `ss_node_shunt.sh`，保留旧路径作为回退兜底。doge.14 物理删除。
+| 阶段 | 时间 | 策略 | `ss_split_enabled` 含义 |
+|---|---|---|---|
+| **doge.12 alpha (alpha.1 → alpha.18)** | 2026-05-15 → 2026-05-22 | **新旧并存**，开关默认 `0` opt-in | `=1` 走新分流路径；`=0` 走老 `ss_basic_mode` GFW/CHN/全局/回国/xray分流 路径 |
+| **doge.13 beta + stable** | 2026-05-22 → 2026-05-24 | **新装机默认 `1`**，老用户显式值保留不动 | 同上，但 install.sh 仅在 dbus 完全未设置时种 `1` |
+| **doge.14 stable** (本阶段) | 2026-05-27 起 | **唯一路径**，`ss_split_enabled` 物理移除变常量 `1` 永远 | 不再有开关，路由层无 fork else 分支可回退 |
+
+### 0.2 doge.14 物理删除收尾（**当前状态**）
+
+- **总开关 `ss_split_enabled` 路由层 fork 入口 + dbus key 已物理移除** — `migrate_split_routing_v3` 一次性 `dbus remove ss_split_enabled`，ssconfig.sh 6 处 else 分支 + install.sh state read + ASP JS handler 整体删除。**ASP `<select id="ss_split_enabled">` UI 元素**仍保留在 [分流] 标签页（L18308），由 init JS `E('ss_split_enabled').disabled = true`（L6838）锁定为 disabled placeholder——doge.14.x UI 重设计阶段一并清。
+- **`ss_node_shunt.sh` 整文件物理删除** — 2121 行整文件清空，3 处 source 调用点（`ss_base.sh:16-17` / `ss_node_postsave.sh:6` / `ss_shunt_hot_reload.sh:4`）同步删除。Phase 1+2 先 stub 化到 ≤50 行容错升级，Phase 3 stable 完全清。
+- **`ss_basic_mode=7` 全套清理** — 14 处 case 分支删除 + `creat_shunt_json` 函数体改 no-op；`migrate_split_routing_v3` step 1 把存量 `ss_basic_mode=7` / `ss_acl_mode_<i>=7` 自动迁到 `2`（大陆白名单）。
+- **老 [DNS 设置] section 退役** — ASP `Module_shadowsocks.asp` 老 section（18353-18428 ~95 行）+ JS handler 删除，40+ 个 `ss_basic_chng_china_dns_*` / `_trust_dns_*` / `_china_udp/tcp/dot_*` dbus key 由 `migrate_split_routing_v3` step 2 一次性清理。新 DNS upstream 由 `ss_split_dns_*` 系列管理（详见 §1.6.1）。
+- **老 `start_chinadns_ng()` 单实例移除** — 整段函数及调用点全删（仅保留 `start_chinadns_ng_split` / `stop_chinadns_ng_split` 双实例 V2 路径）。
+- **老 iptables / ipset 老分支移除** — `load_iptables()` 老分支 + `flush_ipset()` 老分支 + `apply_ss()` fork 入口删除（仅保留 `load_iptables_split` / `flush_ipset_split`）。
+- **hint 220 / 221 退役** — `ss-menu.js` hint 220/221 定义 + ASP 4 处触发点删除（开关物理移除后触发条件不存在）。
+
+### 0.3 历史路径不假装从未存在
+
+本文档保留以下历史段落作为审计参考，不**删除**：
+- §6.1 alpha 阶段简化清单 — 内含 D7/D8/D11/D12 alpha 阶段决策与 doge.13 beta 兑现路径，对理解当前代码形态仍有价值
+- §6.2 D1-D16 已知集成漂移 — 历史发现 + 修订路径，下次出类似问题时可类比
+- §14 老用户升级路径 — 跨版本升级（doge.11 → doge.12 alpha → doge.13 stable → doge.14）的迁移设计
+
+> **新加 §6.3 "D17+ doge.14 物理删除收尾"** — 集中记录 doge.14 sprint Phase 1+2+3 物理删除的范围、决策、真机验证记录与 Reviewer 留 WARN 收尾。
+
+> **设计文档 §7 "ss_node_shunt 物理移除" 的历史修订记录**：alpha/beta/stable 三阶段**不物理删除** `ss_node_shunt.sh`，保留旧路径作为回退兜底。**doge.14 起兑现物理删除**。
 
 ---
 
@@ -34,9 +57,10 @@ doge.12 是 1-2 周量级的架构跃迁，单次 release 全切风险极大。a
 
 | Key | 类型 | 默认 | 说明 |
 |---|---|---|---|
-| `ss_split_enabled` | "0"/"1" | "1"（doge.13 起；alpha/beta 老用户保留原值不动） | 路由层走新架构开关。`=1` 时走新分流路径 |
-| `fss_split_migrated_v1` | "0"/"1" | "0" | install.sh::migrate_split_routing_v1 幂等标志 |
+| ~~`ss_split_enabled`~~ | ~~"0"/"1"~~ | ~~"1"（doge.13 起）~~ | **doge.14 已物理移除**：`migrate_split_routing_v3` 一次性 `dbus remove`；路由层不再有 fork 入口。历史值（alpha/beta 期 opt-out 老用户的 `0`）一并清除 |
+| `fss_split_migrated_v1` | "0"/"1" | "0" | install.sh::migrate_split_routing_v1 幂等标志（保留供 audit 用，doge.14 不再走 v1 主流路径） |
 | `fss_split_migrated_v2` | "0"/"1" | "0" | install.sh::migrate_split_routing_v2 幂等标志（doge.13 新增；DNS upstream 老→新 key 一次性迁移） |
+| `fss_doge14_migrated` | "0"/"1" | "0" | install.sh::migrate_split_routing_v3 幂等标志（**doge.14 新增**；mode=7 → 2 + ss_basic_chng_* 清理 + ss_split_enabled remove + ss_node_shunt_* 清理） |
 
 ### 1.2 Rule 数据
 
@@ -162,13 +186,27 @@ dbus key 中的 `<m>` (Mode 索引) / `<r>` (rule 序号) / `<i>` (Rule 索引) 
 | `fss_split_outbound_dedup_cache` | string | xray 生成器去重缓存（可选） |
 | `fss_split_xray_warn` | string | xray 生成器失败码：`baseline_missing` / `jq_missing` / `jq_merge_failed` / `output_empty` / `xray_test_failed` / `no_active_mode` / "" (空=正常) |
 
-### 1.8 旧 key 处置（alpha 阶段）
+### 1.8 旧 key 处置历史
 
-| 旧 key | alpha 处置 |
+#### 1.8.1 alpha 阶段（doge.12.alpha-1 → doge.13.1，已废弃）
+
+| 旧 key | alpha/doge.13 处置 |
 |---|---|
 | `ss_basic_mode` / `ss_acl_mode_<i>` | **保留并继续生效**（`ss_split_enabled=0` 时是唯一路径） |
 | `ss_basic_shunt_*`（ss_node_shunt 系列） | **保留**（mode=7 仍使用） |
 | `ssconf_basic_node` / `ssconf_basic_node_front` | **保留**——doge.12 新架构作为"快速节点设置"的兜底 |
+| `ss_basic_chng_china_dns_*` / `_trust_dns_*` / `_china_udp/tcp/dot_*` | **保留作 fallback**（migrate_v2 写新 key 后老 key 仍读得到） |
+
+#### 1.8.2 doge.14 阶段（**唯一路径**，老 key 物理清理）
+
+| 旧 key | doge.14 处置（`migrate_split_routing_v3`） |
+|---|---|
+| `ss_basic_mode=7` | **存量值自动迁到 `2`（大陆白名单）**，mode=7 case 物理删除；新装机默认值变 `2` |
+| `ss_acl_mode_<i>=7` | 同上规则迁移（acl 行 mode=7 → mode=2） |
+| `ss_basic_shunt_*`（ss_node_shunt 系列） | **物理 dbus remove 全清**；`ss_node_shunt.sh` 整文件物理删除 |
+| `ssconf_basic_node` / `ssconf_basic_node_front` | **保留**——仍是"主节点"概念，新架构下走 `proxy_main` sentinel（详见 §1.5） |
+| `ss_basic_chng_china_dns_*` / `_trust_dns_*` / `_china_udp/tcp/dot_*` | **物理 dbus remove 全清**（40+ 个 key），新 DNS upstream 由 `ss_split_dns_*` 统一管理（§1.6.1） |
+| `ss_split_enabled` | **物理 dbus remove**，路由层无 fork 入口可回退 |
 
 ---
 
@@ -231,17 +269,22 @@ fancyss/                                  # 仓库内
 
 - **#1**：前端要读的 dbus key 必须 `ss_*` 前缀（**包括 `ss_split_*`**）。后端专用用 `fss_*`。
 - **#2**：`fancyss/webs/Module_shadowsocks.asp` 是 **UTF-8 with BOM, CRLF, tab 缩进**。改 asp 前先 `git diff -U0` 验证只有目标行变化。多行带前导 tab 的替换走 PowerShell 而非 Edit。
-- **#3**：新加 hint id 选 200+。已用：0, 1, 11, 24, 27, 31, 32, 34, 29, 35-41, 44, 47-49, 54-56, 104-118, 133-156, 200-204（doge.9~11）, 210-218（doge.12 alpha）, 221（doge.13 beta D13 preflight）。**doge.13+ 新 hint 从 220 开始**。
+- **#3**：新加 hint id 选 200+。已用：0, 1, 11, 24, 27, 31, 32, 34, 29, 35-41, 44, 47-49, 54-56, 104-118, 133-156, 200-204（doge.9~11）, 210-218（doge.12 alpha）, 221（doge.13 beta D13 preflight，**doge.14 已退役** —— ss_split_enabled 总开关移除后 preflight 触发条件消失）。**doge.14+ 新 hint 从 222 开始**（220/221 物理删除）。
 - **#9**：select 控件 `refresh_options` 时若 dbus 值找不到对应 option，**不能** `val('')`——必须插 `data-stale="1"` 占位 option，`save()` 检测到 stale 跳过 dbus 覆盖。
 - **#10**：运行状态 dbus key 必须配合前端轮询（参考 `refresh_chain_status_only`），不能假设 `db_ss` 新鲜。
-- **#11**：旧路径（`ss_split_enabled=0`，显式 opt-out 老用户）继续受 chinadns tag 优先级约束。doge.13 stable 默认走的新分流路径不受 #11 约束。
+- **#11**：~~旧路径（`ss_split_enabled=0`）继续受 chinadns tag 优先级约束~~ **doge.14 已物理移除旧路径**——新装机和升级老用户全部走新分流路径，chinadns tag 约束在 split 路径下不影响最终路由结果（详见架构 §6.5）。#11 在 doge.14 起仅作"历史警示"保留（指导未来如果有人再次引入 ipset 决策时需注意）。
 
-### 4.2 新旧并存阶段兼容性硬约束（doge.12 / doge.13 stable，doge.14 会解除）
+### 4.2 doge.14 唯一路径约束（**已物理移除旧路径回退**）
 
-- **不删除任何现有 dbus key**（不要 `dbus remove`）。设计文档 §14 Step 6 "ss_node_shunt_* 物理移除" 留 doge.14。
-- **不修改 `rules_ng2/site/*.txt` `rules_ng2/ip/*.txt`**——这些是上游资产，新旧并存阶段复用，doge.14 才考虑改造为本地源。
-- **不修改 `ss_node_shunt.sh`**（保留 mode=7 旧路径）；doge.14 整文件删除。
-- **ssconfig.sh 改造采用 fork 分支**：在涉及路由层的函数里加 `if [ "${ss_split_enabled}" = "1" ]; then ...新逻辑...; else ...旧逻辑...; fi`。旧逻辑保持位字节级不变（doge.14 删除 else 分支变常量永远走新逻辑）。
+> **历史背景**：doge.12 alpha → doge.13 stable 阶段采用 "fork-not-replace" 策略（所有路由层函数加 `if ss_split_enabled=1; then ...新逻辑...; else ...旧逻辑...; fi`，旧逻辑 byte-for-byte 保留），用作回退兜底。**doge.14 sprint Phase 1+2+3 物理删除完成后**，旧路径已不存在。
+
+doge.14 起的硬约束：
+
+- **`ss_split_enabled` 总开关已物理移除** — 路由层无 else 分支可回退；新改路由层代码直接面向 split 路径（无需 fork 入口）。
+- **`ss_node_shunt.sh` 整文件物理删除** — 不再有 mode=7 路径；任何 `source ss_node_shunt.sh` / `creat_shunt_json` 调用都是历史残留 dead code。
+- **`ss_basic_mode=7` 已不可达** — `migrate_split_routing_v3` 把存量值迁到 `2`；ASP `<select>` 选项物理删除，新装机 default `2`。
+- **老 [DNS 设置] section + 40+ ss_basic_chng_* dbus key 已退役** — 新 DNS upstream 由 `ss_split_dns_china_upstream` / `_overseas_upstream` / `_global_upstream` 统一管理（详见 §1.6.1）。
+- **不修改 `rules_ng2/site/*.txt` `rules_ng2/ip/*.txt`** — 这些仍是上游资产，作为内置 Rule 内容源使用。如需 fork 改造本地源另开 sprint 讨论。
 
 ### 4.3 仓库文档/注释约束
 
@@ -465,7 +508,109 @@ fancyss/                                  # 仓库内
 - **未尽事项（doge.14 IPv6 build-out 注意）**：`SHADOWSOCKS6` chain 当前无 IPv6 split 路径，所以 D16 IPv6 mirror 暂不需要；未来给 split 加 IPv6 时必须同步加 ip6tables RETURN 规则。
 - **教训写入 CLAUDE.md 硬规则 #19**：iptables hook priority 影响 mangle/nat 跑序：raw(-300) → conntrack(-200) → mangle(-150) → nat-dst(-100) → routing。**新增 DNS 劫持 DNAT 之类"改写 dst"的 nat 规则前，必须审计 mangle PREROUTING 是否会先看到原 dst 后做出错误判断**（TPROXY、ipset 命中等）。
 
-### 6.3 实施期约定的回溯修订
+### 6.3 D17+ doge.14 物理删除收尾（**已落地**）
+
+doge.14 sprint Phase 1+2+3 共物理删除 ~3310 行，让分流架构成为唯一路径。本节按"删除项 → 关联 audit 段 → 真机验证 → 留 WARN"维度记录。详细 audit 在 [../design/doge14-deletion-scope-audit.md](../design/doge14-deletion-scope-audit.md)（archive 状态）。
+
+#### D17: 总开关 `ss_split_enabled` 物理移除（audit §A）
+
+- **删除范围**：
+  - `migrate_split_routing_v3` step 4：`dbus remove ss_split_enabled`（清存量值）
+  - ssconfig.sh 6 处 fork else 分支（L1653-1657 DNS 启动 / L5739-5748 xray json / L6366-6369 ipset 清空 / L7267-7270 iptables 加载 / L8699-8701 ipset 创建 / L9010-9015 chinadns 重启）
+  - ssconfig.sh L8775-8788 诊断日志（绿色直接删）
+  - install.sh L519 / L729-730 文档注释清理 + L2604 `dbus set ss_split_enabled="1"` 状态读取删除
+  - ASP `Module_shadowsocks.asp` L6850-8601 范围内 5 个 JS handler（`ss_split_enabled` change + UI 同步）
+- **新代码原则**：新加路由层代码直接面向 split 路径，无需 `if [ "${ss_split_enabled}" = "1" ]` fork 入口。
+
+#### D18: `ss_basic_mode=7` xray 节点分流整套退役（audit §B + §C）
+
+- **migrate_split_routing_v3 step 1**：存量 `ss_basic_mode=7` → `2`（大陆白名单），`ss_acl_mode_<i>=7` → `2`（一次性、幂等）。
+- **ssconfig.sh 13 处 case 分支删除**：L245 / L1393 / L1988-91 / L2017 / L3631 / L3703-18 / L5753 / L5763-65 / L6543 / L6617 / L6647 / L8770 + **L8708-8731 `creat_shunt_json` 函数体改 no-op return 0**（dead code，标注 doge.15 物理删整函数）。
+- **scripts/ 5 处环境检测清理**：`ss_base.sh:68/137/140/143`（mode=7 环境检测）+ `ss_chain_proxy.sh:212`（chain proxy fallback）+ `ss_node_shunt.sh:154`（自检）+ `ss_shunt_stats.sh:352`（自检）+ `ss_node_subscribe.sh:3627`（mode=7 订阅逻辑）。
+- **ASP select 物理删除**：`<select id="ss_basic_mode">` 中 mode=7 option 物理 remove（含 stale 占位）；存量值已被 migrate_v3 迁出。
+- **保留 stub 期 + 物理删的 2 阶段策略**：Phase 1+2 把 `ss_node_shunt.sh` 整文件 stub 化到 43 行（export func 全 return 0），等 1 周真机验证无任何用户卡老路径；Phase 3 / doge.14 stable 整文件物理删 + 3 个 sourcer 调用点删（`ss_base.sh:16-17` / `ss_node_postsave.sh:6` / `ss_shunt_hot_reload.sh:4`）。
+
+#### D19: `ss_node_shunt.sh` 整文件物理删除（audit §C）
+
+- **整文件大小**：2121 行（比早期 handoff 估算 600 偏高 3.5×）。
+- **Phase 1+2 中间态**：stub 化到 43 行（保留文件名 + export func 改 `return 0`），避免 `source` 调用点立即报错。
+- **Phase 3 终态**：整文件物理删除，3 个 source 调用点（`scripts/ss_base.sh:16-17` / `scripts/ss_node_postsave.sh:6` / `scripts/ss_shunt_hot_reload.sh:4`）同步删除。`ss_shunt_stats.sh` / `ss_shunt_hot_reload.sh` 整文件也物理删除（dead）。
+
+#### D20: 老 `start_chinadns_ng()` 单实例 + 老 iptables 老分支移除（audit §D + §E）
+
+- **`start_chinadns_ng()` 单实例**（L2517-2790 约 275 行）整段删除；调用方 ssconfig.sh L1656 / L2465 / L2473 / L9014 同步删（保留 `start_chinadns_ng_split` 和 `stop_chinadns_ng_split` V2 双实例路径）。
+- **`load_iptables()` 老分支**（L7265-7293 约 35 行）+ **`flush_ipset()` 老分支**（L6370-6435 约 70 行）+ **`apply_ss()` fork 入口**（L8699-8701 约 3 行）整删；保留 `load_iptables_split` / `flush_ipset_split`。
+- **D16 老路径残留 bug 一并消失**：beta.4 修的 LAN DNS hijack mangle PREROUTING RETURN 只覆盖了新路径；老路径同款 race 在 doge.14 物理删除时自然消失。
+
+#### D21: 老 [DNS 设置] section + 40+ `ss_basic_chng_*` dbus key 退役（audit §F）
+
+- **ASP `Module_shadowsocks.asp:18353-18428` 约 95 行老 DNS section 物理删除**（含 27 个 input + 6 个 select / checkbox + 8 个 IPv6 设置 + JS handler L10056-10084 + `params_input` 数组 L8494-8496 引用）。
+- **`migrate_split_routing_v3` step 2**：`dbus remove` 40+ 个老 key（`ss_basic_chng_china_dns_1/2/3_*` / `_trust_dns_1/2/3_*` / `_china_udp/tcp/dot_*_opt/usr` / `_ipv6_drop_direc/proxy` 等）。
+- **新 DNS upstream 由 §1.6.1 系列 key 唯一管理**：`ss_split_dns_china_upstream` / `_overseas_upstream` / `_global_upstream`。
+
+#### D22: hint 220 / 221 退役（audit §G）
+
+- `ss-menu.js` hint 220 定义 L1247-1257 + hint 221 定义 L1258-1271 物理删除（共 25 行）。
+- ASP `openssHint(220)` 触发点 L7747 / L7758 / L7795-96 + `openssHint(221)` 触发点 L7771 物理删除。
+- `ss_split_enabled` 总开关物理移除后所有触发条件不存在，hint 220/221 在 doge.14 起完全无可达路径。
+
+#### D23: `migrate_split_routing_v3` 设计（实施合同 §1.1 `fss_doge14_migrated` 幂等标志）
+
+```sh
+migrate_split_routing_v3() {
+    [ "$(dbus get fss_doge14_migrated)" = "1" ] && return
+
+    # Step 1: mode=7 → mode=2 一次性迁移
+    [ "$(dbus get ss_basic_mode)" = "7" ] && dbus set ss_basic_mode="2"
+    for acl_row in $(iter_acl_rows); do
+        [ "$(dbus get ss_acl_mode_${acl_row})" = "7" ] && dbus set ss_acl_mode_${acl_row}="2"
+    done
+
+    # Step 2: 老 ss_basic_chng_* dbus key 全清（40+ key）
+    dbus list ss_basic_chng_ | cut -d= -f1 | while read k; do dbus remove "$k"; done
+
+    # Step 3: ss_node_shunt_* dbus key 全清
+    dbus list ss_node_shunt_ | cut -d= -f1 | while read k; do dbus remove "$k"; done
+
+    # Step 4: ss_split_enabled 总开关物理移除
+    dbus remove ss_split_enabled
+
+    # Step 5: 落幂等标志
+    dbus set fss_doge14_migrated="1"
+}
+```
+
+#### D24: 真机验证 PASS 清单（详见 audit §M.4）
+
+| 项 | 结果 |
+|---|---|
+| migrate_v3 mode 7→2 | ✅ 日志 `ss_basic_mode 7 → 2（节点分流已退役）` |
+| ss_node_shunt_* 全清 | ✅ 2 个伪装 key 全 dbus remove |
+| ss_basic_chng_* 全清 | ✅ 85 个真实 key 全 dbus remove |
+| ss_split_enabled 清 | ✅ `dbus get ss_split_enabled` 返回空 |
+| fss_doge14_migrated=1 | ✅ |
+| rules_user 保护 fix 触发 | ✅ 用户自定义 Rule (rule_100+) 文件未丢 |
+| xray pid 监听 4 端口 | ✅ 23456 + 13333 + 13334 + 13335 |
+| chinadns 双轨 | ✅ split @65353 + global @65354 |
+| split iptables 装配 | ✅ default_mode=100 default_port=13335 |
+| 51.2 LAN curl 出口 | ✅ `3.9.92.164`（Mode #3 default_action 出口） |
+
+#### D25: 真机暴露 + 修复的 2 个老 BUG（不属 doge.14 引入，doge.14 顺手修）
+
+- **`install.sh:2348 rm -rf /koolshare/ss/*` 把 rules_user/ 清掉（doge.13 老 BUG）**：升级时所有用户自定义 Rule 文件（rule_100+.txt）会被 `rm -rf` 清光，自愈只重建内置 1~8。这不是 doge.14 引入，但 doge.14 后是唯一路径所以严重性放大。**修法**：rm 前 `cp -af rules_user/. /tmp/__fss_rules_user_backup_doge14/`，rm 后 restore。
+- **`ss_split_rule_seed.sh` syntax error（base.sh alias 干扰）**：busybox sh + `alias echo_date='...'` + 后续 `echo_date(){...}` function 定义 = parse 时 alias 展开 → syntax error。**修法**：function 定义前 `unalias echo_date >/dev/null 2>&1`。CLAUDE.md 硬规则 #21 候选（未来共享 helper 文件 source 多上下文时必须先 unalias）。
+
+#### D26: Reviewer 留 WARN（doge.14 stable 清完）
+
+详见 audit §N.3。
+
+- **W1**：install.sh:516-518 + 723-725 历史注释指向 migrate_v3 step 3
+- **W3**：ASP 11 处 mode=7 真业务逻辑分支（audit §B 漏列，需扫一遍）—— L2021 / L2023 / L4158 / L4161 / L6563 / L6590 / L8242 / L8480 / L8502 / L8521 / L8905 / L12935 / L17185
+- **W4**：ss_shunt_stats.sh:354+ 80 行 dead code（已在 D19 物理删时清理）
+- **I5**：`params_input` 数组 L8303-8317 仍含 14 个 `ss_basic_chng_*` 字段引用（save() 写空 → install 又删，无害但 noisy）
+- **L1605 / L2588**：ssconfig.sh 老 `chng_chk` → UDP relay 检测 dead path
+
+### 6.4 实施期约定的回溯修订
 
 **alpha 阶段（doge.12.alpha-1 → alpha.18）**：
 - 合同 §0 "alpha 不物理删除旧 key" — 由 A 完全遵守 ✓
@@ -483,10 +628,80 @@ fancyss/                                  # 仓库内
 - 合同 §4.1 "硬规则 #1 ss_* 前缀" — `ss_split_node_outbound_count` / `ss_split_chain_outbound_count` 等诊断 key 沿用 ss_ 前缀；`fss_split_xray_warn` / `fss_split_migrated_v2` 后端 hot 状态用 fss_ 前缀 ✓
 - 合同 §4.2 "不动 ss_node_shunt.sh" — doge.13 beta 仍未动 ss_node_shunt.sh，留 doge.14 物理移除 ✓
 
+**doge.14 stable（本阶段）**：
+- 合同 §4.2 "doge.14 唯一路径" — Phase 1+2+3 全部兑现 ✓
+- 合同 §4.1 "硬规则 #14 fork-not-replace 旧路径" — 由 D17 物理移除收尾，旧路径不再存在，规则在 doge.14 起作"历史"标记保留 ✓
+- 合同 §4.1 "硬规则 #11 chinadns tag 优先级" — 旧路径物理移除后约束在 split 路径下不影响最终路由结果，规则在 doge.14 起作"历史警示"保留 ✓
+
+---
+
+## 7. doge.14 物理删除范围总结
+
+> 本节是 §0.2 + §6.3 D17-D26 + audit §M/§N 的高层总结索引。详细 audit 在 [../design/doge14-deletion-scope-audit.md](../design/doge14-deletion-scope-audit.md)（archive 状态，doge.14 sprint 收尾归档）。
+
+### 7.1 删除范围一览（按 audit 字母段对照）
+
+| audit 段 | 删除项 | 净行数 | doge.14 状态 |
+|---|---|---|---|
+| §A | `ss_split_enabled` 总开关 11 处 fork 入口 | ~50 行 | ✅ Phase 1+2+3 兑现 |
+| §B | `ss_basic_mode=7` 14 处 case 分支 + scripts/ 5 处环境检测 | ~80 行 | ✅ Phase 2 兑现，残留 11 处真业务逻辑分支留 W3 |
+| §C | `ss_node_shunt.sh` 整文件 + 3 个 sourcer | -2129 行（2121→0） | ✅ Phase 1+2 stub 化 → Phase 3 物理删 |
+| §D | 老 `start_chinadns_ng()` 单实例 + 4 处调用点 | -275 行 | ✅ Phase 1 兑现，B1 BLOCKER fallback 分支补 fix |
+| §E | 老 `load_iptables()` + `flush_ipset()` + `apply_ss()` fork | -108 行 | ✅ Phase 1 兑现，D16 老路径残留 bug 一并消失 |
+| §F | 老 [DNS 设置] section + 40+ `ss_basic_chng_*` dbus key | -95 行 ASP + 85 个 dbus key | ✅ Phase 1 兑现，I5 残留 14 个 params_input 引用待清 |
+| §G | hint 220 / 221 退役 | -25 行（ss-menu.js）+ 4 处 ASP 触发点 | ✅ Phase 1 兑现 |
+| §H | AnyTLS TODO | 无残留 | ✅ 已在 doge.13 beta D7 解决 |
+| §M.3 | 真机暴露 2 fix（rules_user 保护 + alias unalias） | +51 行 install.sh / +unalias 命令 | ✅ Phase 2 兑现 |
+
+### 7.2 删除总量
+
+- **净 -3310 行**（vs 早期估计 -2300 / -2786 偏低 ~42%）
+- 14 modified + 1 untracked（audit doc）
+- ssconfig.sh -1059 行 / ss_node_shunt.sh -2129 行 / Module_shadowsocks.asp -257 行 / install.sh +51 -14
+- 1 P0 BLOCKER 修（B1 = chng_* fallback 删除 + 未用 local 声明删除）+ 1 W2 顺手修（creat_shunt_json 函数体 no-op）+ 3 WARN 留 stable（W1 / W3 / I5）
+
+### 7.3 不在 doge.14 范围（留 doge.14.x 或 doge.15）
+
+- 共享 lib 抽 `has_dbus_forbidden_chars` 等 helper DRY 化
+- 双轨 DNS per-Mode UI 编辑（Phase 3 仅 readonly 占位）
+- per-rule 链式代理（proxy_chain:Y:X）从 collapse 到 out_main 改为真实 build chain outbound
+- UI 重设计（[DNS 设置] / [访问控制] tab，audit §I 候选范围）
+
+### 7.4 老用户升级路径（doge.13 → doge.14）
+
+升级流程由 [install.sh::migrate_split_routing_v3](../../fancyss/install.sh) 一次性 + 幂等执行（`fss_doge14_migrated=1` 标志），步骤详见 §6.3 D23 伪代码。
+
+**触发时机**：用户在 Web UI 离线安装 doge.14 包后，install.sh 在装包末尾自动调用 `migrate_split_routing_v3`。
+
+**幂等保证**：第一次跑落 `fss_doge14_migrated=1`；之后跑或二次安装 doge.14 均 no-op return 0。
+
+**用户感知**：
+- `ss_basic_mode=7` xray 节点分流用户 → 自动切到 mode=2（大陆白名单），主节点 + 链式状态保留，rules 引用主节点的 action 自动经 `proxy_main` sentinel 转译
+- 其他 mode (`0/1/2/3/5/6`) 用户 → mode 值不动，行为不变（分流路径已是唯一路径）
+- 老 DNS upstream 数据已在 doge.13 beta migrate_v2 切到 `ss_split_dns_*` 系列 key，本次再清老 `ss_basic_chng_*` key 不影响实际工作
+- 自定义 Rule 文件（rule_100+.txt）由 D25 rules_user 保护 fix 保留（含老 doge.13 升级时的 `rm -rf` BUG 一起 fix）
+
+**验证清单**：详见 §6.3 D24 PASS 清单。
+
 ---
 
 ## 修订记录
 
+- **2026-05-27 doge.14 stable 落地（物理删除收尾 / 分流架构成为唯一路径）** ⭐ milestone：
+  - **`ss_split_enabled` 总开关物理移除**（D17 / audit §A）：`migrate_split_routing_v3` step 4 一次性 `dbus remove ss_split_enabled`；ssconfig.sh 6 处 fork else 分支 + L8775-8788 诊断日志 + install.sh L2604 状态读取 + ASP 5 处 JS handler 全部物理删除。路由层无 else 分支可回退。
+  - **`ss_basic_mode=7` xray 节点分流整套退役**（D18 / audit §B + §C）：migrate_v3 step 1 把存量 mode=7 / acl_mode=7 自动迁到 2；ssconfig.sh 13 处 case 分支 + creat_shunt_json 函数体改 no-op；scripts/ 5 处环境检测 + ASP `<select>` mode=7 option 物理删。残留 11 处真业务逻辑分支留 W3（不阻塞 release，stable 后清）。
+  - **`ss_node_shunt.sh` 整文件物理删除**（D19 / audit §C）：2121 行整文件清空（Phase 1+2 先 stub 化到 43 行容错升级，Phase 3 整文件物理删）+ 3 个 source 调用点删（ss_base.sh:16-17 / ss_node_postsave.sh:6 / ss_shunt_hot_reload.sh:4）。`ss_shunt_stats.sh` / `ss_shunt_hot_reload.sh` 整文件也物理删（dead）。
+  - **老 `start_chinadns_ng()` 单实例 + 老 iptables/ipset 老分支移除**（D20 / audit §D + §E）：约 275 行单实例 chinadns 函数 + 调用方 4 处删；`load_iptables()` 老分支 35 行 + `flush_ipset()` 老分支 70 行 + `apply_ss()` fork 入口 3 行删。D16 老路径残留 bug 一并消失。
+  - **老 [DNS 设置] section + 40+ `ss_basic_chng_*` dbus key 退役**（D21 / audit §F）：ASP `Module_shadowsocks.asp:18353-18428` 约 95 行老 section 物理删除（含 27 个 input + 6 个 select / checkbox + 8 个 IPv6 设置 + JS handler L10056-10084）；migrate_v3 step 2 `dbus remove` 40+ 个老 key。
+  - **hint 220 / 221 退役**（D22 / audit §G）：ss-menu.js hint 定义 25 行 + ASP 4 处 openssHint 触发点物理删。
+  - **`migrate_split_routing_v3` 设计 + 真机验证 PASS**（D23+D24）：4 step（mode 迁移 / ss_basic_chng_* 清 / ss_node_shunt_* 清 / ss_split_enabled remove）+ 幂等标志 `fss_doge14_migrated=1`；51.1 装机后 10 项验证全 PASS（含 LAN curl 出口 3.9.92.164 = Mode #3 default_action 出口）。
+  - **真机暴露 2 个老 BUG 一并修**（D25）：① `install.sh:2348 rm -rf /koolshare/ss/*` 把 rules_user/ 清掉（doge.13 老 BUG），加 `cp -af` 备份 + restore；② `ss_split_rule_seed.sh` syntax error（busybox sh + alias `echo_date` 干扰 function 定义解析），function 前加 `unalias echo_date`。
+  - **B1 P0 BLOCKER fix**（M.2）：`start_chinadns_ng_split` / `generate_chinadns_global_conf` 内 `ss_basic_chng_*` fallback 分支与 migrate_v3 step 2 (清 chng_*) 冲突 → 从未点过 [DNS 设置] 保存的老用户升级后国内 DNS 永久兜底 223.5.5.5。**修法**：删 fallback 分支 + 删未用 local CDNS_1/2/3 / FDNS_1/2/3 声明。
+  - **净改动**：14 modified + 1 untracked（audit doc）；**净 -3310 行**（ssconfig.sh -1059 / ss_node_shunt.sh -2129 / ASP -257 / install.sh +51 -14）。
+  - **CLAUDE.md 硬规则更新**：#14 改成 "doge.14 起物理移除，无兼容旧路径"；#11 改成 "历史警示" 标记保留；新候选硬规则 #21（共享 helper file source 多上下文前 unalias）。
+  - **文档大重写**（本提交）：split-routing-implementation §0 / §1 / §4 / §6 / §7 重写为"doge.14 唯一路径"语境；split-routing-architecture §4 / §6.5 / §14 同步更新；audit doc 加 archive 标记。
+  - **本文档相关章节更新**：§0.1 演进时间线 + §0.2 doge.14 物理删除收尾清单 + §1.1 `ss_split_enabled` 标 dbus 移除 + `fss_doge14_migrated` 加入迁移标志 + §1.8 旧 key 处置历史扩展 + §4.2 唯一路径约束 + §6.3 D17-D26 全套落地段 + §7 doge.14 物理删除范围总结。
+  - **遗留收尾事项（doge.14 stable 后续，不阻塞 release）**：W1 install.sh 历史注释清理 / W3 ASP 11 处 mode=7 真业务逻辑分支扫一遍 / I5 ASP params_input 14 个 ss_basic_chng_* 字段引用清理 / L1605 + L2588 ssconfig.sh 老 chng_chk → UDP relay 检测 dead path 清理。
 - **2026-05-23 doge.13 stable 发版（去 beta 后缀，flip switch）** ⭐ milestone：
   - **install.sh::ss_split_enabled 默认值 0 → 1**（[fancyss/install.sh:2600-2605](../../fancyss/install.sh#L2600)）。新装机自动走新分流路径；alpha/beta 老用户已显式设置过的值（含旧默认种下的 0）一律保留，不强切 opt-out 用户。migrate guard 沿用现成的 `[ -z "$(dbus get ...)" ] && dbus set` 单行模式（用户群只有 fork 维护者 + 1 朋友，决策最简方案）。
   - **ASP / ss-menu.js 标签去 alpha / 实验性 / V2 残留**：hint 210 警告框删除 + caption 改成 "分流架构"；hint 211/212/215/216/217 "alpha 阶段" / "TODO(doge.12-alpha)…doge.13" → "现阶段" / "doge.14"；ASP 顶部按钮 title "doge.12 智能分流架构" → "智能分流架构"；ss_split_enabled select 的 "(默认)" 标记从未启用翻到已启用 option。

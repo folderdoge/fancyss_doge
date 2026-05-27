@@ -514,8 +514,8 @@ migrate_failover_v2(){
 # FORK doge.12 alpha: 分流架构（Rule + Mode + per-User + 双轨 DNS）一次性迁移。
 # 详见 doc/design/split-routing-architecture.md §14 + doc/implementation/split-routing-implementation.md。
 # 触发条件：fss_split_migrated_v1 != "1"。幂等。
-# alpha 阶段 NOT 物理删除任何旧 key（ss_node_shunt_* / ss_basic_mode / ss_acl_mode_<i> 全保留），
-# NOT 销毁旧 ipset（旧路径仍在用），仅写入新 key + 内置 Rule 文件。
+# 仅写入新 key + 内置 Rule 文件。
+# doge.14 stable: ss_node_shunt_* / ss_basic_mode=7 残留由 migrate_split_routing_v3 step 1+3 清理（见下方）。
 # ============================================================================
 
 # helper: 写入单个内置 Rule（rule_<id>.txt 头注释 + dbus 元数据）
@@ -720,9 +720,8 @@ migrate_split_routing_v1(){
 	# ---------- Step 5: 黑白名单文本框保留 ----------
 	# ss_wan_white_domain / ss_wan_black_domain 不动，两个内置 Mode 默认 apply_blackwhite=1。
 
-	# ---------- Step 6/7: alpha 阶段 NOT 物理删除任何旧 key ----------
-	# ss_node_shunt_* / ss_basic_mode / ss_acl_mode_<i> / failover-combo 全保留——旧路径仍在用。
-	# 待 alpha 充分验证后由 doge.13+ 处理。
+	# ---------- Step 6/7: 旧 key 清理由 migrate_split_routing_v3 (doge.14) 接手 ----------
+	# ss_node_shunt_* / ss_basic_mode=7 等老 key 在 v3 step 1+3 清理（见下方 migrate_split_routing_v3）。
 
 	# ---------- Step 9: 落幂等标志 ----------
 	dbus set fss_split_migrated_v1="1"

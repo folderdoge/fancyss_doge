@@ -721,8 +721,6 @@ var ph_xray = "# 填入xray json配置，内容可以是标准的也可以是压
 var ph_tuic = "# 填入tuic client json配置，内容可以是标准的也可以是压缩的&#10;# 请保证你json内的relay部分的配置正确！！！" 	//fancyss-full
 var mainPanelNodeId = "";
 var option_proxy_modes = [["1", "gfw黑名单模式"], ["2", "大陆白名单模式"], ["3", "游戏模式"], ["5", "全局代理模式"]];
-// FORK doge.13: option_main_modes 移除 mode 7 (xray分流模式)，由新「分流」标签页替代。
-// 用户已在 mode 7 时（升级路径），下方 forms() 调用前会动态插入 stale option 保留原值（硬规则 #9）。
 var option_main_modes = [["1", "gfw黑名单模式"], ["2", "大陆白名单模式"], ["3", "游戏模式"], ["5", "全局代理模式"]];
 var option_modes = option_proxy_modes;
 var option_method = [ "none",  "rc4",  "rc4-md5",  "rc4-md5-6",  "aes-128-gcm",  "aes-192-gcm",  "aes-256-gcm",  "aes-128-cfb",  "aes-192-cfb",  "aes-256-cfb",  "aes-128-ctr",  "aes-192-ctr",  "aes-256-ctr",  "camellia-128-cfb",  "camellia-192-cfb",  "camellia-256-cfb",  "bf-cfb",  "cast5-cfb",  "idea-cfb",  "rc2-cfb",  "seed-cfb",  "salsa20",  "chacha20",  "chacha20-ietf",  "chacha20-ietf-poly1305",  "xchacha20-ietf-poly1305", "plain", "2022-blake3-aes-128-gcm", "2022-blake3-aes-256-gcm", "2022-blake3-chacha20-poly1305" ];
@@ -2017,10 +2015,8 @@ function bind_shunt_custom_preset_usage_events() {
 	sync();
 }
 function current_mode_is_shunt() {
-	if (E("ss_basic_mode")) {
-		return String(E("ss_basic_mode").value || "") == "7";
-	}
-	return String(db_ss["ss_basic_mode"] || "") == "7";
+	// doge.14: mode=7 (xray分流模式) 已完全退役 — 总是 false 保留 caller 兼容性
+	return false;
 }
 function is_shunt_supported_node(nodeId) {
 	var c = confs[nodeId];
@@ -4154,12 +4150,6 @@ function get_node_persistent_mode(nodeId) {
 		mode = String(confs[nodeId]["mode"] || "");
 	} else if (typeof db_ss["ssconf_basic_mode_" + nodeId] != "undefined") {
 		mode = String(db_ss["ssconf_basic_mode_" + nodeId] || "");
-	}
-	if (mode && mode != "7") {
-		return mode;
-	}
-	if ((E("ss_basic_mode") && String(E("ss_basic_mode").value || "") == "7") || String(db_ss["ss_basic_mode"] || "") == "7") {
-		return "2";
 	}
 	return mode || "1";
 }
@@ -6560,7 +6550,6 @@ function conf2obj(obj, action) {
 }
 function ssconf_node2obj(node_sel) {
 	obj_node = {};
-	var forceShuntMode = (E("ss_basic_mode") && String(E("ss_basic_mode").value || "") == "7") || String(db_ss["ss_basic_mode"] || "") == "7";
 	if (get_node_storage_schema() == 2) {
 		var conf = confs[node_sel] || {};
 		var nodeFields = NODE_FIELD_REWRITE_LIST.filter(function(field) {
@@ -6585,9 +6574,6 @@ function ssconf_node2obj(node_sel) {
 			var legacyField = nodeFields[j];
 			obj_node["ss_basic_" + legacyField] = is_node_bool_field(legacyField) ? (db_ss[p + "_" + legacyField + "_" + node_sel] || "0") : (db_ss[p + "_" + legacyField + "_" + node_sel] || "");
 		}
-	}
-	if (forceShuntMode) {
-		obj_node["ss_basic_mode"] = "7";
 	}
 	obj_node["ssconf_basic_node"] = node_sel;
 	return obj_node;
@@ -8239,26 +8225,6 @@ function save() {
 	saveMainPanelNode = should_save_main_panel_node(node_sel);
 	var node_type = get_node_type(node_sel);
 	submit_flag="1";
-	if (E("ss_basic_mode") && E("ss_basic_mode").value == "7") {
-		if (node_sel && !is_shunt_supported_node(node_sel)) {
-			show_shunt_node_block_layer(node_sel);
-			return false;
-		}
-		node_sel = sync_shunt_current_node_selection(node_sel) || node_sel;
-		if (String(node_sel) != String(get_saved_current_node_id() || "")) {
-			sync_shunt_fallback_with_current_node(node_sel);
-		}
-		shuntDefaultNodeId = get_shunt_default_node_id();
-		shuntRuntimeNodeId = get_shunt_runtime_node_id();
-		if (is_shunt_direct_target(shuntDefaultNodeId) && !shuntRulesState.length) {
-			alert("至少需要一条分流规则后，兜底规则才能选择 DIRECT。");
-			return false;
-		}
-		if (!shuntRuntimeNodeId || !is_shunt_supported_node(shuntRuntimeNodeId)) {
-			alert("xray分流模式当前至少需要一个可用的运行节点。");
-			return false;
-		}
-	}
 	if (get_node_storage_schema() == 2) {
 		dbus["fss_node_current"] = node_sel;
 		dbus["fss_node_current_identity"] = get_node_identity(node_sel) || "";
@@ -8300,49 +8266,6 @@ function save() {
 	  "ss_basic_interval",
 	  "ss_basic_row",
 	  "ss_basic_dns_plan",
-	  "ss_basic_chng_china_net_1_typ",
-	  "ss_basic_chng_china_udp_1_opt",
-	  "ss_basic_chng_china_udp_1_usr",
-	  "ss_basic_chng_china_tcp_1_opt",
-	  "ss_basic_chng_china_tcp_1_usr",
-	  "ss_basic_chng_china_dot_1_opt",
-	  "ss_basic_chng_china_dot_1_usr",
-	  "ss_basic_chng_china_net_2_typ",
-	  "ss_basic_chng_china_udp_2_opt",
-	  "ss_basic_chng_china_udp_2_usr",
-	  "ss_basic_chng_china_tcp_2_opt",
-	  "ss_basic_chng_china_tcp_2_usr",
-	  "ss_basic_chng_china_dot_2_opt",
-	  "ss_basic_chng_china_dot_2_usr",
-	  "ss_basic_chng_china_net_3_typ",
-	  "ss_basic_chng_china_udp_3_opt",
-	  "ss_basic_chng_china_udp_3_usr",
-	  "ss_basic_chng_china_tcp_3_opt",
-	  "ss_basic_chng_china_tcp_3_usr",
-	  "ss_basic_chng_china_dot_3_opt",
-	  "ss_basic_chng_china_dot_3_usr",
-	  "ss_basic_chng_trust_net_1_typ",
-	  "ss_basic_chng_trust_udp_1_opt",
-	  "ss_basic_chng_trust_udp_1_usr",
-	  "ss_basic_chng_trust_tcp_1_opt",
-	  "ss_basic_chng_trust_tcp_1_usr",
-	  "ss_basic_chng_trust_dot_1_opt",
-	  "ss_basic_chng_trust_dot_1_usr",
-	  "ss_basic_chng_trust_net_2_typ",
-	  "ss_basic_chng_trust_udp_2_opt",
-	  "ss_basic_chng_trust_udp_2_usr",
-	  "ss_basic_chng_trust_tcp_2_opt",
-	  "ss_basic_chng_trust_tcp_2_usr",
-	  "ss_basic_chng_trust_dot_2_opt",
-	  "ss_basic_chng_trust_dot_2_usr",
-	  "ss_basic_chng_trust_net_3_typ",
-	  "ss_basic_chng_trust_udp_3_opt",
-	  "ss_basic_chng_trust_udp_3_usr",
-	  "ss_basic_chng_trust_tcp_3_opt",
-	  "ss_basic_chng_trust_tcp_3_usr",
-	  "ss_basic_chng_trust_dot_3_opt",
-	  "ss_basic_chng_trust_dot_3_usr",
-	  //"ss_basic_chng_dns_query_times",
 	  "ss_basic_chng",
 	  "ss_basic_smrt",
 	  "ss_basic_rule_update",
@@ -8477,14 +8400,6 @@ function save() {
 	}
 	dbus["ss_basic_shunt_default_node"] = "";
 	dbus["ss_basic_shunt_default_node_identity"] = "";
-	if (E("ss_basic_mode") && E("ss_basic_mode").value == "7") {
-		if (is_shunt_direct_target(shuntDefaultNodeId)) {
-			dbus["ss_basic_shunt_default_node"] = SHUNT_DIRECT_TARGET;
-		} else if (shuntDefaultNodeId) {
-			dbus["ss_basic_shunt_default_node"] = shuntDefaultNodeId;
-			dbus["ss_basic_shunt_default_node_identity"] = get_node_identity(shuntDefaultNodeId);
-		}
-	}
 	dbus["ss_basic_shunt_rules"] = base64_encode_utf8(JSON.stringify(shuntRulesState));
 	var shuntCustomPresetsPayload = encode_shunt_custom_presets_payload(shuntCustomPresetsState);
 	if (shuntCustomPresetsPayload.length > SHUNT_CUSTOM_PRESETS_FIELD_MAX) {
@@ -8499,10 +8414,6 @@ function save() {
 		for (var i = 1; i < tr.length - 1; i++) {
 			var rowid = tr[i].getAttribute("id").split("_")[2];
 			var aclMode = E("ss_acl_mode_" + rowid).value;
-			if (String(aclMode) == "7" && String(E("ss_basic_mode").value || "") != "7") {
-				alert("访问控制中的 xray分流模式 仅在主模式切换为 xray分流模式后才能生效。");
-				return false;
-			}
 			dbus["ss_acl_name_" + rowid] = E("ss_acl_name_" + rowid).value;
 			dbus["ss_acl_mode_" + rowid] = aclMode;
 			// FORK doge.12 alpha.18 Q2: 同步翻译到 ss_acl_split_mode_<rowid>，否则 V2 分流 (ss_split_enabled=1) 下 load_iptables_split 读不到，
@@ -8518,7 +8429,7 @@ function save() {
 	}
 	// node data: write node data under using from the main pannel incase of data change
 	if (saveMainPanelNode) {
-	dbus["ssconf_basic_mode_" + node_sel] = E("ss_basic_mode").value == "7" ? get_node_persistent_mode(node_sel) : E("ss_basic_mode").value;
+	dbus["ssconf_basic_mode_" + node_sel] = E("ss_basic_mode").value;
 	// ss
 	if (node_type == "0" ){
 		var params_ssi_1 = ["mode", "server", "port", "method", "ss_obfs_host"];
@@ -8782,8 +8693,6 @@ function save() {
 			db_ss["ss_basic_action"] = "3";
 		} else if (sel_mode == "5") {
 			db_ss["ss_basic_action"] = "5";
-		} else if (sel_mode == "7") {
-			db_ss["ss_basic_action"] = "28";
 		} else if (sel_mode == "6") {
 			db_ss["ss_basic_action"] = "6";
 		}
@@ -8799,9 +8708,6 @@ function save() {
 	}
 	var post_dbus = compfilter(get_compare_store(), dbus);
 	var submit_arg = "start";
-	if (dbus["ss_basic_enable"] == "1" && should_use_shunt_hot_reload(post_dbus)) {
-		submit_arg = "start_shunt_hot";
-	}
 	//console.log("post_dbus", post_dbus);
 
 	if(dbus["ss_basic_enable"] == "1"){
@@ -8899,30 +8805,6 @@ function push_data_ws(script, arg, obj, flag, ws_cmd){
 	});
 }
 
-function should_use_shunt_hot_reload(post_dbus){
-	if (!post_dbus) return false;
-	if (!E("ss_basic_enable") || !E("ss_basic_enable").checked) return false;
-	if (!E("ss_basic_mode") || String(E("ss_basic_mode").value || "") != "7") return false;
-	if (!E("ss_basic_shunt_hot_reload") || !E("ss_basic_shunt_hot_reload").checked) return false;
-	if (String(db_ss["ss_basic_status"] || "0") != "1") return false;
-	var allowed = {
-		"ss_basic_shunt_rules": 1,
-		"ss_basic_shunt_default_node": 1,
-		"ss_basic_shunt_default_node_identity": 1,
-		"ss_basic_shunt_ingress_mode": 1,
-		"ss_basic_shunt_custom_presets": 1,
-		"ss_basic_shunt_rule_ts": 1
-	};
-	var has_real_change = false;
-	for (var key in post_dbus) {
-		if (!post_dbus.hasOwnProperty(key)) continue;
-		if (!allowed[key]) return false;
-		if (key != "ss_basic_shunt_rule_ts") {
-			has_real_change = true;
-		}
-	}
-	return has_real_change;
-}
 var realtimeLogStartTimer = null;
 var textFilePollStates = {};
 function get_backend_action_profile(script, flag){
@@ -9922,31 +9804,10 @@ function verifyFields(r) {
 			push_data("dummy_script.sh", "", dbus_post, "2");
 		}
 	}
-	sync_chinadns_ipv6_drop_proxy_ui();
 	if (E("ACL_table")) {
 		sync_acl_udp_quic_labels();
 	}
 	refresh_shunt_ui();
-}
-function sync_chinadns_ipv6_drop_proxy_ui() {
-	var dropProxy = E("ss_basic_chng_ipv6_drop_proxy");
-	if (!dropProxy) {
-		return;
-	}
-	var ipv6Proxy = E("ss_basic_proxy_ipv6") && E("ss_basic_proxy_ipv6").checked;
-	var tip = ipv6Proxy ? "当前已经开启ipv6代理，默认不过滤代理域名的ipv6解析" : "";
-	if (ipv6Proxy) {
-		dropProxy.checked = false;
-	}
-	dropProxy.disabled = ipv6Proxy;
-	dropProxy.title = tip;
-	dropProxy.style.cursor = ipv6Proxy ? "not-allowed" : "pointer";
-	var $td = $(dropProxy).closest("td");
-	if ($td.length) {
-		$td.attr("title", tip);
-		$td.css("cursor", ipv6Proxy ? "not-allowed" : "");
-		$td.find("a").last().attr("title", tip).css("cursor", ipv6Proxy ? "not-allowed" : "");
-	}
 }
 function update_visibility() {
 	var a  = E("ss_basic_rule_update").value == "1";
@@ -9975,7 +9836,6 @@ function update_visibility() {
 		$(".chng").hide();
 		$(".smrt").hide();
 	}
-	sync_chinadns_ipv6_drop_proxy_ui();
 	showhide("ss_dnsmasq_cus", E("ss_basic_dns_serverx").checked == false);
 }
 
@@ -12932,9 +12792,6 @@ function apply_this_ss_node(rowdata) {
 	}else {
 		$activateItem.addClass("activate_icon");
 		$activateItem.removeClass("deactivate_icon");
-		if (E("ss_basic_mode") && E("ss_basic_mode").value == "7") {
-			enable_id = sync_shunt_current_node_selection(enable_id) || enable_id;
-		}
 		if (get_node_storage_schema() == 2) {
 			dbus["fss_node_current"] = enable_id;
 			dbus["fss_node_current_identity"] = get_node_identity(enable_id) || "";
@@ -15018,32 +14875,8 @@ var tab_actions = {
 		verifyFields();
 	},
 	3: function() {
-		var selects = [
-			'#ss_basic_chng_china_udp_1_opt',
-			'#ss_basic_chng_china_tcp_1_opt',
-			'#ss_basic_chng_china_dot_1_opt',
-			'#ss_basic_chng_china_udp_2_opt',
-			'#ss_basic_chng_china_tcp_2_opt',
-			'#ss_basic_chng_china_dot_2_opt',
-			'#ss_basic_chng_china_udp_3_opt',
-			'#ss_basic_chng_china_tcp_3_opt',
-			'#ss_basic_chng_china_dot_3_opt',
-			'#ss_basic_chng_trust_udp_1_opt',
-			'#ss_basic_chng_trust_tcp_1_opt',
-			'#ss_basic_chng_trust_dot_1_opt',
-			'#ss_basic_chng_trust_udp_2_opt',
-			'#ss_basic_chng_trust_tcp_2_opt',
-			'#ss_basic_chng_trust_dot_2_opt',
-			'#ss_basic_chng_trust_udp_3_opt',
-			'#ss_basic_chng_trust_tcp_3_opt',
-			'#ss_basic_chng_trust_dot_3_opt'
-		];
 		$('#apply_button').show();
 		$('#ss_failover_save').hide();
-		for (var i = 0; i < selects.length; i++) {
-			change_select_width(selects[i], '1');
-		}
-		change_select_width('#ss_basic_dig_opt');
 		update_visibility();
 		autoTextarea(E("ss_dnsmasq"), 0, 500);
 	},
@@ -15159,7 +14992,7 @@ function toggle_func() {
 		$('.sub-btn2').addClass('active2');
 		verifyFields()
 	});
-	var default_tab = current_mode_is_shunt() ? 5 : parseInt(E("ss_basic_tablet").checked ? "1":"0");
+	var default_tab = parseInt(E("ss_basic_tablet").checked ? "1":"0");
 	if (node_nu == 0 && poped == 0) {
 		$(".show-btn1").trigger("click");
 	}else{
@@ -17001,16 +16834,8 @@ function bind_shunt_mode_sync() {
 		var nextMode = String($(this).val() || "");
 		var prevMode = String($(this).data("prev-mode") || get_selected_main_mode());
 		var nodeId = resolve_node_id(E("ssconf_basic_node").value, true);
-		if (nextMode == "7" && nodeId && !is_shunt_supported_node(nodeId)) {
-			show_shunt_node_block_layer(nodeId);
-			rollback_shunt_mode_selection(prevMode);
-			return false;
-		}
 		$(this).data("prev-mode", nextMode);
 		refresh_shunt_ui();
-		if (nextMode == "7") {
-			$(".show-btn5").trigger("click");
-		}
 	});
 }
 function render_acl_port_select(id, className, style) {
@@ -17094,8 +16919,6 @@ function refresh_acl_html() {
 	code += '<option value="2">大陆白名单模式</option>'
 	code += '<option value="3">游戏模式</option>'
 	code += '<option value="5">全局代理模式</option>'
-	// FORK doge.13: mode 7 (xray分流模式) 入口隐藏 — 新建 ACL 行不可再选 mode 7。已有持 mode 7 的行由下方 17311 行 stale option 处理保留。
-	// code += '<option value="7">xray分流模式</option>'
 	// code += '<option value="6">回国模式</option>'
 	code += '</select>'
 	code += '</td>'
@@ -17136,11 +16959,6 @@ function refresh_acl_html() {
 			code += '<option value="2">大陆白名单模式</option>';
 			code += '<option value="3">游戏模式</option>';
 			code += '<option value="5">全局代理模式</option>';
-			// FORK doge.13: 默认隐藏 mode 7 (xray分流模式) 入口；仅当该 ACL 行 saved mode 已是 7 时插 stale option 保留旧值（硬规则 #9）。
-			var aclSavedMode = String(ac && ac["mode"] != null ? ac["mode"] : "");
-			if (aclSavedMode === "7") {
-				code += '<option value="7">xray分流模式 (已废弃)</option>';
-			}
 			//code += '<option value="6">回国模式</option>';
 		}
 		code += '</select>'
@@ -17182,8 +17000,6 @@ function refresh_acl_html() {
 			code += '<td width="18%"><span id="ss_acl_default_mode_text">游戏模式</span></td>';
 		} else if (ssmode == 5) {
 			code += '<td width="18%"><span id="ss_acl_default_mode_text">全局代理模式</span></td>';
-		} else if (ssmode == 7) {
-			code += '<td width="18%"><span id="ss_acl_default_mode_text">xray分流模式</span></td>';
 		} else if (ssmode == 6) {
 			//code += '<td width="18%">回国模式</td>';
 		}
@@ -17755,7 +17571,6 @@ function toggleKeyMask(o, show){
 														<td cellpadding="0" cellspacing="0" style="padding:0" border="1" bordercolor="#222">
 															<input id="show_btn0" class="show-btn0" style="cursor:pointer" type="button" value="帐号设置" />
 															<input id="show_btn1" class="show-btn1" style="cursor:pointer" type="button" value="节点管理" />
-															<input id="show_btn5" class="show-btn5" style="cursor:pointer;display:none;" type="button" value="节点分流" />
 															<input id="show_btn2" class="show-btn2" style="cursor:pointer" type="button" value="故障转移" />
 															<input id="show_btn3" class="show-btn3" style="cursor:pointer" type="button" value="DNS设定" />
 															<input id="show_btn4" class="show-btn4" style="cursor:pointer" type="button" value="黑白名单" />
@@ -17936,12 +17751,6 @@ function toggleKeyMask(o, show){
 														</tr>
 													</tbody>
 													<script type="text/javascript">
-														// FORK doge.13: 老用户仍持 ss_basic_mode=7 时插 stale option（硬规则 #9）— 保留旧 ID 不被 save() 静默置空。
-														if (String(db_ss["ss_basic_mode"]||"") === "7" && option_main_modes && option_main_modes.length) {
-															var _hasMode7 = false;
-															for (var _i=0; _i<option_main_modes.length; _i++) if (String(option_main_modes[_i][0]) === "7") { _hasMode7 = true; break; }
-															if (!_hasMode7) option_main_modes.push(["7", "xray分流模式 (已废弃，请切换到大陆白名单模式)"]);
-														}
 														$('#tb_main').forms([
 															// commom
 															{ title: '落地节点', id:'ssconf_basic_node', type:'select', func:'onchange="ss_node_sel();"', style:'width:auto;min-width:164px;max-width:450px;', options:[], value: "1"},
@@ -18173,7 +17982,6 @@ function toggleKeyMask(o, show){
 																{ id: 'ss_basic_dns_plan', type:'select', func:'u', options:option_dnsp, style:'width:112px;', value:'1'},
 																{ suffix: '&nbsp;&nbsp;'}
 															]},
-															//{ title: '发送重复DNS查询包（--repeat-times）', class:'new_dns chng', id:'ss_basic_chng_dns_query_times', type:'text', value: '1'},
 															{ title: '&nbsp;&nbsp;*选择smartdns策略', hint:'154', class:'new_dns smrt', multi: [
 																{ id: 'ss_basic_smrt', type:'select', func:'u', options:option_smrt, style:'width:112px;', value:'1'},
 															]},
@@ -18227,212 +18035,6 @@ function toggleKeyMask(o, show){
 														var isp_dns_1=isp_dns_raw.split(" ")[0];
 														var isp_dns_2=isp_dns_raw.split(" ")[1];
 														validator.ipv4_addr(isp_dns_1);
-														if(isp_dns_1 && isp_dns_2){
-															var ispDNS = {
-																ipv4: [
-																	{ addr: isp_dns_1, description: "主用DNS" },
-																	{ addr: isp_dns_2, description: "备用DNS" }
-																]
-															};
-														}else if(isp_dns_1 && !isp_dns_2){
-															var ispDNS = {
-																ipv4: [
-																	{ addr: isp_dns_1, description: "主用DNS" }
-																]
-															};
-														}else{
-															var ispDNS = {
-																ipv4: [
-																	{ addr: "223.5.5.5", description: "备用DNS" }
-																]
-															};
-														}
-														const ispDnsSelectors = new Set([
-														  'ss_basic_chng_china_udp_1_opt',
-														  'ss_basic_chng_china_udp_2_opt',
-														  'ss_basic_chng_china_udp_3_opt'
-														]);
-														function addISPdns(select, netType) {
-															// 获取对应的IP版本
-															const version = netType === 'all' ? 'ipv4' : netType; // 根据实际情况调整
-															
-															// 创建optgroup容器
-															const group = document.createElement('optgroup');
-															group.label = '运营商DNS';
-															
-															// 填充选项
-															(ispDNS[version] || []).forEach(server => {
-																const option = document.createElement('option');
-																option.value = server.addr;
-																option.textContent = `${server.addr}${server.description ? ` (${server.description})` : ''}`;
-																group.appendChild(option);
-															});
-														
-															// 插入到现有内容最前部
-															if (group.children.length > 0) {
-																select.insertBefore(group, select.firstChild);
-															}
-														}
-														
-														// 协议筛选器（类型统一为数字）
-														const protocolFilters = {
-															udp: type => [1, 3].includes(type),
-															tcp: type => [2, 3].includes(type),
-															dot: type => type === 4
-														};
-														
-														function buildOptions(dnsdata, protocol, netType) {
-															const fragment = document.createDocumentFragment();
-															
-															Object.entries(dnsdata).forEach(([provider, servers]) => {
-															const group = document.createElement('optgroup');
-															group.label = provider;
-															
-															servers.forEach(server => {
-																if (protocolFilters[protocol](server.type) && (netType === 'all' || server.net === netType)) {
-																	const option = document.createElement('option');
-																	
-																	option.value = server.addr;
-																	
-																	// 构建描述文本
-																	let desc = [
-																	  server.addr,
-																	  //server.net.toUpperCase(),
-																	  server.description
-																	  //server.type === 3 ? 'UDP+TCP' : '',
-																	  //server.type === 4 ? 'DoT' : ''
-																	].filter(Boolean).join(' - ');
-																	
-																	option.textContent = desc;
-																	group.appendChild(option);
-																}
-															});
-														
-															if (group.children.length > 0) {
-																fragment.appendChild(group);
-															}
-															});
-															return fragment;
-														}
-														
-														function addCustomDNS(select) {
-															// 创建自定义分组
-															const customGroup = document.createElement('optgroup');
-															customGroup.label = '自定义DNS';
-															
-															const customOption = document.createElement('option');
-															customOption.value = '99';
-															customOption.textContent = '自定义DNS';
-															
-															customGroup.appendChild(customOption);
-															select.appendChild(customGroup);
-														}
-														
-														function populateSelect(selectorId, dnsdata, protocol, netType) {
-															const select = document.getElementById(selectorId);
-															select.innerHTML = '';
-															
-															// 1. 插入运营商DNS（最顶部）
-															if (ispDnsSelectors.has(selectorId)) {
-																addISPdns(select, netType);
-															}
-															
-															// 2. 添加动态DNS选项
-															const dynamicGroups = buildOptions(dnsdata, protocol, netType);
-															select.appendChild(dynamicGroups);
-															
-															// 3. 添加自定义DNS（最底部）
-															addCustomDNS(select);
-														}
-														function setSelectDefault(selectorId, defaultValue) {
-															const select = document.getElementById(selectorId);
-															
-															// 方法1：直接设置value属性
-															select.value = defaultValue;
-															
-															// 方法2：遍历选项设置selected
-															Array.from(select.options).forEach(option => {
-															  option.selected = option.value === defaultValue;
-															});
-															
-															// 验证设置结果
-															if(select.value !== defaultValue) {
-															  console.warn(`默认值${defaultValue}不存在于选项中`);
-															}
-														}
-														// 初始化加载-china
-														if('<% nvram_get("ipv6_service"); %>' == "disabled" ){
-															populateSelect('ss_basic_chng_china_udp_1_opt', china_dnsData, 'udp', 'ipv4');
-															populateSelect('ss_basic_chng_china_udp_2_opt', china_dnsData, 'udp', 'ipv4');
-															populateSelect('ss_basic_chng_china_udp_3_opt', china_dnsData, 'udp', 'ipv4');
-															populateSelect('ss_basic_chng_china_tcp_1_opt', china_dnsData, 'tcp', 'ipv4');
-															populateSelect('ss_basic_chng_china_tcp_2_opt', china_dnsData, 'tcp', 'ipv4');
-															populateSelect('ss_basic_chng_china_tcp_3_opt', china_dnsData, 'tcp', 'ipv4');
-															populateSelect('ss_basic_chng_china_dot_1_opt', china_dnsData, 'dot', 'ipv4');
-															populateSelect('ss_basic_chng_china_dot_2_opt', china_dnsData, 'dot', 'ipv4');
-															populateSelect('ss_basic_chng_china_dot_3_opt', china_dnsData, 'dot', 'ipv4');
-														}else{
-															populateSelect('ss_basic_chng_china_udp_1_opt', china_dnsData, 'udp', 'all');
-															populateSelect('ss_basic_chng_china_udp_2_opt', china_dnsData, 'udp', 'all');
-															populateSelect('ss_basic_chng_china_udp_3_opt', china_dnsData, 'udp', 'all');
-															populateSelect('ss_basic_chng_china_tcp_1_opt', china_dnsData, 'tcp', 'all');
-															populateSelect('ss_basic_chng_china_tcp_2_opt', china_dnsData, 'tcp', 'all');
-															populateSelect('ss_basic_chng_china_tcp_3_opt', china_dnsData, 'tcp', 'all');
-															populateSelect('ss_basic_chng_china_dot_1_opt', china_dnsData, 'dot', 'all');
-															populateSelect('ss_basic_chng_china_dot_2_opt', china_dnsData, 'dot', 'all');
-															populateSelect('ss_basic_chng_china_dot_3_opt', china_dnsData, 'dot', 'all');
-														}
-
-														// 初始化加载-trust
-														if('<% nvram_get("ipv6_service"); %>' == "disabled" ){
-															populateSelect('ss_basic_chng_trust_udp_1_opt', trust_dnsData, 'udp', 'ipv4');
-															populateSelect('ss_basic_chng_trust_udp_2_opt', trust_dnsData, 'udp', 'ipv4');
-															populateSelect('ss_basic_chng_trust_udp_3_opt', trust_dnsData, 'udp', 'ipv4');
-															populateSelect('ss_basic_chng_trust_tcp_1_opt', trust_dnsData, 'tcp', 'ipv4');
-															populateSelect('ss_basic_chng_trust_tcp_2_opt', trust_dnsData, 'tcp', 'ipv4');
-															populateSelect('ss_basic_chng_trust_tcp_3_opt', trust_dnsData, 'tcp', 'ipv4');
-															populateSelect('ss_basic_chng_trust_dot_1_opt', trust_dnsData, 'dot', 'ipv4');
-															populateSelect('ss_basic_chng_trust_dot_2_opt', trust_dnsData, 'dot', 'ipv4');
-															populateSelect('ss_basic_chng_trust_dot_3_opt', trust_dnsData, 'dot', 'ipv4');
-														}else{
-															populateSelect('ss_basic_chng_trust_udp_1_opt', trust_dnsData, 'udp', 'all');
-															populateSelect('ss_basic_chng_trust_udp_2_opt', trust_dnsData, 'udp', 'all');
-															populateSelect('ss_basic_chng_trust_udp_3_opt', trust_dnsData, 'udp', 'all');
-															populateSelect('ss_basic_chng_trust_tcp_1_opt', trust_dnsData, 'tcp', 'all');
-															populateSelect('ss_basic_chng_trust_tcp_2_opt', trust_dnsData, 'tcp', 'all');
-															populateSelect('ss_basic_chng_trust_tcp_3_opt', trust_dnsData, 'tcp', 'all');
-															populateSelect('ss_basic_chng_trust_dot_1_opt', trust_dnsData, 'dot', 'all');
-															populateSelect('ss_basic_chng_trust_dot_2_opt', trust_dnsData, 'dot', 'all');
-															populateSelect('ss_basic_chng_trust_dot_3_opt', trust_dnsData, 'dot', 'all');
-														}
-
-														// set default - china
-														if(isp_dns_1){
-															setSelectDefault('ss_basic_chng_china_udp_1_opt', isp_dns_1);
-															setSelectDefault('ss_basic_chng_china_udp_2_opt', isp_dns_1);
-															setSelectDefault('ss_basic_chng_china_udp_3_opt', isp_dns_1);
-														}else{
-															setSelectDefault('ss_basic_chng_china_udp_1_opt', '223.5.5.5');
-															setSelectDefault('ss_basic_chng_china_udp_2_opt', '223.5.5.5');
-															setSelectDefault('ss_basic_chng_china_udp_3_opt', '223.5.5.5');
-														}
-														setSelectDefault('ss_basic_chng_china_tcp_1_opt', '119.28.28.28');
-														setSelectDefault('ss_basic_chng_china_tcp_2_opt', '119.28.28.28');
-														setSelectDefault('ss_basic_chng_china_tcp_3_opt', '119.28.28.28');
-														setSelectDefault('ss_basic_chng_china_dot_1_opt', 'dns.alidns.com@223.5.5.5');
-														setSelectDefault('ss_basic_chng_china_dot_2_opt', 'dns.alidns.com@223.5.5.5');
-														setSelectDefault('ss_basic_chng_china_dot_3_opt', 'dns.alidns.com@223.5.5.5');
-
-														// set default - trust
-														setSelectDefault('ss_basic_chng_trust_udp_1_opt', '1.1.1.1');
-														setSelectDefault('ss_basic_chng_trust_udp_2_opt', '1.1.1.1');
-														setSelectDefault('ss_basic_chng_trust_udp_3_opt', '1.1.1.1');
-														setSelectDefault('ss_basic_chng_trust_tcp_1_opt', '8.8.8.8');
-														setSelectDefault('ss_basic_chng_trust_tcp_2_opt', '1.1.1.1');
-														setSelectDefault('ss_basic_chng_trust_tcp_3_opt', '8.8.8.8');
-														setSelectDefault('ss_basic_chng_trust_dot_1_opt', 'dns.google.com@8.8.4.4');
-														setSelectDefault('ss_basic_chng_trust_dot_2_opt', 'dns.google.com@8.8.4.4');
-														setSelectDefault('ss_basic_chng_trust_dot_3_opt', 'dns.google.com@8.8.4.4');
 													</script>
 												</table>
 											</div>

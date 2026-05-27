@@ -10,14 +10,6 @@
 export KSROOT=/koolshare
 source $KSROOT/scripts/base.sh
 source $KSROOT/scripts/ss_node_common.sh
-FSS_SHUNT_LIB_LOADED=0
-fss_require_shunt_lib() {
-	[ "${FSS_SHUNT_LIB_LOADED}" = "1" ] && return 0
-	[ -f "$KSROOT/scripts/ss_node_shunt.sh" ] || return 1
-	. "$KSROOT/scripts/ss_node_shunt.sh"
-	FSS_SHUNT_LIB_LOADED=1
-}
-[ "${FSS_BASE_SKIP_SHUNT_SOURCE:-0}" = "1" ] || fss_require_shunt_lib >/dev/null 2>&1 || true
 NEW_PATH=$(echo $PATH|tr ':' '\n'|sed '/opt/d;/mmc/d'|awk '!a[$0]++'|tr '\n' ':'|sed '$ s/:$//')
 export PATH=${NEW_PATH}
 source helper.sh
@@ -126,7 +118,6 @@ fss_base_load_current_node_env() {
 	local cur_node=""
 	local base_1=""
 	local base_2=""
-	# doge.14: 老 mode=7 节点分流路径已退役（migrate 到 mode=2），不再走 fss_shunt_* 节点解析。
 	if type fss_resolve_current_node_id >/dev/null 2>&1; then
 		fss_resolve_current_node_id >/dev/null 2>&1 || true
 		cur_node="${FSS_CURRENT_NODE_ID_RESULT}"

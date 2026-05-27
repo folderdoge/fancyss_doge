@@ -401,10 +401,6 @@ migrate_schema2_now(){
 	esac
 }
 
-shunt_stats_now(){
-	sh /koolshare/scripts/ss_shunt_stats.sh >/dev/null 2>&1
-}
-
 download_ssf(){
 	rm -rf /tmp/files
 	rm -rf /koolshare/webs/files
@@ -587,9 +583,5 @@ migrate_schema2)
 	http_response "$1"
 	migrate_schema2_now >> ${LOG_FILE} 2>&1
 	echo XU6J03M6 >> ${LOG_FILE}
-	;;
-shunt_stats)
-	shunt_stats_now
-	http_response "$1"
 	;;
 esac

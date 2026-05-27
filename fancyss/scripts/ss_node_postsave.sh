@@ -3,7 +3,6 @@
 [ -z "${KSROOT}" ] && export KSROOT=/koolshare
 [ -f "${KSROOT}/scripts/base.sh" ] && source "${KSROOT}/scripts/base.sh"
 [ -f "${KSROOT}/scripts/ss_node_common.sh" ] && source "${KSROOT}/scripts/ss_node_common.sh"
-[ -f "${KSROOT}/scripts/ss_node_shunt.sh" ] && source "${KSROOT}/scripts/ss_node_shunt.sh"
 
 fss_postsave_rebuild_identity_by_id() {
 	local node_id="$1"
@@ -63,7 +62,6 @@ $(printf '%s' "${ids_csv}" | tr ',' '\n' | sed '/^$/d')
 
 	if [ "${touched}" = "1" ];then
 		fss_sync_reference_identity_shadows >/dev/null 2>&1 || true
-		fss_shunt_sync_identity_shadows >/dev/null 2>&1 || true
 		fss_touch_node_config_ts >/dev/null 2>&1 || true
 		fss_touch_node_catalog_ts >/dev/null 2>&1 || true
 	fi
