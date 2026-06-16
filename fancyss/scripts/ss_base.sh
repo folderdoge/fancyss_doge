@@ -240,7 +240,9 @@ resolve_acl_ports() {
 cleanup_acl_rule() {
 	local acl="$1"
 	local field=""
-	for field in ip mac name mode port udp quic
+	# FORK doge.14-beta.6: 把 split_mode 一并清理，避免清理"不完整"行后残留
+	# ss_acl_split_mode_<i> 孤儿 key（split 路由虽不再读它，但会污染 dbus）。
+	for field in ip mac name mode port udp quic split_mode
 	do
 		dbus remove ss_acl_${field}_${acl}
 		unset ss_acl_${field}_${acl}
@@ -391,12 +393,13 @@ is_acl_rule_complete() {
 	local acl="$1"
 	local acl_ip=""
 	local acl_mode=""
-	local acl_port=""
 	eval acl_ip=\$ss_acl_ip_${acl}
 	eval acl_mode=\$ss_acl_mode_${acl}
-	eval acl_port=\$ss_acl_port_${acl}
 
-	if [ -z "${acl_ip}" -o -z "${acl_mode}" -o -z "${acl_port}" ];then
+	# FORK doge.14-beta.6: 端口列已删（前端 addTr 不再写 ss_acl_port_<i>），不能再拿
+	# ss_acl_port 当完整性必填项——否则新增设备恒判"不完整"，被 get_acl_rule_indexes ->
+	# cleanup_acl_rule 在 restart 时清掉，表现为"访问控制新增设备保存后丢失"。
+	if [ -z "${acl_ip}" -o -z "${acl_mode}" ];then
 		return 1
 	fi
 

@@ -589,8 +589,14 @@ migrate_split_routing_v1(){
 	# 此时 out_main 是 creat_*_json 的空兜底 outbound，xray 启动可能失败，
 	# 属"用户必须先配节点"的语义，不归 install.sh 管。
 	local cur_udp cur_action
+	# doge.14-beta.6 修 UDP 回归：内置 Mode 的 udp_proxy 默认开启。
+	# 历史上从 vestigial 的 ss_basic_udp_relay 取值，但该 key 在 doge.14 已无 UI、无默认初始化
+	#（旧路径真正的 UDP 开关是 ss_basic_udpoff/udpall，不是它），几乎恒为空 → 旧默认 0 让内置
+	# Mode 的 UDP 不走代理（WebRTC STUN 报 701 / UDP 游戏进不去）。改默认 1，与自定义 Mode
+	#（asp 默认 udp_proxy=1）和 __split_mode_udp_proxy_by_id 缺失兜底（=1）一致。
+	# 已迁移的老用户由 repair_builtin_udp_proxy_v1 一次性修正存量 0。
 	cur_udp="$(dbus get ss_basic_udp_relay)"
-	[ -z "${cur_udp}" ] && cur_udp="0"
+	[ -z "${cur_udp}" ] && cur_udp="1"
 	cur_action="proxy_main"
 	echo_date "  当前节点动作字符串：${cur_action}（udp_proxy=${cur_udp}）"
 
@@ -822,6 +828,38 @@ migrate_split_routing_v3(){
 	dbus set fss_doge14_migrated="1"
 	logger -t "fancyss" "doge.14 migrate_split_routing_v3 完成"
 	echo_date "✅ FORK doge.14 migrate: 老 key 清理完成（fss_doge14_migrated=1）"
+}
+
+# FORK doge.14-beta.6: 修 UDP 回归——把内置 Mode 误种的 udp_proxy=0 一次性修正为 1。
+# 根因：migrate_split_routing_v1 从 vestigial 的 ss_basic_udp_relay（几乎恒空→默认 0）种 udp_proxy，
+# 让内置「全局代理」「大陆白名单」的 UDP 不走代理（load_iptables_split 在 udp_proxy=0 时不下 UDP TPROXY 规则）
+# → WebRTC STUN 701 / UDP 游戏进不去。旧路径（beta.2）UDP 无条件转发故无此问题，doge.14 唯一路径暴露了它。
+# migrate_v1 有 idempotent 守卫不会重跑，已迁移的老用户必须靠这条一次性 repair 修存量。
+# 只动 builtin=1 的 Mode 且只翻 0→1（自定义 Mode 默认已是 1，不碰；已是 1 的也不碰）。
+# 幂等：fss_split_builtin_udp_on_v1=1 后不再执行；用户事后手动关 UDP 仍保留（不再翻回）。
+repair_builtin_udp_proxy_v1(){
+	[ "$(dbus get fss_split_builtin_udp_on_v1)" = "1" ] && return 0
+	local mode_count m mid builtin udp fixed
+	mode_count="$(dbus get ss_split_mode_count)"
+	[ -z "${mode_count}" ] && mode_count=0
+	fixed=0
+	m=1
+	while [ "${m}" -le "${mode_count}" ]; do
+		builtin="$(dbus get ss_split_mode_${m}_builtin)"
+		udp="$(dbus get ss_split_mode_${m}_udp_proxy)"
+		if [ "${builtin}" = "1" ] && [ "${udp}" = "0" ]; then
+			dbus set ss_split_mode_${m}_udp_proxy="1"
+			mid="$(dbus get ss_split_mode_${m}_id)"
+			echo_date "  🔧 FORK doge.14-beta.6: 内置 Mode ${m} (id=${mid}) udp_proxy 0 → 1（UDP 代理默认开启）"
+			fixed=$((fixed + 1))
+		fi
+		m=$((m + 1))
+	done
+	dbus set fss_split_builtin_udp_on_v1="1"
+	if [ "${fixed}" -gt 0 ]; then
+		logger -t "fancyss" "doge.14-beta.6 repair_builtin_udp_proxy_v1: 修正 ${fixed} 个内置 Mode udp_proxy 0->1"
+		echo_date "✅ FORK doge.14-beta.6: 共修正 ${fixed} 个内置 Mode 的 UDP 代理开关（0 → 1）"
+	fi
 }
 
 # FORK doge.13 beta.3: 清理 ss_split_dns_*_upstream 已被多层 base64 污染的值。
@@ -2532,6 +2570,8 @@ install_now(){
 	unwrap_split_dns_multilayer_b64
 	# FORK doge.14 beta: 节点分流退役 (mode 7 → 2) + [DNS 设置] section 老 key 清理（一次性，幂等）
 	migrate_split_routing_v3
+	# FORK doge.14-beta.6: 修 UDP 回归——内置 Mode 误种 udp_proxy=0 一次性修正为 1（幂等）
+	repair_builtin_udp_proxy_v1
 	# FORK doge.14: Xray 移除 allowInsecure —— 对升级前开着 cert-skip 的节点一次性提示（幂等）
 	notify_allowinsecure_removed_v1
 	# FORK doge.12 alpha：分流 Rule 自动更新 cron（每 30 分钟扫一次；详见 doc/design/split-routing-architecture.md §10.3）。

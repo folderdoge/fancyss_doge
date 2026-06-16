@@ -6516,43 +6516,47 @@ load_iptables_split() {
 	local VLAN_INDEXS=$(ifconfig | grep -E "^br" | awk '{print $1}' | sed 's/^br//g')
 	local default_iface="br0"
 
-	# 遍历 acl 行（沿用现有的 ss_acl_* 命名）
-	local acl_count=$(dbus get ss_acl_num 2>/dev/null)
-	[ -z "${acl_count}" ] && acl_count=0
-	local a=1
-	while [ "${a}" -le "${acl_count}" ]; do
-		local mac=$(dbus get ss_acl_mac_${a} 2>/dev/null)
-		local enable=$(dbus get ss_acl_enable_${a} 2>/dev/null)
+	# 遍历 acl 行：get_acl_rule_indexes 扫 ss_acl_mode_<i> 发现真实设备行。
+	# FORK doge.14-beta.6 修：旧版枚举 ss_acl_num / ss_acl_enable_<i> 是从未被前端写入的
+	# 死 key（全仓库只读不写）→ acl_count 恒空 → 整个 per-user 循环空跑，所有访问控制
+	# 设备落到默认 Mode（访问控制功能形同虚设）。改用与旧 ACL 路径一致的
+	# get_acl_rule_indexes + get_acl_source_rule4：单 IP 设备解析成 -m mac --mac-source，
+	# CIDR / 解析不到 MAC 的设备回退成 -s <ip>。
+	local acl_nu=$(get_acl_rule_indexes)
+	local _acl_total=0
+	local _acl_active=0
+	local a=""
+	for a in ${acl_nu}; do
+		_acl_total=$((_acl_total + 1))
 		local user_mode=$(dbus get ss_acl_split_mode_${a} 2>/dev/null)
-		if [ "${enable}" = "1" ] && [ -n "${mac}" ] && [ -n "${user_mode}" ]; then
-			if [ "${user_mode}" = "0" ]; then
-				# 不通过代理
-				append_if_not_exists mangle -A SHADOWSOCKS -m mac --mac-source "${mac}" -j RETURN
-			else
-				local user_port=$(__split_mode_port_by_id "${user_mode}")
-				local user_block_quic=$(__split_mode_block_quic_by_id "${user_mode}")
-				local user_udp_proxy=$(__split_mode_udp_proxy_by_id "${user_mode}")
-				# alpha.16: block_quic=1 时 UDP/443 不进代理直接 DROP（HTTP/3 回退 TCP）。
-				# 必须放在该 user 的 TPROXY 规则之前——iptables 顺序敏感，先 DROP 后 TPROXY。
-				# alpha.18 W3: 加 -i ${default_iface} 限定仅 DROP 来自 LAN 入站方向的 QUIC，
-				# 防止 LAN 内自建 STUN/媒体服务器接收外部 UDP/443 被误伤
-				if [ "${user_block_quic}" = "1" ]; then
-					append_if_not_exists mangle -A SHADOWSOCKS -i "${default_iface}" -p udp --dport 443 -m mac --mac-source "${mac}" -j DROP
-				fi
-				# TCP 走 TPROXY (mangle)
-				append_if_not_exists mangle -A SHADOWSOCKS -p tcp -m mac --mac-source "${mac}" -j TPROXY --tproxy-mark 0x07/0x07 --on-port "${user_port}"
-				# alpha.16: UDP TPROXY 仅在 udp_proxy=1 时加。udp_proxy=0 时该 user 的 UDP
-				# 流量未被任何 SHADOWSOCKS 规则命中 → 走原生路由（直连，不代理 UDP）。
-				if [ "${user_udp_proxy}" = "1" ]; then
-					append_if_not_exists mangle -A SHADOWSOCKS -p udp -m mac --mac-source "${mac}" -j TPROXY --tproxy-mark 0x07/0x07 --on-port "${user_port}"
-				fi
+		[ -z "${user_mode}" ] && user_mode=$(dbus get ss_acl_mode_${a} 2>/dev/null)
+		[ -z "${user_mode}" ] && continue
+		local source_rule=$(get_acl_source_rule4 "${a}")
+		[ -z "${source_rule}" ] && continue
+		_acl_active=$((_acl_active + 1))
+		if [ "${user_mode}" = "0" ]; then
+			# 不通过代理（直连）
+			append_if_not_exists mangle -A SHADOWSOCKS ${source_rule} -j RETURN
+		else
+			local user_port=$(__split_mode_port_by_id "${user_mode}")
+			local user_block_quic=$(__split_mode_block_quic_by_id "${user_mode}")
+			local user_udp_proxy=$(__split_mode_udp_proxy_by_id "${user_mode}")
+			# block_quic=1 时 UDP/443 不进代理直接 DROP（HTTP/3 回退 TCP）。
+			# 必须放在该设备 TPROXY 规则之前——iptables 顺序敏感，先 DROP 后 TPROXY。
+			# -i ${default_iface} 限定仅 DROP LAN 入站方向 QUIC，防 LAN 内媒体服务器被误伤。
+			if [ "${user_block_quic}" = "1" ]; then
+				append_if_not_exists mangle -A SHADOWSOCKS -i "${default_iface}" -p udp --dport 443 ${source_rule} -j DROP
+			fi
+			# TCP 走 TPROXY (mangle)
+			append_if_not_exists mangle -A SHADOWSOCKS -p tcp ${source_rule} -j TPROXY --tproxy-mark 0x07/0x07 --on-port "${user_port}"
+			# UDP TPROXY 仅在 udp_proxy=1 时加；否则该设备 UDP 走原生路由（直连）。
+			if [ "${user_udp_proxy}" = "1" ]; then
+				append_if_not_exists mangle -A SHADOWSOCKS -p udp ${source_rule} -j TPROXY --tproxy-mark 0x07/0x07 --on-port "${user_port}"
 			fi
 		fi
-		a=$((a + 1))
 	done
-	# alpha.17 P2-3: per-user TPROXY 装配后报告激活 ACL 行数,便于诊断"为什么某个 user 没走 per-Mode 端口"
-	local _acl_active=$(dbus list ss_acl_enable_ 2>/dev/null | grep '=1$' | wc -l)
-	echo_date "    已激活 ACL 行: ${_acl_active}/${acl_count} 个用户绑定到 per-Mode 端口"
+	# per-user TPROXY 装配后报告激活 ACL 行数,便于诊断"为什么某个设备没走 per-Mode 端口"
+	echo_date "    已激活 ACL 行: ${_acl_active}/${_acl_total} 个设备绑定到 per-Mode 端口"
 
 	# 默认（未在 acl 表中列出的设备）走默认 Mode
 	local default_block_quic=$(__split_mode_block_quic_by_id "${default_mid}")
@@ -6581,18 +6585,17 @@ load_iptables_split() {
 			ensure_chain nat SHADOWSOCKS_DNS_${VLAN_INDEX}
 		done
 
-		# br0：per-MAC DNAT
-		a=1
-		while [ "${a}" -le "${acl_count}" ]; do
-			local mac=$(dbus get ss_acl_mac_${a} 2>/dev/null)
-			local enable=$(dbus get ss_acl_enable_${a} 2>/dev/null)
+		# br0：per-device DNS DNAT（与 TPROXY 循环同口径：复用 acl_nu + get_acl_source_rule4）
+		for a in ${acl_nu}; do
 			local user_mode=$(dbus get ss_acl_split_mode_${a} 2>/dev/null)
-			if [ "${enable}" = "1" ] && [ -n "${mac}" ] && [ -n "${user_mode}" ] && [ "${user_mode}" != "0" ]; then
-				local dns_port=$(__split_mode_dns_port_by_id "${user_mode}")
-				append_if_not_exists nat -A SHADOWSOCKS_DNS_0 -i br0 -p udp --dport 53 -m mac --mac-source "${mac}" -j DNAT --to-destination 127.0.0.1:${dns_port}
-				append_if_not_exists nat -A SHADOWSOCKS_DNS_0 -i br0 -p tcp --dport 53 -m mac --mac-source "${mac}" -j DNAT --to-destination 127.0.0.1:${dns_port}
-			fi
-			a=$((a + 1))
+			[ -z "${user_mode}" ] && user_mode=$(dbus get ss_acl_mode_${a} 2>/dev/null)
+			[ -z "${user_mode}" ] && continue
+			[ "${user_mode}" = "0" ] && continue
+			local source_rule=$(get_acl_source_rule4 "${a}")
+			[ -z "${source_rule}" ] && continue
+			local dns_port=$(__split_mode_dns_port_by_id "${user_mode}")
+			append_if_not_exists nat -A SHADOWSOCKS_DNS_0 -i br0 -p udp --dport 53 ${source_rule} -j DNAT --to-destination 127.0.0.1:${dns_port}
+			append_if_not_exists nat -A SHADOWSOCKS_DNS_0 -i br0 -p tcp --dport 53 ${source_rule} -j DNAT --to-destination 127.0.0.1:${dns_port}
 		done
 		# br0 fallback
 		append_if_not_exists nat -A SHADOWSOCKS_DNS_0 -i br0 -p udp --dport 53 -j DNAT --to-destination 127.0.0.1:${default_dns_port}
