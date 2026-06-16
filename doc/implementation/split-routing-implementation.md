@@ -241,8 +241,8 @@ DNS tab 的「国内 / 国外（可增删行）」+「全局（单行）」三�
 
 | Mode.id | name | dns_mode | apply_blackwhite | udp_proxy | block_quic | rules（按顺序） | default_action |
 |---|---|---|---|---|---|---|---|
-| 1 | 全局代理 | global | 1 | (沿用 `ss_basic_udp_relay`) | 0 | [] | 取自 `ssconf_basic_node` / `ssconf_basic_node_front` |
-| 2 | 大陆白名单 | split | 1 | 同上 | 0 | (Rule 3 → direct, Rule 4 → reject, Rule 6 → direct, Rule 7 → direct, Rule 5 → 主节点动作, Rule 2 → 主节点动作, Rule 1 → direct) | 取自 `ssconf_basic_node` |
+| 1 | 全局代理 | global | 1 | 1（doge.14-beta.6 起，见 §6.3 D28；早期误种 0） | 0 | [] | 取自 `ssconf_basic_node` / `ssconf_basic_node_front` |
+| 2 | 大陆白名单 | split | 1 | 1（同上） | 0 | (Rule 3 → direct, Rule 4 → reject, Rule 6 → direct, Rule 7 → direct, Rule 5 → 主节点动作, Rule 2 → 主节点动作, Rule 1 → direct) | 取自 `ssconf_basic_node` |
 
 > 用户自定义 Mode 从 100 起。
 
@@ -628,6 +628,16 @@ migrate_split_routing_v3() {
 - **修复**：per-Rule emit 拆成两条独立 rule（domain-only + ip-only，同 outboundTag）。顺带修好「白名单只有 IP 无域名」条目（AND 下也曾失效）—— 对齐"白名单内 IP **或** 域名走直连"的预期。
 - **实现踩坑**（armv7l busybox，大陆白名单 domain 11 万 / domain rule ~2MB 单行）：① `map(tojson)|join` → tojson 复制 2MB 串 OOM 被 Killed → emit 截断 → `jq_merge_failed` 回退基线；② `jq -c` 流式 + `while read` → busybox read 截断 2MB 单行变量 → 同样损坏；③ ✅ 两次独立 `jq -c '… else empty end'` + `cat`（cat 不受行长限制）。
 - **影响面**：所有"域名+IP 混排"的 Rule（大陆白名单、Telegram 等）的无域名 UDP；全局黑白名单(`ss_wan_white_domain`)按设计仍 domain-only，不受影响；webtest 路由只用 inboundTag→outboundTag 无 domain/ip matcher，不受影响。
+
+#### D28: 内置 Mode UDP 代理默认关闭回归 — migrate_v1 从 vestigial `ss_basic_udp_relay` 误种 0（doge.14-beta.6 修复）
+
+2026-06-17 用户报 doge.14-beta.5 大量节点 WebRTC STUN 报 `701 STUN host lookup received error`、需要 UDP 的游戏进不去；旧版 doge.13-beta.2 无此问题。51.1 实证根因 + 修复：
+
+- **根因**：`install.sh::migrate_split_routing_v1` 写内置 Mode 1/2 的 `udp_proxy` 时取 `cur_udp="$(dbus get ss_basic_udp_relay)"`、空则默认 `0`。但 `ss_basic_udp_relay` 在 doge.14 已是 **vestigial key**（无 UI、无默认初始化；旧路径真正的 UDP 开关是 `ss_basic_udpoff`/`ss_basic_udpall`，全仓库只此一处读它）→ 几乎恒空 → 内置「全局代理」「大陆白名单」`udp_proxy=0`。`load_iptables_split` 在 `udp_proxy=0` 时**不下 UDP TPROXY 规则**（§6.2 D11）→ 这两个内置 Mode 的 UDP 全部走原生路由直连 → 国内被墙 → STUN 701 / 游戏 UDP 失败。TCP 始终 TPROXY 故网页浏览正常，掩盖了 bug。
+- **为何是回归**：beta.2 走 legacy 路径（`ss_split_enabled` 默认 0），legacy 对 gfw 目标 UDP **无条件** TPROXY（老 `SHADOWSOCKS_GFW -p udp ... TPROXY`，不读 `ss_basic_udp_relay`）→ UDP 正常。doge.14 物理删除 legacy 后分流成唯一路径，被 vestigial key 误种的 0 才暴露。自定义 Mode 不中招（asp 默认 `udp_proxy=1`），所以只有人人都用的两个内置 Mode 出问题。
+- **修复**：① `migrate_v1` 默认 `cur_udp` 由 0 改 1（对齐自定义 Mode asp 默认 1 + `__split_mode_udp_proxy_by_id` 缺失兜底 1）——修新装；② 新增一次性幂等 `repair_builtin_udp_proxy_v1`（marker `fss_split_builtin_udp_on_v1`），把已迁移老用户存量内置 Mode 的 `udp_proxy=0` 翻 1（只动 `builtin=1`、只翻 0→1，用户事后手动关仍保留）——修升级（migrate_v1 有幂等守卫不会重跑）。
+- **51.1 实证**：预置内置 Mode1/2 `udp=0` + 清 marker → 装 beta.6 → install 日志打印 repair 翻转 2 个内置 Mode（marker=1）；ACL 设备 POCO(mode1) 得 13333 UDP TPROXY；LAN STUN reflexive=海外代理 IP（无 701、无泄露，UDP 经代理出口）。
+- **影响面**：仅内置 Mode 的 UDP（自定义 Mode / 非默认行为不变）；§2.2 内置 Mode 表 Mode1/2 `udp_proxy` 默认由"沿用 `ss_basic_udp_relay`"更正为 **1**。
 
 ### 6.4 实施期约定的回溯修订
 
