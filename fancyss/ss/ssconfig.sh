@@ -6484,7 +6484,8 @@ load_iptables_split() {
 	# 重新 TPROXY 重定向（否则 TCP 三次握手的 SYN-ACK 又被抓回 TPROXY，新 socket
 	# 找不到对应连接 → 握手永远不完成）。
 	# 老 fancyss 路径 TCP 走 NAT REDIRECT 不需要这条，所以历史代码里没有；
-	# split 路径让 xray 自己 TPROXY listen TCP+UDP，缺这条 LAN TCP/UDP 全废。
+	# split 路径让 xray 自己 TPROXY listen TCP+UDP，TCP 缺这条 LAN 全废。
+	# 注意：DIVERT 只对 TCP 装；UDP 绝不能装（见下方 doge.14-beta.7 FIX 说明）。
 	ensure_chain mangle SHADOWSOCKS_DIVERT
 	append_if_not_exists mangle -A SHADOWSOCKS_DIVERT -j MARK --set-xmark 0x07/0x07
 	append_if_not_exists mangle -A SHADOWSOCKS_DIVERT -j ACCEPT
@@ -6507,7 +6508,14 @@ load_iptables_split() {
 		append_if_not_exists mangle -A SHADOWSOCKS -p tcp --dport 53 -j RETURN
 	fi
 	append_if_not_exists mangle -A SHADOWSOCKS -p tcp -m socket -j SHADOWSOCKS_DIVERT
-	append_if_not_exists mangle -A SHADOWSOCKS -p udp -m socket -j SHADOWSOCKS_DIVERT
+	# doge.14-beta.7 FIX（WebRTC STUN 701 / UDP 游戏进不去根因）：UDP 不装 socket-match DIVERT。
+	# 实测（51.1 测试机 xray 26.3.27 debug log 实证）：装这条后 xray 的 UDP listener 只收到每条
+	# 流的第 1 个包；第 2 个包起被 socket-match 命中 xray 为该流开的 per-flow 透明 socket（xray
+	# 用它走"回程"、不从中读客户端→服务端方向数据）→ 被黑洞丢弃 → STUN 第 2 包起全超时、UDP
+	# 游戏连不上。删掉后实测 6/6 通，TCP 分流不受影响（本规则 -p udp，TCP 不命中）。
+	# xray dokodemo-door 的 UDP 模型要求每个 datagram 都 fall-through 到下面的 TPROXY 规则、
+	# 投到 listener 由它按源地址 demux，故 UDP 必须不 DIVERT。TCP 的 DIVERT 必须保留（上一行）：
+	# TCP accept() 出的 established socket 必须收到后续包，否则握手/连接断。
 	# 提前 RETURN：保留 IP 段
 	append_if_not_exists mangle -A SHADOWSOCKS -m set --match-set ignlist_minimal dst -j RETURN
 	append_if_not_exists mangle -A SHADOWSOCKS -p udp --dport 123 -j RETURN  # NTP 例外，避免时间同步被代理

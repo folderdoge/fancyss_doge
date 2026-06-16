@@ -639,6 +639,17 @@ migrate_split_routing_v3() {
 - **51.1 实证**：预置内置 Mode1/2 `udp=0` + 清 marker → 装 beta.6 → install 日志打印 repair 翻转 2 个内置 Mode（marker=1）；ACL 设备 POCO(mode1) 得 13333 UDP TPROXY；LAN STUN reflexive=海外代理 IP（无 701、无泄露，UDP 经代理出口）。
 - **影响面**：仅内置 Mode 的 UDP（自定义 Mode / 非默认行为不变）；§2.2 内置 Mode 表 Mode1/2 `udp_proxy` 默认由"沿用 `ss_basic_udp_relay`"更正为 **1**。
 
+#### D29: UDP/STUN 701 + UDP 游戏进不去（真因）— TPROXY 的 UDP `-m socket` DIVERT 黑洞掉每条流第 2 包起（doge.14-beta.7 修复）
+
+2026-06-17 用户报 doge.14-beta.6（D28 修了 UDP 代理默认关）后 WebRTC STUN 仍频繁 `701`、UDP 游戏进不去：**第一次/偶发能用，ip.skk.moe 快速刷新几次后所有节点全 701**（"像被限速"）；doge.13-beta.2 开 UDP 代理则一直流畅。51.1 多轮 A/B 实证根因 + 修复：
+
+- **先排除的假设（避免重蹈"想当然"覆辙）**：① 不是资源耗尽——conntrack count ~330/300000、xray fd 22–30/16384、CPU/线程全程平稳；② 不是 DNS-over-UDP 耗尽——外网 DNS 压测 240/240 @210qps 零失败（外网 DNS 走 TCP/DoT 过 SOCKS，本就不经 UDP）；③ **不是嗅探**——把 mode inbound `sniffing.enabled=false` 后仍 1/6、首包延迟不变（~1.1s），QUIC 嗅探 / `metadataOnly` 全部无关；④ 不是 vless/vision outbound——强制走 `out_direct` freedom 仍 1/6。
+- **根因（debug log 实证）**：mangle `SHADOWSOCKS` 链里 `-A SHADOWSOCKS -p udp -m socket -j SHADOWSOCKS_DIVERT` 这一条。对一条 UDP 流：第 1 包早于 xray 建透明 socket → 不命中 socket-match → fall-through 到 `TPROXY --on-port` → 进 xray listener、转发成功；xray 随即为该流开一个 per-flow IP_TRANSPARENT UDP socket（走**回程**、不从中读"客户端→服务端"方向数据）。第 2 包起 `-m socket` 命中这个 per-flow socket → DIVERT 打 mark 经 lo 投进去 → 落进 xray 不读的 socket → **黑洞**。xray 调 `loglevel:debug`：同一 socket 发 6 包，`transport/internet/udp: UDP original destination` 只打印 **1 次** → listener 只收到第 1 包。iptables 计数器同证：TPROXY-udp 计数不动、`SHADOWSOCKS_DIVERT` udp 计数随包数 +1。
+- **为何 beta.6 才暴露 / 为何是回归**：split 路径 UDP 在 doge.13 stable 翻 split + D28（beta.6）把内置 Mode `udp_proxy` 翻 1 **之前**，几乎没被默认用户真正走过 → 这条 socket-match 一直是潜伏 bug；beta.6 把 UDP 真正送进 xray TPROXY 后才引爆。doge.13-beta.2 走 legacy UDP relay（ipt2socks/老 TPROXY，无 xray per-flow 透明 socket 抢包问题）故一直好。D28 把 UDP 路径"打开"，D29 才是这条路径自身的 bug。
+- **修复**：删掉 UDP 那条 `-m socket` DIVERT，**保留 TCP 那条**（[ssconfig.sh `load_iptables_split`](../../fancyss/ss/ssconfig.sh)）。无 xray.json 改动、无端口/iptables 重定向改动。原理：xray dokodemo-door 的 UDP 按"源地址"在 listener 内 demux，要求每个 datagram 都 fall-through 到 TPROXY 投给 listener；UDP 不存在 TCP 的 accept()→established-socket 模型，故 UDP 不需要也不能要 socket-match 豁免。TCP 那条必须留：TCP 握手后续包必须投到 accept() 出的 established socket，否则握手/连接断。
+- **51.1 实证（改源码 + `ssconfig.sh restart` 真实重建链路，非手删规则）**：单 socket 长连 Google 8/8、Cloudflare 8/8（修前 1/6）；快速刷新 15 个新 socket 15/15（= 用户"快速刷新后全挂"场景）；TCP 海外 `api.ip.sb`→UK 代理节点、`api.ipify.org`→AWS London 同节点（分流/TPROXY TCP 不回归）；mangle 链 udp socket-match 缺席、tcp 在席；`fss_split_xray_warn` 空（无 fallback）。
+- **影响面**：所有走分流的 UDP（STUN/WebRTC、UDP 游戏、任意 UDP 应用）现在连续可用；DNS 不受影响（dport 53 在 socket-match 之前已 RETURN，见 D16）；TCP 完全不受影响（删的是 `-p udp` 规则）；`block_quic` 不受影响（DROP udp/443 在 TPROXY 之前、socket-match 之后，逻辑不变）。首包仍 ~1.1s（代理首跳 UDP association 建立的固有延迟，非 bug；③ 已证与嗅探无关），后续包 ~300ms。
+
 ### 6.4 实施期约定的回溯修订
 
 **alpha 阶段（doge.12.alpha-1 → alpha.18）**：
