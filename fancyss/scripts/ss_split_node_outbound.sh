@@ -182,11 +182,12 @@ fss_split_build_node_outbound_json() {
 		local trojan_uuid sni ai
 		trojan_uuid=$(fss_get_node_field_plain "${id}" "trojan_uuid" 2>/dev/null)
 		sni=$(fss_get_node_field_plain "${id}" "trojan_sni" 2>/dev/null)
-		ai=$(fss_get_node_field_plain "${id}" "trojan_ai" 2>/dev/null)
+		pcs=$(fss_get_node_field_plain "${id}" "trojan_pcs" 2>/dev/null)
+		vcn=$(fss_get_node_field_plain "${id}" "trojan_vcn" 2>/dev/null)
 
 		local tls_block
-		tls_block=$(jq -n --arg sni "${sni}" --argjson ai "$(fss_chain_bool_json "${ai}")" '
-			{serverName: $sni, allowInsecure: $ai} | with_entries(select(.value != null and .value != ""))
+		tls_block=$(jq -n --arg sni "${sni}" --arg pcs "${pcs}" --arg vcn "${vcn}" '
+			{serverName: $sni, pinnedPeerCertSha256: $pcs, verifyPeerCertByName: $vcn} | with_entries(select(.value != null and .value != ""))
 		')
 
 		outbound=$(jq -n \
@@ -221,8 +222,8 @@ fss_split_build_node_outbound_json() {
 
 		local tls_block
 		if [ "${hy2_ai}" = "1" ]; then
-			tls_block=$(jq -n --arg sni "${hy2_sni}" '
-				{serverName: $sni, allowInsecure: true, alpn: ["h3"]}
+			tls_block=$(jq -n --arg sni "${hy2_sni}" --arg pcs "${hy2_pcs}" --arg vcn "${hy2_vcn}" '
+				{serverName: $sni, pinnedPeerCertSha256: $pcs, verifyPeerCertByName: $vcn, alpn: ["h3"]}
 				| with_entries(select(.value != null and .value != ""))
 			')
 		else

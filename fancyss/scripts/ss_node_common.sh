@@ -62,11 +62,9 @@ FSS_WEBTEST_RUNTIME_FILE="/tmp/upload/webtest.txt"
 FSS_WEBTEST_RUNTIME_STREAM_FILE="/tmp/upload/webtest.stream"
 FSS_WEBTEST_RUNTIME_BACKUP_FILE="/tmp/upload/webtest_bakcup.txt"
 FSS_CURRENT_NODE_IDENTITY_DBUS_KEY="fss_node_current_identity"
-FSS_FAILOVER_NODE_IDENTITY_DBUS_KEY="fss_node_failover_identity"
 FSS_REFERENCE_NOTICE_DBUS_KEY="fss_data_reference_notice"
 FSS_REFERENCE_NOTICE_TS_DBUS_KEY="fss_data_reference_notice_ts"
 FSS_CURRENT_NODE_IDENTITY_DBUS_KEY_LEGACY="fss_current_node_identity"
-FSS_FAILOVER_NODE_IDENTITY_DBUS_KEY_LEGACY="fss_failover_node_identity"
 FSS_REFERENCE_NOTICE_DBUS_KEY_LEGACY="fss_reference_notice"
 FSS_REFERENCE_NOTICE_TS_DBUS_KEY_LEGACY="fss_reference_notice_ts"
 FSS_AIRPORT_PROFILE_FILE="/koolshare/ss/rules/airport-profile.json"
@@ -1607,11 +1605,8 @@ fss_clear_v2_nodes() {
 	done
 	dbus remove fss_node_order
 	dbus remove fss_node_current
-	dbus remove fss_node_failover_backup
 	dbus remove "${FSS_CURRENT_NODE_IDENTITY_DBUS_KEY}"
-	dbus remove "${FSS_FAILOVER_NODE_IDENTITY_DBUS_KEY}"
 	dbus remove "${FSS_CURRENT_NODE_IDENTITY_DBUS_KEY_LEGACY}"
-	dbus remove "${FSS_FAILOVER_NODE_IDENTITY_DBUS_KEY_LEGACY}"
 	fss_clear_reference_notice
 	dbus remove fss_node_next_id
 	dbus remove fss_data_schema
@@ -1645,7 +1640,6 @@ fss_clear_legacy_nodes() {
 fss_clear_all_node_storage() {
 	fss_clear_legacy_nodes
 	fss_clear_v2_nodes
-	dbus remove ss_failover_s4_3
 }
 
 fss_prepare_migration_state() {
@@ -1740,7 +1734,7 @@ fss_validate_v2_tempdir() {
 	local expected_count="$2"
 	local node_id
 	local actual_count=0
-	local current_id failover_id order_csv
+	local current_id order_csv
 
 	[ -d "${tmp_dir}" ] || return 1
 	[ -f "${tmp_dir}/order" ] || return 1
@@ -1749,12 +1743,8 @@ fss_validate_v2_tempdir() {
 	[ "${actual_count}" = "${expected_count}" ] || return 1
 
 	current_id=$(cat "${tmp_dir}/current" 2>/dev/null)
-	failover_id=$(cat "${tmp_dir}/failover" 2>/dev/null)
 	if [ -n "${current_id}" ];then
 		printf '%s\n' "${order_csv}" | tr ',' '\n' | grep -Fxq "${current_id}" || return 1
-	fi
-	if [ -n "${failover_id}" ];then
-		printf '%s\n' "${order_csv}" | tr ',' '\n' | grep -Fxq "${failover_id}" || return 1
 	fi
 
 	while IFS= read -r node_id
@@ -1773,16 +1763,15 @@ fss_migrate_legacy_nodes() {
 	local progress_cb="$2"
 	local ts snapshot_path
 	local tmp_dir expected_count=0 actual_count=0 migrated_nodes=0
-	local node_id node_b64 current_id failover_id max_id=0 order_csv=""
+	local node_id node_b64 current_id max_id=0 order_csv=""
 	local order_file="" node_dump_file="" nodes_tsv="" source_meta_file="" node_ts=""
-	local old_current old_failover
+	local old_current
 	local node_tool="" node_tool_output="" node_tool_output_file="" node_tool_rc="" migrated_count="" subscribe_nodes="" legacy_keys_removed=""
 	local node_tool_attempt=0
 	local key value field
 
 	[ "$(fss_detect_storage_schema)" = "2" ] && return 0
 	old_current=$(dbus get ssconf_basic_node)
-	old_failover=$(dbus get ss_failover_s4_3)
 	expected_count=$(fss_legacy_node_count)
 	[ "${expected_count}" -gt 0 ] || return 1
 
@@ -1850,7 +1839,6 @@ fss_migrate_legacy_nodes() {
 				fss_touch_node_catalog_ts >/dev/null 2>&1
 				fss_touch_node_config_ts >/dev/null 2>&1
 				[ -n "$(dbus get fss_node_current)" ] && dbus set ssconf_basic_node="$(dbus get fss_node_current)" || dbus remove ssconf_basic_node
-				[ -n "$(dbus get fss_node_failover_backup)" ] && dbus set ss_failover_s4_3="$(dbus get fss_node_failover_backup)" || dbus remove ss_failover_s4_3
 				fss_report_progress "${progress_cb}" "node-tool 快速迁移完成：${migrated_count}/${expected_count} 个节点。"
 				[ -n "${subscribe_nodes}" ] && fss_report_progress "${progress_cb}" "node-tool 已写入 ${subscribe_nodes} 个订阅节点来源归属。"
 				[ -n "${legacy_keys_removed}" ] && fss_report_progress "${progress_cb}" "node-tool 已清理 ${legacy_keys_removed} 个旧版节点键。"
@@ -1911,9 +1899,7 @@ fss_migrate_legacy_nodes() {
 	}
 
 	current_id="${old_current}"
-	failover_id="${old_failover}"
 	[ -n "${current_id}" ] && grep -Fxq "${current_id}" "${order_file}" || current_id="$(sed -n '1p' "${order_file}")"
-	[ -n "${failover_id}" ] && grep -Fxq "${failover_id}" "${order_file}" || failover_id=""
 
 	fss_report_progress "${progress_cb}" "阶段3/4：转换节点到新存储结构，共 ${expected_count} 个节点..."
 	node_ts="$(fss_now_ts_ms)"
@@ -1958,7 +1944,6 @@ fss_migrate_legacy_nodes() {
 	dbus set fss_data_schema=2
 	fss_set_storage_schema_cache 2
 	fss_set_current_node_id "${current_id}"
-	fss_set_failover_node_id "${failover_id}"
 	dbus set fss_node_next_id="$((max_id + 1))"
 	fss_touch_node_catalog_ts >/dev/null 2>&1
 	fss_touch_node_config_ts >/dev/null 2>&1
@@ -2528,11 +2513,7 @@ fss_node_v2_to_legacy_script_lines() {
 
 fss_export_global_json() {
 	{
-		dbus list ss | grep -v '^ssconf_basic_' | grep -v '^ss_acl_' | grep -v '^ssid_' | grep -v '^ss_failover_s4_3='
-		# fork 新增：故障转移备用组合相关 ss_failover_combo_* / ss_failover_main_combo_seeded 键已落在 ss 前缀里（dbus list ss 已涵盖），
-		# 但是仅靠 grep -v 排除 ssconf_basic_/ss_acl_/ssid_ 后还会漏 fss_failover_main_combo_seeded（前面 list 没拿到）。
-		# 这里追加抓一次 fss_failover_，用于覆盖 internal_restart / last_switch_ts / cool_down_sec / migrated_v* 等后端键，确保备份完整。
-		dbus list fss_failover_
+		dbus list ss | grep -v '^ssconf_basic_' | grep -v '^ss_acl_' | grep -v '^ssid_'
 		# alpha.17 修：补抓 fss_split_*（含 fss_split_migrated_v1 等迁移 marker），
 		# 否则备份恢复后 install.sh 会以为没迁移过 → 重新跑 migrate_split_routing_v1
 		# 覆盖用户已改的 Mode/Rule 配置。
@@ -2551,10 +2532,7 @@ fss_export_acl_json() {
 
 fss_clear_global_config_storage() {
 	{
-		dbus list ss 2>/dev/null | cut -d "=" -f 1 | grep -v '^ssconf_basic_' | grep -v '^ss_acl_' | grep -v '^ssid_' | grep -v '^ss_failover_s4_3$'
-		# fork 新增：清理 fss_failover_* 后端键（internal_restart / last_switch_ts / migrated_v* 等）；
-		# combo 字段（ss_failover_combo_*）和 ss_failover_main_combo_seeded 已在 dbus list ss 范围内被清理。
-		dbus list fss_failover_ 2>/dev/null | cut -d "=" -f 1
+		dbus list ss 2>/dev/null | cut -d "=" -f 1 | grep -v '^ssconf_basic_' | grep -v '^ss_acl_' | grep -v '^ssid_'
 		# alpha.17 修：fss_split_* 也要在 clear 时一并清掉（fss_split_migrated_v1 等迁移
 		# marker），否则 restore 全局配置时旧 marker 阻止 migrate_split_routing_v1 重新跑。
 		dbus list fss_split_ 2>/dev/null | cut -d "=" -f 1
@@ -2755,9 +2733,6 @@ fss_set_schema2_reference_node_id() {
 			"${FSS_CURRENT_NODE_IDENTITY_DBUS_KEY}")
 				dbus remove "${FSS_CURRENT_NODE_IDENTITY_DBUS_KEY_LEGACY}"
 				;;
-			"${FSS_FAILOVER_NODE_IDENTITY_DBUS_KEY}")
-				dbus remove "${FSS_FAILOVER_NODE_IDENTITY_DBUS_KEY_LEGACY}"
-				;;
 			esac
 			return 0
 		fi
@@ -2769,18 +2744,12 @@ fss_set_schema2_reference_node_id() {
 			"${FSS_CURRENT_NODE_IDENTITY_DBUS_KEY}")
 				dbus remove "${FSS_CURRENT_NODE_IDENTITY_DBUS_KEY_LEGACY}"
 				;;
-			"${FSS_FAILOVER_NODE_IDENTITY_DBUS_KEY}")
-				dbus remove "${FSS_FAILOVER_NODE_IDENTITY_DBUS_KEY_LEGACY}"
-				;;
 			esac
 		else
 			dbus remove "${identity_key}"
 			case "${identity_key}" in
 			"${FSS_CURRENT_NODE_IDENTITY_DBUS_KEY}")
 				dbus remove "${FSS_CURRENT_NODE_IDENTITY_DBUS_KEY_LEGACY}"
-				;;
-			"${FSS_FAILOVER_NODE_IDENTITY_DBUS_KEY}")
-				dbus remove "${FSS_FAILOVER_NODE_IDENTITY_DBUS_KEY_LEGACY}"
 				;;
 			esac
 		fi
@@ -2790,9 +2759,6 @@ fss_set_schema2_reference_node_id() {
 		case "${identity_key}" in
 		"${FSS_CURRENT_NODE_IDENTITY_DBUS_KEY}")
 			dbus remove "${FSS_CURRENT_NODE_IDENTITY_DBUS_KEY_LEGACY}"
-			;;
-		"${FSS_FAILOVER_NODE_IDENTITY_DBUS_KEY}")
-			dbus remove "${FSS_FAILOVER_NODE_IDENTITY_DBUS_KEY_LEGACY}"
 			;;
 		esac
 	fi
@@ -2829,40 +2795,6 @@ fss_resolve_current_node_id() {
 fss_get_current_node_id() {
 	fss_resolve_current_node_id || return 1
 	printf '%s\n' "${FSS_CURRENT_NODE_ID_RESULT}"
-}
-
-fss_resolve_failover_node_id() {
-	local schema failover_id failover_identity resolved_id
-	FSS_FAILOVER_NODE_ID_RESULT=""
-	schema=$(fss_detect_storage_schema)
-	if [ "${schema}" = "2" ];then
-		failover_id=$(dbus get fss_node_failover_backup)
-		if [ -n "${failover_id}" ] && fss_node_id_exists "${failover_id}"; then
-			FSS_FAILOVER_NODE_ID_RESULT="${failover_id}"
-			return 0
-		fi
-		failover_identity=$(dbus get "${FSS_FAILOVER_NODE_IDENTITY_DBUS_KEY}")
-		[ -n "${failover_identity}" ] || failover_identity=$(dbus get "${FSS_FAILOVER_NODE_IDENTITY_DBUS_KEY_LEGACY}")
-		resolved_id=$(fss_resolve_reference_node_id "${failover_id}" "${failover_identity}" "1" 2>/dev/null)
-		if [ -n "${resolved_id}" ]; then
-			if [ "${resolved_id}" != "${failover_id}" ]; then
-				fss_set_schema2_reference_node_id "fss_node_failover_backup" "${FSS_FAILOVER_NODE_IDENTITY_DBUS_KEY}" "${resolved_id}" >/dev/null 2>&1
-			fi
-			FSS_FAILOVER_NODE_ID_RESULT="${resolved_id}"
-			return 0
-		else
-			[ -n "${failover_id}${failover_identity}" ] && fss_set_schema2_reference_node_id "fss_node_failover_backup" "${FSS_FAILOVER_NODE_IDENTITY_DBUS_KEY}" "" >/dev/null 2>&1
-			return 1
-		fi
-	else
-		FSS_FAILOVER_NODE_ID_RESULT="$(dbus get ss_failover_s4_3)"
-		[ -n "${FSS_FAILOVER_NODE_ID_RESULT}" ]
-	fi
-}
-
-fss_get_failover_node_id() {
-	fss_resolve_failover_node_id || return 1
-	printf '%s\n' "${FSS_FAILOVER_NODE_ID_RESULT}"
 }
 
 fss_get_node_identity_by_id() {
@@ -2959,7 +2891,6 @@ fss_get_current_node_airport_identity() {
 fss_sync_reference_identity_shadows() {
 	[ "$(fss_detect_storage_schema)" = "2" ] || return 0
 	fss_get_current_node_id >/dev/null 2>&1 || true
-	fss_get_failover_node_id >/dev/null 2>&1 || true
 }
 
 fss_find_node_id_by_identity() {
@@ -3790,16 +3721,6 @@ fss_set_current_node_id() {
 	fi
 }
 
-fss_set_failover_node_id() {
-	local node_id="$1"
-	if [ "$(fss_detect_storage_schema)" = "2" ];then
-		fss_set_schema2_reference_node_id "fss_node_failover_backup" "${FSS_FAILOVER_NODE_IDENTITY_DBUS_KEY}" "${node_id}"
-		[ -n "${node_id}" ] && dbus set ss_failover_s4_3="${node_id}" || dbus remove ss_failover_s4_3
-	else
-		[ -n "${node_id}" ] && dbus set ss_failover_s4_3="${node_id}" || dbus remove ss_failover_s4_3
-	fi
-}
-
 fss_set_node_field_plain() {
 	local node_id="$1"
 	local field="$2"
@@ -3917,7 +3838,7 @@ fss_export_native_backup() {
 	local schema=$(fss_detect_storage_schema)
 	local tmp_dir
 	local global_json acl_json order_json
-	local node_current="" node_failover="" node_next_id=""
+	local node_current="" node_next_id=""
 	local plugin_version created_at
 	local dump_file="" node_cache_dir=""
 	local progress_enabled=0
@@ -3950,7 +3871,6 @@ fss_export_native_backup() {
 		node_order_csv=$(dbus get fss_node_order)
 		order_json=$(fss_csv_to_json_array "${node_order_csv}")
 		node_current=$(fss_get_current_node_id)
-		node_failover=$(fss_get_failover_node_id)
 		node_next_id=$(dbus get fss_node_next_id)
 		node_cache_dir="${tmp_dir}/nodes_v2"
 		node_total=$(printf '%s' "${node_order_csv}" | tr ',' '\n' | sed '/^$/d' | awk 'END{print NR + 0}')
@@ -3986,7 +3906,6 @@ fss_export_native_backup() {
 		local node_ids
 		local max_node=0
 		node_current=$(dbus get ssconf_basic_node)
-		node_failover=$(dbus get ss_failover_s4_3)
 		dump_file="${tmp_dir}/legacy_nodes.txt"
 		dbus list ssconf_basic_ | grep -E '_[0-9]+=' | sed '/^ssconf_basic_.\+_[0-9]\+=$/d' > "${dump_file}"
 		node_ids=$(fss_list_legacy_node_indices)
@@ -4026,7 +3945,6 @@ fss_export_native_backup() {
 		--arg created_at "${created_at}" \
 		--arg plugin_version "${plugin_version}" \
 		--arg node_current "${node_current}" \
-		--arg node_failover "${node_failover}" \
 		--arg node_next_id "${node_next_id}" \
 		--arg storage_schema "${schema}" \
 		--slurpfile global "${tmp_dir}/global.json" \
@@ -4044,7 +3962,6 @@ fss_export_native_backup() {
 			nodes: $nodes[0],
 			node_order: $order[0],
 			node_current: $node_current,
-			node_failover_backup: $node_failover,
 			node_next_id: $node_next_id,
 			acl: $acl[0]
 		}
@@ -4063,7 +3980,7 @@ fss_export_legacy_backup() {
 	local progress_cb="$2"
 	local schema=$(fss_detect_storage_schema)
 	local key value idx node_id node_json
-	local node_order_csv node_current node_failover current_pos="" failover_pos=""
+	local node_order_csv node_current current_pos=""
 	local tmp_dir="" node_cache_dir="" node_total=0
 	local acl_default_ports=""
 
@@ -4090,10 +4007,7 @@ EOF
 			"${progress_cb}" "阶段2/4：导出全局配置..."
 		fi
 		{
-			dbus list ss | grep -v '^ssconf_basic_' | grep -v '^ss_acl_' | grep -v '^ss_basic_enable=' | grep -v '^ssid_' | grep -v '^ss_failover_s4_3='
-			# fork 新增：故障转移后端 fss_failover_* 键（internal_restart / last_switch_ts / migrated_v*）；
-			# combo 字段（ss_failover_combo_*）已在上面 dbus list ss 范围内被导出。
-			dbus list fss_failover_
+			dbus list ss | grep -v '^ssconf_basic_' | grep -v '^ss_acl_' | grep -v '^ss_basic_enable=' | grep -v '^ssid_'
 			# alpha.17 修：补抓 fss_split_*（含 fss_split_migrated_v1 等迁移 marker），
 			# 详见 fss_export_global_json 同位置注释。
 			dbus list fss_split_
@@ -4123,7 +4037,6 @@ EOF
 
 		node_order_csv=$(dbus get fss_node_order)
 		node_current=$(fss_get_current_node_id)
-		node_failover=$(fss_get_failover_node_id)
 		node_total=$(printf '%s' "${node_order_csv}" | tr ',' '\n' | sed '/^$/d' | awk 'END{print NR + 0}')
 		if [ -n "${progress_cb}" ] && type "${progress_cb}" >/dev/null 2>&1; then
 			"${progress_cb}" "阶段4/4：导出节点配置，共 ${node_total} 个节点..."
@@ -4133,7 +4046,6 @@ EOF
 		do
 			idx=$((idx + 1))
 			[ "${node_current}" = "${node_id}" ] && current_pos="${idx}"
-			[ "${node_failover}" = "${node_id}" ] && failover_pos="${idx}"
 			node_json=$(cat "${node_cache_dir}/${node_id}.json" 2>/dev/null)
 			[ -z "${node_json}" ] && node_json=$(fss_v2_get_node_json_by_id "${node_id}")
 			printf '%s' "${node_json}" | fss_node_v2_to_legacy_script_lines "${idx}"
@@ -4145,7 +4057,6 @@ EOF
 		done
 
 		[ -n "${current_pos}" ] && printf 'dbus set ssconf_basic_node=%s\n' "$(fss_shell_quote "${current_pos}")"
-		[ -n "${failover_pos}" ] && printf 'dbus set ss_failover_s4_3=%s\n' "$(fss_shell_quote "${failover_pos}")"
 	else
 		dbus list ss | grep -v '^ss_basic_enable=' | grep -v '^ssid_' | while IFS= read -r line
 		do
@@ -4170,7 +4081,7 @@ fss_restore_native_backup_to_legacy() {
 	local idx=0
 	local node_id="" node_json=""
 	local node_order_count=0
-	local node_current_id="" node_failover_id="" current_pos="" failover_pos=""
+	local node_current_id="" current_pos=""
 	local key value
 	local acl_default_ports=""
 
@@ -4203,7 +4114,6 @@ EOF
 	[ -n "${acl_default_ports}" ] && printf 'dbus set ss_acl_default_port=%s\n' "$(fss_shell_quote "${acl_default_ports}")" >> "${script_file}"
 
 	node_current_id=$(jq -r '.node_current // empty' "${json_file}")
-	node_failover_id=$(jq -r '.node_failover_backup // empty' "${json_file}")
 	node_order_count=$(jq '.node_order | length' "${json_file}" 2>/dev/null)
 	if [ -z "${node_order_count}" ] || [ "${node_order_count}" = "0" ];then
 		jq -r '.nodes[]._id' "${json_file}" > "${script_file}.order"
@@ -4216,14 +4126,12 @@ EOF
 		[ -z "${node_id}" ] && continue
 		idx=$((idx + 1))
 		[ "${node_current_id}" = "${node_id}" ] && current_pos="${idx}"
-		[ "${node_failover_id}" = "${node_id}" ] && failover_pos="${idx}"
 		node_json=$(jq -c --arg id "${node_id}" '.nodes[] | select(._id == $id)' "${json_file}" | sed -n '1p')
 		[ -z "${node_json}" ] && continue
 		printf '%s' "${node_json}" | fss_node_v2_to_legacy_script_lines "${idx}" >> "${script_file}"
 	done < "${script_file}.order"
 
 	[ -n "${current_pos}" ] && printf 'dbus set ssconf_basic_node=%s\n' "$(fss_shell_quote "${current_pos}")" >> "${script_file}"
-	[ -n "${failover_pos}" ] && printf 'dbus set ss_failover_s4_3=%s\n' "$(fss_shell_quote "${failover_pos}")" >> "${script_file}"
 
 	chmod +x "${script_file}"
 	rm -f "${script_file}.order"
@@ -4235,7 +4143,7 @@ fss_restore_legacy_backup_sh_fast() {
 	local line payload key value field
 	local node_id order_csv="" node_ts=""
 	local node_b64=""
-	local current_id="" failover_id="" next_id=1 max_id=0
+	local current_id="" next_id=1 max_id=0
 	local global_count=0 acl_count=0 node_count=0 restored_nodes=0
 	local acl_default_port_legacy=""
 	local acl_default_ports_seen=0
@@ -4278,9 +4186,6 @@ fss_restore_legacy_backup_sh_fast() {
 			;;
 		ssconf_basic_node)
 			current_id="${value}"
-			;;
-		ss_failover_s4_3)
-			failover_id="${value}"
 			;;
 		ss_acl_default_ports)
 			printf '%s=%s\n' "${key}" "${value}" >> "${global_file}"
@@ -4377,11 +4282,7 @@ fss_restore_legacy_backup_sh_fast() {
 	else
 		current_id="$(sed -n '1p' "${order_file}")"
 	fi
-	if [ -n "${failover_id}" ];then
-		grep -Fxq "${failover_id}" "${order_file}" || failover_id=""
-	fi
 	fss_set_current_node_id "${current_id}"
-	fss_set_failover_node_id "${failover_id}"
 	dbus set fss_node_next_id="${next_id}"
 	fss_touch_node_catalog_ts >/dev/null 2>&1
 	fss_touch_node_config_ts >/dev/null 2>&1
@@ -4401,7 +4302,7 @@ fss_restore_legacy_backup_sh_fast() {
 fss_restore_native_backup_v2() {
 	local json_file="$1"
 	local tmp_dir node_order_file global_tsv acl_tsv nodes_tsv
-	local node_id node_b64 current_id failover_id next_id max_id=0 restored_nodes=0
+	local node_id node_b64 current_id next_id max_id=0 restored_nodes=0
 	local key value_b64 value
 	local node_count=0 global_count=0 acl_count=0 node_ts=0
 
@@ -4474,7 +4375,6 @@ fss_restore_native_backup_v2() {
 	echo_date "普通配置和ACL配置恢复完成！"
 
 	current_id=$(jq -r '.node_current // empty' "${json_file}")
-	failover_id=$(jq -r '.node_failover_backup // empty' "${json_file}")
 	next_id=$(jq -r '.node_next_id // empty' "${json_file}")
 	node_ts=$(fss_now_ts_ms)
 
@@ -4600,15 +4500,10 @@ fss_restore_native_backup_v2() {
 		else
 			current_id=$(sed -n '1p' "${node_order_file}")
 		fi
-		if [ -n "${failover_id}" ];then
-			grep -Fxq "${failover_id}" "${node_order_file}" || failover_id=""
-		fi
 		fss_set_current_node_id "${current_id}"
-		fss_set_failover_node_id "${failover_id}"
 	else
 		dbus remove fss_node_order
 		fss_set_current_node_id ""
-		fss_set_failover_node_id ""
 	fi
 	dbus set fss_node_next_id="${next_id}"
 	fss_touch_node_catalog_ts >/dev/null 2>&1
@@ -4622,192 +4517,5 @@ fss_restore_native_backup_v2() {
 	echo_date "节点恢复完成：${restored_nodes}个节点。"
 
 	rm -rf "${tmp_dir}"
-	return 0
-}
-
-# =============================================================================
-# 故障转移备用组合 helper（fork 新增）
-# 详见 doc/design/failover-combo-list-design.md §4.2
-# 备用组合存储：ss_failover_combo_count + ss_failover_combo_<i>_{front_id,front_identity,landing_id,landing_identity,failed}
-# 注意：dbus key 用 ss_* 前缀以满足 CLAUDE.md 硬规则 #1（前端 db_ss 才能读到）。
-# 函数名保留 fss_failover_combo_* 作为内部 helper 标识，与 dbus key 命名不一致是有意为之。
-# =============================================================================
-
-# 返回备用组合数量，空 / 非数字时返回 0
-fss_failover_combo_count() {
-	local count
-	count=$(dbus get ss_failover_combo_count)
-	case "${count}" in
-		''|*[!0-9]*) printf '0' ;;
-		*) printf '%s' "${count}" ;;
-	esac
-}
-
-# 在备用组合列表中查找匹配 (front_id, landing_id) 的索引
-# 用法：fss_failover_find_combo <front_id> <landing_id>
-# 输出：匹配的索引 i（1..N）；找不到则输出空。
-# 注意：前置 id 都为空也算匹配（直连组合）。
-fss_failover_find_combo() {
-	local cur_front="$1"
-	local cur_landing="$2"
-	local total i combo_front combo_landing
-	total=$(fss_failover_combo_count)
-	[ "${total}" -gt 0 ] 2>/dev/null || return 0
-	i=1
-	while [ "${i}" -le "${total}" ]
-	do
-		combo_front=$(dbus get "ss_failover_combo_${i}_front_id")
-		combo_landing=$(dbus get "ss_failover_combo_${i}_landing_id")
-		if [ "${combo_front}" = "${cur_front}" ] && [ "${combo_landing}" = "${cur_landing}" ]; then
-			printf '%s' "${i}"
-			return 0
-		fi
-		i=$((i + 1))
-	done
-	return 0
-}
-
-# 顺序扫描，找第一个 failed=0 且与当前 runtime 不完全相同的 combo
-# 用法：fss_failover_pick_next_available <cur_front> <cur_landing>
-# 输出：可用组合的索引 i；全部失效或与当前相同时输出空。
-fss_failover_pick_next_available() {
-	local cur_front="$1"
-	local cur_landing="$2"
-	local total i combo_front combo_landing combo_failed
-	total=$(fss_failover_combo_count)
-	[ "${total}" -gt 0 ] 2>/dev/null || return 0
-	i=1
-	while [ "${i}" -le "${total}" ]
-	do
-		combo_failed=$(dbus get "ss_failover_combo_${i}_failed")
-		if [ "${combo_failed}" != "1" ]; then
-			combo_front=$(dbus get "ss_failover_combo_${i}_front_id")
-			combo_landing=$(dbus get "ss_failover_combo_${i}_landing_id")
-			# 跳过与当前 runtime 完全相同的
-			if [ "${combo_front}" = "${cur_front}" ] && [ "${combo_landing}" = "${cur_landing}" ]; then
-				i=$((i + 1))
-				continue
-			fi
-			# landing 必填，缺失说明组合损坏，跳过
-			if [ -n "${combo_landing}" ]; then
-				printf '%s' "${i}"
-				return 0
-			fi
-		fi
-		i=$((i + 1))
-	done
-	return 0
-}
-
-# 通过 identity 重新解析 combo 的最新节点 id（订阅刷新场景）
-# 用法：fss_failover_resolve_combo <i>
-# 输出：front_id<TAB>landing_id（解析失败的字段为空）
-fss_failover_resolve_combo() {
-	local idx="$1"
-	local front_id front_identity landing_id landing_identity
-	local resolved_front="" resolved_landing=""
-	[ -n "${idx}" ] || return 1
-	front_id=$(dbus get "ss_failover_combo_${idx}_front_id")
-	front_identity=$(dbus get "ss_failover_combo_${idx}_front_identity")
-	landing_id=$(dbus get "ss_failover_combo_${idx}_landing_id")
-	landing_identity=$(dbus get "ss_failover_combo_${idx}_landing_identity")
-
-	# 前置：可以是空（直连组合）。allow_blank=1 避免回落到 first_node
-	if [ -n "${front_id}${front_identity}" ]; then
-		resolved_front=$(fss_resolve_reference_node_id "${front_id}" "${front_identity}" "1" 2>/dev/null)
-	fi
-	# 落地：必填。allow_blank=1 让解析失败时返回空字符串，不要回落
-	if [ -n "${landing_id}${landing_identity}" ]; then
-		resolved_landing=$(fss_resolve_reference_node_id "${landing_id}" "${landing_identity}" "1" 2>/dev/null)
-	fi
-	printf '%s\t%s' "${resolved_front}" "${resolved_landing}"
-}
-
-# 把所有 combo 的 failed 改为 "0"，并清空 fss_failover_last_switch_ts（解除冷却）
-fss_failover_clear_all_failed() {
-	local total i
-	total=$(fss_failover_combo_count)
-	if [ "${total}" -gt 0 ] 2>/dev/null; then
-		i=1
-		while [ "${i}" -le "${total}" ]
-		do
-			dbus set "ss_failover_combo_${i}_failed"="0"
-			i=$((i + 1))
-		done
-	fi
-	dbus set fss_failover_last_switch_ts="0"
-}
-
-# 把 combo[idx] 的全部字段清空（用于已删除/已重排到末尾的占位项）
-# 注意：identity 字段不保留——这个函数仅用于 reindex 过程的尾部清理。
-fss_failover_combo_clear_slot() {
-	local idx="$1"
-	[ -n "${idx}" ] || return 1
-	dbus set "ss_failover_combo_${idx}_front_id"=""
-	dbus set "ss_failover_combo_${idx}_front_identity"=""
-	dbus set "ss_failover_combo_${idx}_landing_id"=""
-	dbus set "ss_failover_combo_${idx}_landing_identity"=""
-	dbus set "ss_failover_combo_${idx}_failed"=""
-}
-
-# 删除 combo[idx]，并把 idx+1..N 的字段往前挪一格，最后清空原末尾占位
-# 不做任何"启用中不能删"的校验。后端订阅刷新 / 节点删除路径用。
-# 用法：fss_failover_combo_drop <idx>
-fss_failover_combo_drop() {
-	local idx="$1"
-	local total i src_prefix dst_prefix field
-	total=$(fss_failover_combo_count)
-	[ "${total}" -gt 0 ] 2>/dev/null || return 1
-	[ -n "${idx}" ] || return 1
-	[ "${idx}" -ge 1 ] 2>/dev/null || return 1
-	[ "${idx}" -le "${total}" ] 2>/dev/null || return 1
-	i="${idx}"
-	while [ "${i}" -lt "${total}" ]
-	do
-		src_prefix="ss_failover_combo_$((i + 1))_"
-		dst_prefix="ss_failover_combo_${i}_"
-		for field in front_id front_identity landing_id landing_identity failed
-		do
-			dbus set "${dst_prefix}${field}"="$(dbus get "${src_prefix}${field}")"
-		done
-		i=$((i + 1))
-	done
-	# 清空原末尾位
-	fss_failover_combo_clear_slot "${total}"
-	dbus set ss_failover_combo_count="$((total - 1))"
-}
-
-# 订阅刷新后，对每个 combo 通过 identity 重解析 _id 字段写回。
-# 仅写 _id；_identity 是稳定锚点，绝不动。
-# landing 解析为空 → 节点已被删除，整个 combo 损坏，从大到小批量删除并 reindex。
-# 用法：fss_failover_combos_resync_after_subscribe
-fss_failover_combos_resync_after_subscribe() {
-	local total i resolved sep front_new landing_new
-	local drop_list=""
-	total=$(fss_failover_combo_count)
-	[ "${total}" -gt 0 ] 2>/dev/null || return 0
-	sep="$(printf '\t')"
-	i=1
-	while [ "${i}" -le "${total}" ]
-	do
-		resolved=$(fss_failover_resolve_combo "${i}")
-		front_new="${resolved%%${sep}*}"
-		landing_new="${resolved#*${sep}}"
-		# landing 解析为空 → 该 combo 损坏，记下 idx 待删除
-		if [ -z "${landing_new}" ]; then
-			drop_list="${i} ${drop_list}"
-		else
-			# 写回新 id（identity 不动）
-			dbus set "ss_failover_combo_${i}_front_id"="${front_new}"
-			dbus set "ss_failover_combo_${i}_landing_id"="${landing_new}"
-		fi
-		i=$((i + 1))
-	done
-	# 从大到小逐一删除受损 combo，避免 reindex 时索引错位
-	for i in ${drop_list}
-	do
-		echo_date "ℹ️备用组合 #${i} 的落地节点已不存在，自动移除。"
-		fss_failover_combo_drop "${i}"
-	done
 	return 0
 }

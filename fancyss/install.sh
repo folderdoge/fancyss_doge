@@ -361,7 +361,6 @@ restart_status_runtime_async() {
 		}
 		should_start_status_serve() {
 			[ "$(dbus get ss_basic_enable)" = "1" ] || return 1
-			[ "$(dbus get ss_failover_enable)" != "1" ] || return 1
 			[ "$(dbus get ss_basic_status_mode)" = "serve" ]
 		}
 		wait_status_preready() {
@@ -400,114 +399,52 @@ report_install_migration_progress() {
 	echo_date "$1"
 }
 
-# 一次性迁移：把旧版本的故障转移字段（ss_failover_s4_2/s4_3、fss_node_failover_*）
-# 转换为新的备用组合列表（ss_failover_combo_*），然后清理旧字段并打迁移标记。
-# 依赖：fss_node_id_exists、fss_get_node_identity_by_id（来自 ss_node_common.sh，install.sh 顶部已 source）
-# 触发条件：fss_failover_migrated_v1 != "1"。幂等。
-migrate_failover_v1(){
-	local migrated_flag legacy_s4_3 legacy_backup legacy_identity new_count
-	local target_id="" target_identity=""
-
-	migrated_flag="$(dbus get fss_failover_migrated_v1)"
-	if [ "${migrated_flag}" = "1" ]; then
-		return 0
-	fi
-
-	legacy_s4_3="$(dbus get ss_failover_s4_3)"
-	legacy_backup="$(dbus get fss_node_failover_backup)"
-	legacy_identity="$(dbus get fss_node_failover_identity)"
-	# 兼容历史 dbus key：旧 fork 版本曾用 fss_failover_combo_count，已被 v2 迁移到 ss_failover_combo_count；
-	# 这里两个 key 都查一下，取较大值，防止 v1 在 v2 之前/之后跑都能正确判断"已配置过 combo"。
-	new_count="$(dbus get ss_failover_combo_count)"
-	case "${new_count}" in
-		''|*[!0-9]*) new_count=0 ;;
-	esac
-	local legacy_combo_count="$(dbus get fss_failover_combo_count)"
-	case "${legacy_combo_count}" in
-		''|*[!0-9]*) legacy_combo_count=0 ;;
-	esac
-	if [ "${legacy_combo_count}" -gt "${new_count}" ] 2>/dev/null; then
-		new_count="${legacy_combo_count}"
-	fi
-
-	# 已经在新版本配置过 combo → 跳过迁移内容，仅清理旧字段
-	if [ "${new_count}" -ge 1 ] 2>/dev/null; then
-		echo_date "故障转移：检测到已有 ${new_count} 个备用组合，跳过旧字段迁移内容，仅清理废弃 keys。"
-	else
-		# 选定迁移源 id：优先 fss_node_failover_backup（identity 化更稳），再退到 ss_failover_s4_3
-		if [ -n "${legacy_backup}" ] && [ "${legacy_backup}" != "0" ]; then
-			if fss_node_id_exists "${legacy_backup}" >/dev/null 2>&1; then
-				target_id="${legacy_backup}"
-				target_identity="${legacy_identity}"
-			fi
-		fi
-		if [ -z "${target_id}" ] && [ -n "${legacy_s4_3}" ] && [ "${legacy_s4_3}" != "0" ]; then
-			if fss_node_id_exists "${legacy_s4_3}" >/dev/null 2>&1; then
-				target_id="${legacy_s4_3}"
-			fi
-		fi
-
-		if [ -n "${target_id}" ]; then
-			# identity 字段：拿不到就保持空，新版本 resolve 时会回退到 raw id
-			if [ -z "${target_identity}" ]; then
-				target_identity="$(fss_get_node_identity_by_id "${target_id}" 2>/dev/null)"
-			fi
-			# 直接写新前缀（ss_*）；不需要再过 v2 转换。
-			dbus set ss_failover_combo_count="1"
-			dbus set ss_failover_combo_1_front_id=""
-			dbus set ss_failover_combo_1_front_identity=""
-			dbus set ss_failover_combo_1_landing_id="${target_id}"
-			dbus set ss_failover_combo_1_landing_identity="${target_identity}"
-			dbus set ss_failover_combo_1_failed="0"
-			echo_date "故障转移：已把旧备用节点（id=${target_id}）迁移为备用组合 #1（直连模式）。"
-		else
-			echo_date "故障转移：未发现可迁移的旧备用节点，跳过 combo 创建。"
-		fi
-	fi
-
-	# 清理旧字段（无论本次是否创建 combo）
-	dbus remove ss_failover_s4_2 >/dev/null 2>&1
-	dbus remove ss_failover_s4_3 >/dev/null 2>&1
-	dbus remove fss_node_failover_backup >/dev/null 2>&1
-	dbus remove fss_node_failover_identity >/dev/null 2>&1
-	dbus set fss_failover_migrated_v1="1"
-	echo_date "故障转移：旧字段迁移完成（fss_failover_migrated_v1=1）。"
+# FORK doge.14: 故障转移（failover / 备用组合）功能已物理删除。
+# 本函数一次性清除存量用户路由器上所有遗留的 failover dbus key（幂等，靠 marker
+# fss_failover_purged_v1 保证只跑一次）。注意 koolshare `dbus remove KEY` 是精确匹配，
+# 不会删 KEY_<i>，要按前缀清理必须先 list 再 loop（CLAUDE.md 硬规则 #15）。
+purge_failover_remnants() {
+	[ "$(dbus get fss_failover_purged_v1)" = "1" ] && return 0
+	# combo + seed keys (ss_failover_combo_count, ss_failover_combo_<i>_*, ss_failover_main_combo_seeded, ss_failover_combo_migrated_v2)
+	dbus list ss_failover_ 2>/dev/null | cut -d= -f1 | while read -r k; do [ -n "$k" ] && dbus remove "$k"; done
+	# backend hot keys (fss_failover_internal_restart / last_switch_ts / cool_down_sec / migrated_v1 / migrated_v2)
+	dbus list fss_failover_ 2>/dev/null | cut -d= -f1 | while read -r k; do [ -n "$k" ] && dbus remove "$k"; done
+	# legacy single-node failover keys + identity
+	dbus remove ss_failover_s4_2
+	dbus remove ss_failover_s4_3
+	dbus remove fss_node_failover_backup
+	dbus remove fss_node_failover_identity
+	dbus remove fss_failover_node_identity
+	# legacy per-node failover enable/check settings (ss_failover_enable / _c1/_c2/_c3 / _s1 / _s2_1 / _s2_2 / _s3_1 / _s3_2 / _s4_1 / _s5)
+	dbus list ss_failover_ 2>/dev/null | cut -d= -f1 | while read -r k; do [ -n "$k" ] && dbus remove "$k"; done
+	dbus set fss_failover_purged_v1=1
 }
 
-# 一次性迁移 v2：把 fork 旧版本的 fss_failover_combo_* / fss_failover_main_combo_seeded
-# 重命名为 ss_failover_combo_* / ss_failover_main_combo_seeded（前缀必须 ss_*
-# 才能被 koolshare /_api/ss 暴露给前端 db_ss，详见 CLAUDE.md 硬规则 #1）。
-# 触发条件：ss_failover_combo_migrated_v2 != "1"。幂等。
-# 顺序：在 install_now 中紧跟 migrate_failover_v1 之后调用——v1 现在直接写 ss_*，
-# v2 仅处理"用户已经在旧 fork 版本上手动配过 combo"留下的 fss_* 残留。
-migrate_failover_v2(){
-	local migrated_flag key value newkey
-	migrated_flag="$(dbus get ss_failover_combo_migrated_v2)"
-	if [ "${migrated_flag}" = "1" ]; then
-		return 0
-	fi
-
-	# 1. fss_failover_combo_*  →  ss_failover_combo_*
-	dbus list fss_failover_combo_ 2>/dev/null | while IFS= read -r line
-	do
-		[ -z "${line}" ] && continue
-		key="${line%%=*}"
-		value="${line#*=}"
-		newkey="ss_${key#fss_}"
-		dbus set "${newkey}"="${value}"
-		dbus remove "${key}" >/dev/null 2>&1
+# FORK doge.14: Xray 2026.x 硬移除 allowInsecure —— config-gen 已不再写入该选项（见 ssconfig.sh creat_*_json）。
+# 对升级前开着「跳过证书验证」(*_ai=1) 的节点做一次性提示；不改节点数据（config-gen 忽略 ai，xray 必启动），仅扫描+提示。
+# 幂等 marker fss_allowinsecure_notified_v1；schema!=2 时不落 marker（等迁到 schema2 下次再扫）。
+notify_allowinsecure_removed_v1() {
+	[ "$(dbus get fss_allowinsecure_notified_v1)" = "1" ] && return 0
+	[ "$(fss_detect_storage_schema 2>/dev/null)" = "2" ] || return 0
+	local node_id node_json ai_hit nm names="" cnt=0
+	for node_id in $(fss_list_node_ids); do
+		[ -n "${node_id}" ] || continue
+		node_json="$(fss_v2_get_node_json_by_id "${node_id}" 2>/dev/null)" || continue
+		[ -n "${node_json}" ] || continue
+		ai_hit="$(printf '%s' "${node_json}" | jq -r 'if (.v2ray_network_security_ai|tostring)=="1" or (.xray_network_security_ai|tostring)=="1" or (.trojan_ai|tostring)=="1" or (.hy2_ai|tostring)=="1" then "1" else "0" end' 2>/dev/null)"
+		[ "${ai_hit}" = "1" ] || continue
+		cnt=$((cnt + 1))
+		nm="$(printf '%s' "${node_json}" | jq -r '.name // empty' 2>/dev/null)"
+		[ -n "${nm}" ] || nm="(id ${node_id})"
+		names="${names}${names:+、}${nm}"
 	done
-
-	# 2. fss_failover_main_combo_seeded → ss_failover_main_combo_seeded
-	local legacy_seeded
-	legacy_seeded="$(dbus get fss_failover_main_combo_seeded)"
-	if [ -n "${legacy_seeded}" ]; then
-		dbus set ss_failover_main_combo_seeded="${legacy_seeded}"
-		dbus remove fss_failover_main_combo_seeded >/dev/null 2>&1
+	if [ "${cnt}" -gt 0 ]; then
+		echo_date "⚠️ FORK doge.14：检测到 ${cnt} 个节点曾开启「跳过证书验证(allowInsecure)」：${names}"
+		echo_date "    Xray 新版已移除该选项，现已对这些节点停用（使用有效证书的节点不受影响）。"
+		echo_date "    若其中自签证书节点连接失败，请在节点设置填写 pinnedPeerCertSha256（参考帮助提示 56）。"
+		logger -t "fancyss" "doge.14 allowInsecure removed: ${cnt} node(s) had cert-skip enabled"
 	fi
-
-	dbus set ss_failover_combo_migrated_v2="1"
-	echo_date "故障转移：combo 前缀迁移 v2 完成（fss_failover_combo_* → ss_failover_combo_*）。"
+	dbus set fss_allowinsecure_notified_v1=1
 }
 
 # ============================================================================
@@ -977,8 +914,6 @@ migrate_doge10_drop_legacy_protocols(){
 	local kept_ids="" dropped_ids=""
 	local current_id current_dropped=0
 	local front_id front_dropped=0
-	local total i landing_id landing_dropped front_id_combo combo_changes=0
-	local drop_combo_list=""
 
 	migrated_flag="$(dbus get fss_doge10_legacy_protocols_migrated)"
 	if [ "${migrated_flag}" = "1" ]; then
@@ -1076,60 +1011,8 @@ migrate_doge10_drop_legacy_protocols(){
 		echo_date "[doge.10 migrate] 前置节点（id=${front_id}）已被删除，已清空前置设置。"
 	fi
 
-	# 6. 遍历 combo 列表
-	#    - landing_id 指向被删 → 整个 combo 待删（收集 idx，倒序 drop 避免索引错位）
-	#    - front_id 指向被删（landing 仍有效）→ 清空 front_id / front_identity
-	total="$(dbus get ss_failover_combo_count)"
-	case "${total}" in ''|*[!0-9]*) total=0 ;; esac
-	if [ "${total}" -gt 0 ] 2>/dev/null; then
-		i=1
-		while [ "${i}" -le "${total}" ]
-		do
-			landing_id="$(dbus get "ss_failover_combo_${i}_landing_id")"
-			front_id_combo="$(dbus get "ss_failover_combo_${i}_front_id")"
-			landing_dropped=0
-			front_dropped=0
-			if [ -n "${landing_id}" ]; then
-				for id in ${dropped_ids}
-				do
-					if [ "${landing_id}" = "${id}" ]; then
-						landing_dropped=1
-						break
-					fi
-				done
-			fi
-			if [ -n "${front_id_combo}" ]; then
-				for id in ${dropped_ids}
-				do
-					if [ "${front_id_combo}" = "${id}" ]; then
-						front_dropped=1
-						break
-					fi
-				done
-			fi
-			if [ "${landing_dropped}" = "1" ]; then
-				# 把待删 idx 倒序压栈（drop 时要从大到小）
-				drop_combo_list="${i}${drop_combo_list:+ }${drop_combo_list}"
-				combo_changes=$((combo_changes + 1))
-			elif [ "${front_dropped}" = "1" ]; then
-				dbus set "ss_failover_combo_${i}_front_id"=""
-				dbus set "ss_failover_combo_${i}_front_identity"=""
-				combo_changes=$((combo_changes + 1))
-			fi
-			i=$((i + 1))
-		done
-		# 倒序删 combo
-		for i in ${drop_combo_list}
-		do
-			fss_failover_combo_drop "${i}" >/dev/null 2>&1
-		done
-	fi
-
-	# 7. 汇总日志
+	# 6. 汇总日志
 	echo_date "[doge.10 migrate] 已删除 SSR 节点 ${ssr_count} 个、Naive ${naive_count} 个、Tuic ${tuic_count} 个。"
-	if [ "${combo_changes}" -gt 0 ] 2>/dev/null; then
-		echo_date "[doge.10 migrate] 已清理 ${combo_changes} 个故障转移备用组合（landing 被删则整组删除；front 被删则清空前置）。"
-	fi
 
 	dbus set fss_doge10_legacy_protocols_migrated="1"
 }
@@ -1980,9 +1863,7 @@ full2lite(){
 		local keep_order=""
 		local max_keep=0
 		local old_current="$(fss_get_current_node_id 2>/dev/null)"
-		local old_failover="$(fss_get_failover_node_id 2>/dev/null)"
 		local new_current=""
-		local new_failover=""
 		local tmp_dir=""
 		local nodes_dir=""
 		local meta_file=""
@@ -2061,12 +1942,8 @@ full2lite(){
 			else
 				new_current="$(printf '%s' "${keep_order}" | cut -d ',' -f 1)"
 			fi
-			if [ -n "${old_failover}" ] && printf '%s' "${keep_order}" | tr ',' '\n' | grep -Fxq "${old_failover}" 2>/dev/null;then
-				new_failover="${old_failover}"
-			fi
 		fi
 		fss_set_current_node_id "${new_current}"
-		fss_set_failover_node_id "${new_failover}"
 		dbus set fss_data_schema=2
 		dbus set fss_node_next_id="$((max_keep + 1))"
 		fss_touch_node_catalog_ts >/dev/null 2>&1
@@ -2643,10 +2520,8 @@ install_now(){
 	
 	# others
 	fss_cleanup_acl_default_port_keys >/dev/null 2>&1
-	# 旧故障转移字段一次性迁移到新备用组合列表（幂等，详见 doc/design/failover-combo-list-design.md §3.2）
-	migrate_failover_v1
-	# combo 前缀重命名 v2：fss_failover_combo_* → ss_failover_combo_*（CLAUDE.md 硬规则 #1）
-	migrate_failover_v2
+	# FORK doge.14: 故障转移功能已物理删除——一次性清除存量遗留 failover dbus key（幂等）
+	purge_failover_remnants
 	# FORK doge.12 alpha：分流架构（Rule + Mode + per-User + 双轨 DNS）数据迁移
 	# 详见 doc/implementation/split-routing-implementation.md / doc/design/split-routing-architecture.md §14
 	# 仅写数据 + 拷规则文件。doge.14 起路由层永远走新逻辑（总开关已物理移除）。
@@ -2657,6 +2532,8 @@ install_now(){
 	unwrap_split_dns_multilayer_b64
 	# FORK doge.14 beta: 节点分流退役 (mode 7 → 2) + [DNS 设置] section 老 key 清理（一次性，幂等）
 	migrate_split_routing_v3
+	# FORK doge.14: Xray 移除 allowInsecure —— 对升级前开着 cert-skip 的节点一次性提示（幂等）
+	notify_allowinsecure_removed_v1
 	# FORK doge.12 alpha：分流 Rule 自动更新 cron（每 30 分钟扫一次；详见 doc/design/split-routing-architecture.md §10.3）。
 	# alpha 期内置 Rule 全部 update_hours=0，cron 跑等于 no-op；脚本里有守护跳过。
 	# 用户自定义 Rule + 设置 update_hours>0 + 配置 source_url 才会真正下载。

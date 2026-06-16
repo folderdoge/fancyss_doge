@@ -3322,8 +3322,7 @@ creat_vmess_json() {
 
 		if [ "${ss_basic_v2ray_network_security}" == "tls" ];then
 			local tls="{
-					\"allowInsecure\": $(get_function_switch $ss_basic_v2ray_network_security_ai)
-					,\"alpn\": ${apln}
+					\"alpn\": ${apln}
 					,\"serverName\": $(get_value_null $ss_basic_v2ray_network_security_sni)
 					}"
 		else
@@ -3847,23 +3846,14 @@ creat_vless_json() {
 				ss_basic_xray_fingerprint="chrome"
 				fss_set_current_node_field_plain xray_fingerprint "chrome"
 			fi
-			# !!! warning: from 2026.06.1, allowInsecure will be removed, please use pcs and vcn as soon as possible.
-			if [ "${ss_basic_xray_network_security_ai}" != "1" ];then
-				local tls="{
-						\"alpn\": ${apln}
-						,\"serverName\": $(get_value_null ${ss_basic_xray_network_security_sni})
-						,\"fingerprint\": $(get_value_empty ${ss_basic_xray_fingerprint})
-						,\"pinnedPeerCertSha256\": $(get_value_empty ${ss_basic_xray_pcs})
-						,\"verifyPeerCertByName\": $(get_value_empty ${ss_basic_xray_vcn})
-						}"
-			else
-				local tls="{
-						\"allowInsecure\": true
-						,\"alpn\": ${apln}
-						,\"serverName\": $(get_value_null ${ss_basic_xray_network_security_sni})
-						,\"fingerprint\": $(get_value_empty ${ss_basic_xray_fingerprint})
-						}"
-			fi
+			# allowInsecure removed by Xray (2026.x); always use pinnedPeerCertSha256/verifyPeerCertByName (FORK doge.14)
+			local tls="{
+					\"alpn\": ${apln}
+					,\"serverName\": $(get_value_null ${ss_basic_xray_network_security_sni})
+					,\"fingerprint\": $(get_value_empty ${ss_basic_xray_fingerprint})
+					,\"pinnedPeerCertSha256\": $(get_value_empty ${ss_basic_xray_pcs})
+					,\"verifyPeerCertByName\": $(get_value_empty ${ss_basic_xray_vcn})
+					}"
 		else
 			local tls="null"
 		fi
@@ -4983,8 +4973,7 @@ creat_trojan_json(){
 					"tlsSettings": {
 						"serverName": $(get_value_null ${ss_basic_trojan_sni}),
 						"pinnedPeerCertSha256": $(get_value_empty ${ss_basic_trojan_pcs}),
-						"verifyPeerCertByName": $(get_value_empty ${ss_basic_trojan_vcn}),
-						"allowInsecure": $(get_function_switch ${ss_basic_trojan_ai})
+						"verifyPeerCertByName": $(get_value_empty ${ss_basic_trojan_vcn})
 					}
 					,"wsSettings": ${_trojan_ws}
 					,"sockopt": {"tcpFastOpen": $(get_function_switch ${ss_basic_trojan_tfo})}
@@ -5156,18 +5145,12 @@ creat_hy2_json(){
 						"serverName": "${ss_basic_hy2_sni}"
 	EOF
 
-	# !!! warning: from 2026.06.1, allowInsecure will be removed, please use pcs and vcn as soon as possible.
-	if [ "${ss_basic_hy2_ai}" != "1" ];then
-		cat >>"${HY2_CONFIG_TEMP}" <<-EOF
+	# allowInsecure removed by Xray (2026.x); always use pinnedPeerCertSha256/verifyPeerCertByName (FORK doge.14)
+	cat >>"${HY2_CONFIG_TEMP}" <<-EOF
 							,"pinnedPeerCertSha256": $(get_value_empty ${ss_basic_hy2_pcs})
 							,"verifyPeerCertByName": $(get_value_empty ${ss_basic_hy2_vcn})
-		EOF
-	else
-		cat >>"${HY2_CONFIG_TEMP}" <<-EOF
-							,"allowInsecure": true
-		EOF
-	fi
-	
+	EOF
+
 	cat >>"${HY2_CONFIG_TEMP}" <<-EOF
 						,"alpn": ["h3"]
 					}
@@ -7345,28 +7328,28 @@ set_ss_reboot_job() {
 		remove_ss_reboot_job
 	elif [[ "${ss_reboot_check}" == "1" ]]; then
 		echo_date "【科学上网】：设置每天${ss_basic_time_hour}时${ss_basic_time_min}分重启插件..."
-		cru a ss_reboot ${ss_basic_time_min} ${ss_basic_time_hour}" * * * /bin/sh /koolshare/scripts/ss_cron_restart.sh"
+		cru a ss_reboot ${ss_basic_time_min} ${ss_basic_time_hour}" * * * /bin/sh /koolshare/ss/ssconfig.sh restart"
 	elif [[ "${ss_reboot_check}" == "2" ]]; then
 		echo_date "【科学上网】：设置每周${ss_basic_week}的${ss_basic_time_hour}时${ss_basic_time_min}分重启插件..."
-		cru a ss_reboot ${ss_basic_time_min} ${ss_basic_time_hour}" * * "${ss_basic_week}" /bin/sh /koolshare/scripts/ss_cron_restart.sh"
+		cru a ss_reboot ${ss_basic_time_min} ${ss_basic_time_hour}" * * "${ss_basic_week}" /bin/sh /koolshare/ss/ssconfig.sh restart"
 	elif [[ "${ss_reboot_check}" == "3" ]]; then
 		echo_date "【科学上网】：设置每月${ss_basic_day}日${ss_basic_time_hour}时${ss_basic_time_min}分重启插件..."
-		cru a ss_reboot ${ss_basic_time_min} ${ss_basic_time_hour} ${ss_basic_day}" * * /bin/sh /koolshare/scripts/ss_cron_restart.sh"
+		cru a ss_reboot ${ss_basic_time_min} ${ss_basic_time_hour} ${ss_basic_day}" * * /bin/sh /koolshare/ss/ssconfig.sh restart"
 	elif [[ "${ss_reboot_check}" == "4" ]]; then
 		if [[ "${ss_basic_inter_pre}" == "1" ]]; then
 			echo_date "【科学上网】：设置每隔${ss_basic_inter_min}分钟重启插件..."
-			cru a ss_reboot "*/"${ss_basic_inter_min}" * * * * /bin/sh /koolshare/scripts/ss_cron_restart.sh"
+			cru a ss_reboot "*/"${ss_basic_inter_min}" * * * * /bin/sh /koolshare/ss/ssconfig.sh restart"
 		elif [[ "${ss_basic_inter_pre}" == "2" ]]; then
 			echo_date "【科学上网】：设置每隔${ss_basic_inter_hour}小时重启插件..."
-			cru a ss_reboot "0 */"${ss_basic_inter_hour}" * * * /bin/sh /koolshare/scripts/ss_cron_restart.sh"
+			cru a ss_reboot "0 */"${ss_basic_inter_hour}" * * * /bin/sh /koolshare/ss/ssconfig.sh restart"
 		elif [[ "${ss_basic_inter_pre}" == "3" ]]; then
 			echo_date "【科学上网】：设置每隔${ss_basic_inter_day}天${ss_basic_inter_hour}小时${ss_basic_time_min}分钟重启插件..."
-			cru a ss_reboot ${ss_basic_time_min} ${ss_basic_time_hour}" */"${ss_basic_inter_day} " * * /bin/sh /koolshare/scripts/ss_cron_restart.sh"
+			cru a ss_reboot ${ss_basic_time_min} ${ss_basic_time_hour}" */"${ss_basic_inter_day} " * * /bin/sh /koolshare/ss/ssconfig.sh restart"
 		fi
 	elif [[ "${ss_reboot_check}" == "5" ]]; then
 		check_custom_time=$(echo ss_basic_custom | base64_decode)
 		echo_date "【科学上网】：设置每天${check_custom_time}时的${ss_basic_time_min}分重启插件..."
-		cru a ss_reboot ${ss_basic_time_min} ${check_custom_time}" * * * /bin/sh /koolshare/scripts/ss_cron_restart.sh"
+		cru a ss_reboot ${ss_basic_time_min} ${check_custom_time}" * * * /bin/sh /koolshare/ss/ssconfig.sh restart"
 	fi
 }
 
@@ -7444,12 +7427,6 @@ stop_status() {
 	local status_ws_lock_dir="/tmp/fancyss_status_ws.lock"
 	local status_http_lock_dir="/tmp/fancyss_status_http.lock"
 	local pids=""
-
-	pids="$(pidof ss_status_main.sh 2>/dev/null)"
-	stop_status_kill_pid_list "状态检测主脚本" "${pids}" "-9" || {
-		pids="$(ps w | grep -F "sh /koolshare/scripts/ss_status_main.sh" | grep -v grep | awk '{print $1}')"
-		stop_status_kill_pid_list "状态检测主脚本" "${pids}" "-9" || true
-	}
 
 	pids="$(pidof ss_status.sh 2>/dev/null)"
 	stop_status_kill_pid_list "状态检测前端脚本" "${pids}" "-9" || {
@@ -7616,14 +7593,7 @@ finish_start(){
 
 check_status() {
 	dbus remove ss_basic_wait
-	if [ "$ss_failover_enable" == "1" ]; then
-		sh /koolshare/scripts/ss_status_daemon.sh restart >/dev/null 2>&1
-		echo "=========================================== start/restart ==========================================" >>/tmp/upload/ssf_status.txt
-		echo "=========================================== start/restart ==========================================" >>/tmp/upload/ssc_status.txt
-		sh /koolshare/scripts/ss_status_main.sh >/dev/null 2>&1 &
-	else
-		sh /koolshare/scripts/ss_status_daemon.sh restart >/dev/null 2>&1
-	fi
+	sh /koolshare/scripts/ss_status_daemon.sh restart >/dev/null 2>&1
 
 	(
 		# 对一些域名进行预解析，如果本地有解析缓存，解析没有走路由器，则ipset没有写入导致无法走代理，所以一些域名可以预解析一次
@@ -7664,7 +7634,7 @@ apply_ss() {
 	echo_date ======================= 梅林固件 - 【科学上网】 ========================
 	echo_date
 	# alpha.17 P1-1: 启动时打印运行参数总览（用户最高优先级运维体验改进）
-	echo_date "运行参数: enable=${ss_basic_enable} mode=${ss_basic_mode}(type=${ss_basic_type}) node=${ssconf_basic_node} front=${ssconf_basic_node_front:-(无)} failover=${ss_failover_enable:-0}"
+	echo_date "运行参数: enable=${ss_basic_enable} mode=${ss_basic_mode}(type=${ss_basic_type}) node=${ssconf_basic_node} front=${ssconf_basic_node_front:-(无)}"
 	if [ "${ss_basic_status}" == "1" ];then
 		echo_date ------------------------- 关闭【科学上网】 -----------------------------
 		ss_pre_stop
@@ -7892,18 +7862,6 @@ stop_ws(){
 
 case $ACTION in
 start)
-	# 故障转移备用组合：start 入口处理失效标志（fork 新增，详见 doc/design/failover-combo-list-design.md §4.3）
-	# alpha.17 扩展：flag=1 (failover 自切)、flag=2 (cron / wan-start / legacy 触发，wrapper 设置) 都保留 failed；
-	# 其他值（含空 / 用户主动 restart）才清 failed。
-	__fofr="$(dbus get fss_failover_internal_restart)"
-	if [ "${__fofr}" = "1" ] || [ "${__fofr}" = "2" ]; then
-		# 故障转移内部触发的 restart，不清失效标志，但要重置 internal_restart 防止遗留
-		dbus set fss_failover_internal_restart="0"
-	else
-		# 用户主动操作，清空所有 combo 的 failed 标志（同时清切换时戳解除冷却）
-		fss_failover_clear_all_failed
-	fi
-	unset __fofr
 	# start on wan-start
 	set_lock
 	if [ "$ss_basic_enable" == "1" ]; then
@@ -7927,18 +7885,6 @@ stop)
 	unset_lock
 	;;
 restart)
-	# 故障转移备用组合：restart 入口处理失效标志（fork 新增，详见 doc/design/failover-combo-list-design.md §4.3）
-	# alpha.17 扩展：flag=1 (failover 自切)、flag=2 (cron / wan-start / legacy 触发，wrapper 设置) 都保留 failed；
-	# 其他值（含空 / 用户主动 restart）才清 failed。
-	__fofr="$(dbus get fss_failover_internal_restart)"
-	if [ "${__fofr}" = "1" ] || [ "${__fofr}" = "2" ]; then
-		# 故障转移内部触发的 restart，不清失效标志，但要重置 internal_restart 防止遗留
-		dbus set fss_failover_internal_restart="0"
-	else
-		# 用户主动操作，清空所有 combo 的 failed 标志（同时清切换时戳解除冷却）
-		fss_failover_clear_all_failed
-	fi
-	unset __fofr
 	# start/restart by web or user
 	set_lock
 	start_ws

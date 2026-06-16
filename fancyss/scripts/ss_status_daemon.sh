@@ -67,31 +67,6 @@ ensure_waiting_cache() {
 	write_waiting_cache
 }
 
-start_status_daemon() {
-	[ -x "${STATUS_TOOL_BIN}" ] || return 1
-	local chn_url
-	local frn_url
-	local interval_ms
-	local proxy_ipv6
-	ensure_waiting_cache
-	{
-		read -r chn_url
-		read -r frn_url
-	} <<-EOF
-	$(pick_status_urls)
-	EOF
-	interval_ms="$(pick_status_interval_ms)"
-	proxy_ipv6="$(dbus get ss_basic_proxy_ipv6)"
-	env TZ="$(status_tool_tz)" start-stop-daemon -S -q -b -m -p "${STATUS_DAEMON_PIDFILE}" -x "${STATUS_TOOL_BIN}" -- daemon \
-		--china-url "${chn_url}" \
-		--foreign-url "${frn_url}" \
-		--proxy-ipv6 "${proxy_ipv6:-0}" \
-		--foreign-proxy "socks5://127.0.0.1:23456" \
-		--interval-ms "${interval_ms}" \
-		--state-file "${STATUS_DAEMON_STATE}" \
-		--legacy-file "${STATUS_DAEMON_LEGACY}"
-}
-
 status_probe_mode() {
 	local mode="$(dbus get ss_basic_status_mode 2>/dev/null)"
 	case "${mode}" in
@@ -159,18 +134,14 @@ stop_status_daemon() {
 
 restart_status_daemon() {
 	stop_status_daemon
-	if [ "$(dbus get ss_failover_enable)" = "1" ];then
-		start_status_daemon
-	elif [ "$(status_probe_mode)" = "serve" ];then
+	if [ "$(status_probe_mode)" = "serve" ];then
 		start_status_serve
 	fi
 }
 
 case "$1" in
 start)
-	if [ "$(dbus get ss_failover_enable)" = "1" ];then
-		start_status_daemon
-	elif [ "$(status_probe_mode)" = "serve" ];then
+	if [ "$(status_probe_mode)" = "serve" ];then
 		start_status_serve
 	fi
 	;;

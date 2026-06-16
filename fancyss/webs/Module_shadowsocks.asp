@@ -1556,7 +1556,7 @@ function get_fss_node_ids() {
 		return Object.keys(fss_nodes_raw).sort(compare);
 	}
 	return Object.keys(db_fss).filter(function(key) {
-		return key.indexOf("fss_node_") === 0 && key != "fss_node_order" && key != "fss_node_current" && key != "fss_node_failover_backup" && key != "fss_node_next_id";
+		return key.indexOf("fss_node_") === 0 && key != "fss_node_order" && key != "fss_node_current" && key != "fss_node_next_id";
 	}).map(function(key) {
 		return key.replace("fss_node_", "");
 	});
@@ -2233,7 +2233,6 @@ function collect_node_reference_delete_impact(nodeId) {
 		current: get_saved_current_node_id() == nodeId,
 		shuntDefault: false,
 		shuntRuleCount: 0,
-		combos: [],
 		splitRules: []
 	};
 	if (!nodeId) {
@@ -2247,19 +2246,6 @@ function collect_node_reference_delete_impact(nodeId) {
 		}
 		if (String(rule.target_node_id || "") == nodeId) {
 			impact.shuntRuleCount += 1;
-		}
-	}
-	// fork 新增：扫描备用组合，记录引用此节点的位置
-	if (typeof failover_combo_count === "function" && typeof failover_combo_get === "function") {
-		var n = failover_combo_count();
-		for (var ci = 1; ci <= n; ci++) {
-			var c = failover_combo_get(ci);
-			if (c.front_id !== "" && String(c.front_id) === nodeId) {
-				impact.combos.push({i: ci, role: "front"});
-			}
-			if (String(c.landing_id) === nodeId) {
-				impact.combos.push({i: ci, role: "landing"});
-			}
 		}
 	}
 	// FORK doge.13 D14：扫描 split_v2 mode/rule action 字段，把引用此节点的位置记录到 impact.splitRules
@@ -2297,14 +2283,6 @@ function show_deleted_node_reference_notice(nodeName, impact, nextCurrentId) {
 	}
 	if (impact.shuntRuleCount > 0) {
 		lines.push("节点分流中有 " + impact.shuntRuleCount + " 条规则仍引用【" + nodeName + "】，请进入节点分流页面检查并重新选择目标节点。");
-	}
-	if (impact.combos && impact.combos.length > 0) {
-		var roleNames = [];
-		for (var ci = 0; ci < impact.combos.length; ci++) {
-			var c = impact.combos[ci];
-			roleNames.push("#" + c.i + "（" + (c.role === "front" ? "前置" : "落地") + "）");
-		}
-		lines.push("节点【" + nodeName + "】被引用于备用组合 " + roleNames.join("、") + "，已自动清理（落地被删的组合整体移除，前置被删的仅清空前置变为直连）。");
 	}
 	// FORK doge.13 D14：分流 (split_v2) 中对此节点的引用已自动改写
 	if (impact.splitRules && impact.splitRules.length > 0) {
@@ -4813,7 +4791,7 @@ function render_reference_notice_html(payload) {
 		html += '</li>';
 	}
 	html += '</ul>';
-	html += '<div style="margin-top:8px;color:#666;">这些提醒不会自动替你决定最终策略，请按需检查运行节点、故障转移和节点分流配置。</div>';
+	html += '<div style="margin-top:8px;color:#666;">这些提醒不会自动替你决定最终策略，请按需检查运行节点和节点分流配置。</div>';
 	html += '</div>';
 	return html;
 }
@@ -6440,7 +6418,7 @@ function get_dbus_data(cb) {
 				function render_page_data() {
 					db_ss["ss_basic_smrt"] = normalize_smartdns_mode_value(db_ss["ss_basic_smrt"]);
 					// basic conf to fill element
-					conf2obj(db_ss);
+					conf2obj(db_ss); render_dns_upstream_rows();
 					init_smartdns_dns_ui();
 					// generate node info (obj confs) for node table
 					generate_node_info();
@@ -6741,7 +6719,6 @@ function refresh_options() {
 	}
 	E("ss_basic_row").value = db_ss["ss_basic_row"]||15;
 	render_chain_status();
-	render_failover_combo_panel();
 	if (typeof apply_props_collapse === 'function') { apply_props_collapse(); }
 	if (typeof start_chain_status_polling === 'function') { start_chain_status_polling(); }
 }
@@ -7336,7 +7313,7 @@ function split_v2_populate_action_selects(idPrefix, value) {
 			var field = ss_nodes[i];
 			var c = (typeof confs !== 'undefined') ? confs[field] : null;
 			if (!c) continue;
-			$n.append($('<option>', {value: field, text: failover_combo_node_label(field)}));
+			$n.append($('<option>', {value: field, text: node_option_label(field)}));
 		}
 	}
 	if (nodeId && $n.find('option[value="' + nodeId + '"]').length === 0) {
@@ -7357,7 +7334,7 @@ function split_v2_populate_action_selects(idPrefix, value) {
 				if (cc.type == '8' && cc.hy2_obfs == '1') ok = false;
 			}
 			if (!ok) continue;
-			$f.append($('<option>', {value: ff, text: failover_combo_node_label(ff)}));
+			$f.append($('<option>', {value: ff, text: node_option_label(ff)}));
 		}
 	}
 	if (frontId && $f.find('option[value="' + frontId + '"]').length === 0) {
@@ -7852,32 +7829,7 @@ function build_direct_path() {
 	if (!landingName) landingName = landingId ? ("节点" + landingId) : "(未选)";
 	return "路由器 → " + landingName + " → 目标";
 }
-// =================== 备用节点组合（故障转移备选列表） ===================
-function failover_combo_count() {
-	var n = parseInt(db_ss["ss_failover_combo_count"] || "0", 10);
-	if (isNaN(n) || n < 0) return 0;
-	return n;
-}
-function failover_combo_get(i) {
-	var prefix = "ss_failover_combo_" + i + "_";
-	return {
-		front_id: db_ss[prefix + "front_id"] || "",
-		front_identity: db_ss[prefix + "front_identity"] || "",
-		landing_id: db_ss[prefix + "landing_id"] || "",
-		landing_identity: db_ss[prefix + "landing_identity"] || "",
-		failed: db_ss[prefix + "failed"] || "0"
-	};
-}
-function failover_combo_status(combo) {
-	if (combo.failed == "1") return "failed";
-	var curFront = String(db_ss["ssconf_basic_node_front"] || "");
-	var curLanding = String(db_ss["ssconf_basic_node"] || db_fss["fss_node_current"] || "");
-	if (String(combo.front_id) == curFront && String(combo.landing_id) == curLanding) {
-		return "running";
-	}
-	return "available";
-}
-function failover_combo_node_label(id) {
+function node_option_label(id) {
 	if (!id) return "";
 	var c = confs[id];
 	if (!c) return "(节点已删除: " + id + ")";
@@ -7897,321 +7849,6 @@ function failover_combo_node_label(id) {
 	else if (c.type == "8") label = "【hysteria2】" + group_tag + c.name;
 	else                    label = group_tag + (c.name || id);
 	return label;
-}
-function failover_combo_html_escape(s) {
-	return String(s == null ? "" : s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-}
-function render_failover_combo_panel() {
-	var $panel = $("#failover_combo_panel");
-	if (!$panel.length) return;
-	// 首次进入：自动种子主组合（异步，完成后会重渲染一次）
-	ensure_main_combo_seeded(function(seeded) {
-		if (seeded) { render_failover_combo_panel(); }
-	});
-	var n = failover_combo_count();
-	var html = '';
-	html += '<table width="100%" border="1" align="center" cellpadding="4" cellspacing="0" bordercolor="#6b8fa3" class="FormTable" style="margin-top:4px;">';
-	html += '<tr><th style="width:36px;text-align:center;">#</th><th>前置节点</th><th>落地节点</th><th style="width:80px;text-align:center;">状态</th><th style="width:80px;text-align:center;">操作</th></tr>';
-	if (n == 0) {
-		html += '<tr><td colspan="5" style="text-align:center;color:#888;padding:8px;">还没有备用组合，添加一个吧 ↓</td></tr>';
-	}
-	for (var i = 1; i <= n; i++) {
-		var combo = failover_combo_get(i);
-		var st = failover_combo_status(combo);
-		var stHtml = "";
-		if (st == "running")      stHtml = '<span style="color:#22ab39;font-weight:bold;">启用中</span>';
-		else if (st == "failed")  stHtml = '<span style="color:#cc3333;">已失效</span>';
-		else                      stHtml = '<span style="color:#1f7fbd;">可用</span>';
-		var frontLabel = combo.front_id ? failover_combo_html_escape(failover_combo_node_label(combo.front_id)) : '<span style="color:#888;">(无前置/直连)</span>';
-		var landingLabel = failover_combo_html_escape(failover_combo_node_label(combo.landing_id));
-		var btnDisabled = (st == "running") ? ' disabled style="opacity:0.4;cursor:not-allowed;" title="当前运行中的组合不能删除"' : '';
-		html += '<tr>';
-		html += '<td style="text-align:center;">' + i + '</td>';
-		html += '<td>' + frontLabel + '</td>';
-		html += '<td>' + landingLabel + '</td>';
-		html += '<td style="text-align:center;">' + stHtml + '</td>';
-		html += '<td style="text-align:center;"><a class="ss_btn" id="failover_combo_remove_btn_' + i + '" style="cursor:pointer;"' + btnDisabled + ' onclick="failover_combo_remove(' + i + ')">删除</a></td>';
-		html += '</tr>';
-	}
-	// 添加行
-	html += '<tr><td colspan="5"><label style="display:inline-block;min-width:80px;">前置节点</label><select id="failover_combo_add_front" style="width:280px;"></select></td></tr>';
-	html += '<tr><td colspan="5"><label style="display:inline-block;min-width:80px;">落地节点</label><select id="failover_combo_add_landing" style="width:280px;"></select></td></tr>';
-	html += '<tr><td colspan="5"><label style="display:inline-block;min-width:80px;">&nbsp;</label><a class="ss_btn" id="failover_combo_add_btn" style="cursor:pointer;" onclick="failover_combo_add()">+ 添加</a></td></tr>';
-	html += '</table>';
-	$panel.html(html);
-	// 填充 select 选项
-	var $front = $("#failover_combo_add_front");
-	var $landing = $("#failover_combo_add_landing");
-	$front.append('<option value="">(无前置/直连)</option>');
-	for (var i = 0; i < ss_nodes.length; i++) {
-		var field = ss_nodes[i];
-		var c = confs[field];
-		if (!c) continue;
-		// 前置兼容性过滤（同 refresh_options 链式前置规则）
-		var frontOk = (c.type == "0" || c.type == "3" || c.type == "4" || c.type == "5" || c.type == "8");
-		if (frontOk) {
-			if (c.type == "0" && c.ss_obfs && c.ss_obfs != "0") frontOk = false;
-			if (c.type == "3" && c.v2ray_use_json == "1") frontOk = false;
-			if (c.type == "4" && c.xray_use_json == "1") frontOk = false;
-			if (c.type == "8" && c.hy2_obfs == "1") frontOk = false;
-		}
-		var label = failover_combo_node_label(field);
-		if (frontOk) {
-			$front.append($("<option>", { value: field, text: label }));
-		}
-		// 落地：所有节点
-		$landing.append($("<option>", { value: field, text: label }));
-	}
-}
-function ensure_main_combo_seeded(cb) {
-	// 标志位检查必须在最前：避免 render -> ensure -> render 无限递归
-	if (String(db_ss["ss_failover_main_combo_seeded"] || "") === "1") {
-		if (typeof cb === "function") cb(false);
-		return;
-	}
-	var mainFront = String(db_ss["ssconf_basic_node_front"] || "");
-	var mainLanding = String(db_ss["ssconf_basic_node"] || db_fss["fss_node_current"] || "");
-	// 主面板没有有效落地 → 不种子但落标志（避免后续每次都试）
-	if (!mainLanding) {
-		var fields0 = { "ss_failover_main_combo_seeded": "1" };
-		failover_combo_persist(fields0, function() {
-			if (typeof cb === "function") cb(false);
-		});
-		return;
-	}
-	// 检查是否已有 combo 与主面板组合匹配
-	var n = failover_combo_count();
-	for (var i = 1; i <= n; i++) {
-		var c = failover_combo_get(i);
-		if (String(c.front_id) === mainFront && String(c.landing_id) === mainLanding) {
-			var fields1 = { "ss_failover_main_combo_seeded": "1" };
-			failover_combo_persist(fields1, function() {
-				if (typeof cb === "function") cb(false);
-			});
-			return;
-		}
-	}
-	// 不存在 → 把现有 combo_1..n 全部 shift 到 combo_2..n+1，再把主面板放到 combo_1
-	var fields = {};
-	// shift（从大到小，避免覆盖）
-	for (var j = n; j >= 1; j--) {
-		var src = failover_combo_get(j);
-		var dstPrefix = "ss_failover_combo_" + (j + 1) + "_";
-		fields[dstPrefix + "front_id"] = src.front_id;
-		fields[dstPrefix + "front_identity"] = src.front_identity;
-		fields[dstPrefix + "landing_id"] = src.landing_id;
-		fields[dstPrefix + "landing_identity"] = src.landing_identity;
-		fields[dstPrefix + "failed"] = src.failed;
-	}
-	// combo_1 = 主面板
-	fields["ss_failover_combo_1_front_id"] = mainFront;
-	fields["ss_failover_combo_1_front_identity"] = mainFront ? (get_node_identity(mainFront) || "") : "";
-	fields["ss_failover_combo_1_landing_id"] = mainLanding;
-	fields["ss_failover_combo_1_landing_identity"] = get_node_identity(mainLanding) || "";
-	fields["ss_failover_combo_1_failed"] = "0";
-	fields["ss_failover_combo_count"] = String(n + 1);
-	fields["ss_failover_main_combo_seeded"] = "1";
-	failover_combo_persist(fields, function(ok) {
-		if (typeof cb === "function") cb(ok === true);
-	});
-}
-function failover_combo_persist(fields, cb) {
-	// 仅持久化 dbus 字段，不重启代理服务（dummy_script.sh 是后端用于"只写 fields"的占位脚本）
-	var id = parseInt(Math.random() * 100000000);
-	var postData = {"id": id, "method": "dummy_script.sh", "params":[], "fields": fields};
-	$.ajax({
-		type: "POST",
-		cache: false,
-		url: "/_api/",
-		data: JSON.stringify(postData),
-		dataType: "json",
-		success: function(response) {
-			// 同步本地缓存，避免重新 fetch
-			for (var k in fields) {
-				if (Object.prototype.hasOwnProperty.call(fields, k)) {
-					db_ss[k] = fields[k];
-				}
-			}
-			if (typeof cb === "function") cb(true);
-		},
-		error: function() {
-			if (typeof cb === "function") cb(false);
-		}
-	});
-}
-function failover_combo_add() {
-	var $front = $("#failover_combo_add_front");
-	var $landing = $("#failover_combo_add_landing");
-	if (!$front.length || !$landing.length) return;
-	var front = String($front.val() || "");
-	var landing = String($landing.val() || "");
-	if (!landing) {
-		alert("请选择落地节点。");
-		return;
-	}
-	if (front && front == landing) {
-		alert("前置节点不能与落地节点相同。");
-		return;
-	}
-	// 重复检查
-	var n = failover_combo_count();
-	for (var i = 1; i <= n; i++) {
-		var existing = failover_combo_get(i);
-		if (String(existing.front_id) == front && String(existing.landing_id) == landing) {
-			alert("该组合已存在（#" + i + "）。");
-			return;
-		}
-	}
-	var newIdx = n + 1;
-	var prefix = "ss_failover_combo_" + newIdx + "_";
-	var fields = {};
-	fields["ss_failover_combo_count"] = String(newIdx);
-	fields[prefix + "front_id"] = front;
-	fields[prefix + "front_identity"] = front ? (get_node_identity(front) || "") : "";
-	fields[prefix + "landing_id"] = landing;
-	fields[prefix + "landing_identity"] = get_node_identity(landing) || "";
-	fields[prefix + "failed"] = "0";
-	// FORK doge.12 alpha.17 F-B-3: 防双击竞态 — ajax 飞行期间 disable 按钮
-	var $btn = $("#failover_combo_add_btn");
-	if ($btn.prop("disabled")) return;
-	$btn.prop("disabled", true).css({"pointer-events": "none", "opacity": "0.5"});
-	failover_combo_persist(fields, function(ok) {
-		$btn.prop("disabled", false).css({"pointer-events": "", "opacity": ""});
-		if (!ok) {
-			alert("保存失败，请稍后重试。");
-			return;
-		}
-		render_failover_combo_panel();
-	});
-}
-function failover_combo_remove(i) {
-	i = parseInt(i, 10);
-	if (isNaN(i) || i < 1) return;
-	var n = failover_combo_count();
-	if (i > n) return;
-	var combo = failover_combo_get(i);
-	if (failover_combo_status(combo) == "running") {
-		alert("当前运行中的组合不能删除，请先切换到其他组合。");
-		return;
-	}
-	if (!confirm("确定删除组合 #" + i + " 吗？")) return;
-	var fields = {};
-	// 把 i+1..n 的字段往前挪到 i..n-1
-	for (var j = i; j < n; j++) {
-		var src = failover_combo_get(j + 1);
-		var dstPrefix = "ss_failover_combo_" + j + "_";
-		fields[dstPrefix + "front_id"] = src.front_id;
-		fields[dstPrefix + "front_identity"] = src.front_identity;
-		fields[dstPrefix + "landing_id"] = src.landing_id;
-		fields[dstPrefix + "landing_identity"] = src.landing_identity;
-		fields[dstPrefix + "failed"] = src.failed;
-	}
-	// 清空原最后一项的字段
-	var tailPrefix = "ss_failover_combo_" + n + "_";
-	fields[tailPrefix + "front_id"] = "";
-	fields[tailPrefix + "front_identity"] = "";
-	fields[tailPrefix + "landing_id"] = "";
-	fields[tailPrefix + "landing_identity"] = "";
-	fields[tailPrefix + "failed"] = "";
-	fields["ss_failover_combo_count"] = String(n - 1);
-	// FORK doge.12 alpha.17 F-B-3: 防双击竞态 — ajax 飞行期间 disable 按钮
-	var $btn = $("#failover_combo_remove_btn_" + i);
-	if ($btn.prop("disabled")) return;
-	$btn.prop("disabled", true).css({"pointer-events": "none", "opacity": "0.5"});
-	failover_combo_persist(fields, function(ok) {
-		$btn.prop("disabled", false).css({"pointer-events": "", "opacity": ""});
-		if (!ok) {
-			alert("保存失败，请稍后重试。");
-			return;
-		}
-		render_failover_combo_panel();
-	});
-}
-// 节点删除路径用：根据 delete impact 算出"清理 combo"所需的 fields 集合
-// 规则：role=landing 整条 combo 删除并 reindex；role=front 仅清空前置（变直连）
-// 注意：本函数只生成 fields 字典（不动 db_fss），让 compfilter 能正确识别差异。
-//       db_fss 的同步在 ajax 成功后由调用方负责（通过 failover_combo_apply_delete_fields_local）。
-// 必须先按 impact.combos 里 i 倒序处理，避免 reindex 错位。
-function failover_combo_compute_delete_fields(impact) {
-	var fields = {};
-	if (!impact || !impact.combos || !impact.combos.length) return fields;
-	var dropSet = {};
-	var clearFrontSet = {};
-	for (var k = 0; k < impact.combos.length; k++) {
-		var rec = impact.combos[k];
-		if (rec.role === "landing") {
-			dropSet[rec.i] = true;
-		} else if (rec.role === "front") {
-			clearFrontSet[rec.i] = true;
-		}
-	}
-	// 1. 先用一份 combo 列表的本地拷贝，模拟 reindex
-	var n = failover_combo_count();
-	var combos = []; // combos[1..n]，combos[0] 占位
-	combos.push(null);
-	for (var i = 1; i <= n; i++) combos.push(failover_combo_get(i));
-	// 2. clearFront：仅当不在 dropSet 中
-	for (var idxStr in clearFrontSet) {
-		if (!Object.prototype.hasOwnProperty.call(clearFrontSet, idxStr)) continue;
-		var idxI = parseInt(idxStr, 10);
-		if (dropSet[idxI] || isNaN(idxI) || idxI < 1 || idxI > n) continue;
-		combos[idxI].front_id = "";
-		combos[idxI].front_identity = "";
-	}
-	// 3. drop：倒序删除
-	var dropIdxList = [];
-	for (var idxStr2 in dropSet) {
-		if (Object.prototype.hasOwnProperty.call(dropSet, idxStr2)) dropIdxList.push(parseInt(idxStr2, 10));
-	}
-	dropIdxList.sort(function(a, b) { return b - a; });
-	for (var d = 0; d < dropIdxList.length; d++) {
-		var dropI = dropIdxList[d];
-		if (dropI < 1 || dropI > combos.length - 1) continue;
-		combos.splice(dropI, 1);
-	}
-	// 4. 把当前 combos 数组（去掉占位 null）写回 fields，原 1..oldN 全部覆盖
-	var newN = combos.length - 1;
-	for (var ni = 1; ni <= n; ni++) {
-		var prefixOut = "ss_failover_combo_" + ni + "_";
-		if (ni <= newN) {
-			var c = combos[ni];
-			fields[prefixOut + "front_id"] = c.front_id;
-			fields[prefixOut + "front_identity"] = c.front_identity;
-			fields[prefixOut + "landing_id"] = c.landing_id;
-			fields[prefixOut + "landing_identity"] = c.landing_identity;
-			fields[prefixOut + "failed"] = c.failed;
-		} else {
-			// 超出新长度部分全部清空
-			fields[prefixOut + "front_id"] = "";
-			fields[prefixOut + "front_identity"] = "";
-			fields[prefixOut + "landing_id"] = "";
-			fields[prefixOut + "landing_identity"] = "";
-			fields[prefixOut + "failed"] = "";
-		}
-	}
-	if (newN !== n) {
-		fields["ss_failover_combo_count"] = String(newN);
-	}
-	return fields;
-}
-// ajax 成功后调用：把已落 dbus 的 fields 同步到 db_ss 本地缓存，避免 panel 残留旧数据
-function failover_combo_apply_delete_fields_local(fields) {
-	if (!fields) return;
-	for (var k in fields) {
-		if (Object.prototype.hasOwnProperty.call(fields, k)) {
-			db_ss[k] = fields[k];
-		}
-	}
-}
-function refresh_failover_combo_panel_visibility() {
-	var $section = $("#failover_combo_section");
-	if (!$section.length) return;
-	var enabled = E("ss_failover_enable") && E("ss_failover_enable").checked;
-	if (enabled) {
-		$section.show();
-	} else {
-		$section.hide();
-	}
 }
 function save() {
 	var dbus = {};
@@ -8256,14 +7893,6 @@ function save() {
 	// key define
 	var params_input = [
 	  "ss_basic_mode",
-	  "ss_failover_s1",
-	  "ss_failover_s2_1",
-	  "ss_failover_s2_2",
-	  "ss_failover_s3_1",
-	  "ss_failover_s3_2",
-	  "ss_failover_s4_1",
-	  "ss_failover_s5",
-	  "ss_basic_interval",
 	  "ss_basic_row",
 	  "ss_basic_dns_plan",
 	  "ss_basic_chng",
@@ -8307,10 +7936,6 @@ function save() {
 	  // FORK doge.12 alpha.11: 整组 split 字段（ss_split_enabled / ss_split_default_mode_id / 3 个 DNS upstream）已全迁出 params_input/params_base64，通过 split_v2_persist (dummy_script.sh) 专门通道持久化，避免被任何 tab 的 save() 用 HTML 默认值 / 空值静默覆盖（修 C-CRIT-1+2 + 同模式 default_mode_id）。
 	];
 	var params_check = [
-	  "ss_failover_enable",
-	  "ss_failover_c1",
-	  "ss_failover_c2",
-	  "ss_failover_c3",
 	  "ss_adv_sub",
 	  "ss_basic_tablet",
 	  "ss_basic_noserver",
@@ -8815,7 +8440,7 @@ function get_backend_action_profile(script, flag){
 	if(flag && (flag == "1" || flag == "2")){
 		return profile;
 	}
-	if (/^(ss_config\.sh|ss_conf\.sh|ss_rule_update\.sh|ss_node_subscribe\.sh|ss_xray\.sh|ss_reboot_job\.sh|ss_status_reset\.sh|ss_update\.sh)$/.test(String(script || ""))) {
+	if (/^(ss_config\.sh|ss_conf\.sh|ss_rule_update\.sh|ss_node_subscribe\.sh|ss_xray\.sh|ss_reboot_job\.sh|ss_update\.sh)$/.test(String(script || ""))) {
 		profile.logMode = "realtime";
 		if (script == "ss_conf.sh" || script == "ss_update.sh") {
 			profile.logDelay = 1800;
@@ -9739,20 +9364,6 @@ function verifyFields(r) {
 	for ( var i = 1; i < items.length; ++i ) $("." + items[i]).hide();
 	if (Ti != "0") $(".re" + Ti).show();
 	if (Ti == "4") $(".re4_" + In).show();
-	// failover
-	if(E("ss_failover_enable").checked){
-		$("#interval_settings").show();
-		$("#failover_settings_1").show();
-		$("#failover_settings_2").show();
-		$("#failover_settings_3").show();
-		$("#failover_combo_section").show();
-	}else{
-		$("#interval_settings").hide();
-		$("#failover_settings_1").hide();
-		$("#failover_settings_2").hide();
-		$("#failover_settings_3").hide();
-		$("#failover_combo_section").hide();
-	}
 	// node sub pannel
 	if(E("ss_adv_sub").checked == false){
 		$("#ssr_subscribe_mode").parent().parent().hide();
@@ -10486,16 +10097,6 @@ function process_schema2_node_delete_queue() {
 			fields_v2["fss_node_current"] = nextCurrentId;
 			fields_v2["fss_node_current_identity"] = nextCurrentId ? (get_node_identity(nextCurrentId) || "") : "";
 		}
-		// fork 新增：把备用组合的清理字段合入此次提交，避免多次 ajax
-		var comboFields = null;
-		if (deleteImpact && deleteImpact.combos && deleteImpact.combos.length > 0 && typeof failover_combo_compute_delete_fields === "function") {
-			comboFields = failover_combo_compute_delete_fields(deleteImpact);
-			for (var ck in comboFields) {
-				if (Object.prototype.hasOwnProperty.call(comboFields, ck)) {
-					fields_v2[ck] = comboFields[ck];
-				}
-			}
-		}
 		// FORK doge.13 D14：把 split_v2 引用清理（mode default_action / rule action）合入提交
 		if (deleteImpact && deleteImpact.splitRules && deleteImpact.splitRules.length > 0) {
 			for (var spk = 0; spk < deleteImpact.splitRules.length; spk++) {
@@ -10532,13 +10133,6 @@ function process_schema2_node_delete_queue() {
 			},
 			success: function() {
 				schedule_schema2_node_cache_prune(id);
-				// fork 新增：若涉及 combo 清理，把变更同步到本地 db_fss 并刷新面板
-				if (comboFields && typeof failover_combo_apply_delete_fields_local === "function") {
-					failover_combo_apply_delete_fields_local(comboFields);
-					if (typeof render_failover_combo_panel === "function") {
-						try { render_failover_combo_panel(); } catch (e) {}
-					}
-				}
 				show_deleted_node_reference_notice(removedNodeName, deleteImpact, new_nodes_v2.length ? String(new_nodes_v2[0]) : "");
 			},
 			error: function() {
@@ -12621,22 +12215,6 @@ function save_new_order(){
 		// 如果移动的节点是正在使用的，需要更改到新的位置
 		if(db_ss["ssconf_basic_node"] == rowid){
 			dbus_tmp["ssconf_basic_node"] = String(i+1);
-		}
-		// fork 新增：备用组合的 _id 字段同步重排
-		if (typeof failover_combo_count === "function") {
-			var ccn = failover_combo_count();
-			for (var ci = 1; ci <= ccn; ci++) {
-				var cPrefix = "ss_failover_combo_" + ci + "_";
-				var fId = String(db_ss[cPrefix + "front_id"] || "");
-				var lId = String(db_ss[cPrefix + "landing_id"] || "");
-				// 前置可空——只在非空且匹配时改写
-				if (fId !== "" && fId === String(rowid)) {
-					dbus_tmp[cPrefix + "front_id"] = String(i + 1);
-				}
-				if (lId !== "" && lId === String(rowid)) {
-					dbus_tmp[cPrefix + "landing_id"] = String(i + 1);
-				}
-			}
 		}
 		// 生成新的所有节点的信息
 		for (var j = 0; j < temp.length; j++) {
@@ -14853,7 +14431,6 @@ function tabSelect(w) {
 var tab_actions = {
 	0: function() {
 		$('#apply_button').show();
-		$('#ss_failover_save').hide();
 		showhide("table_basic", (node_max != 0));
 		change_select_width('#ssconf_basic_node');
 		refresh_basic_method_width();
@@ -14869,14 +14446,8 @@ var tab_actions = {
 		}
 		resume_node_latency_live_runtime();
 	},
-	2: function() {
-		$('#apply_button').show();
-		$('#ss_failover_save').show();
-		verifyFields();
-	},
 	3: function() {
 		$('#apply_button').show();
-		$('#ss_failover_save').hide();
 		update_visibility();
 		autoTextarea(E("ss_dnsmasq"), 0, 500);
 	},
@@ -14888,45 +14459,38 @@ var tab_actions = {
 			"ss_wan_black_domain"
 		];
 		$('#apply_button').show();
-		$('#ss_failover_save').hide();
 		for (var i = 0; i < fields.length; i++) {
 			autoTextarea(E(fields[i]), 0, 400);
 		}
 	},
 	5: function() {
 		$('#apply_button').show();
-		$('#ss_failover_save').hide();
 		refresh_shunt_ui();
 		resume_node_latency_live_runtime();
 	},
 	7: function() {
 		$('#apply_button').hide();
-		$('#ss_failover_save').hide();
 		verifyFields();
 		update_visibility();
 		init_subscription_manager_entry();
 	},
 	8: function() {
 		$('#apply_button').show();
-		$('#ss_failover_save').hide();
 		refresh_acl_table();
 	},
 	9: function() {
 		$('#apply_button').show();
-		$('#ss_failover_save').hide();
 		verifyFields();
 		update_visibility();
 	},
 	10: function() {
 		$('#apply_button').hide();
-		$('#ss_failover_save').hide();
 		show_log_switch_panel();
 		get_log();
 	},
 	// FORK doge.12 alpha: 分流架构 V2 实验性入口（tablet_11）
 	11: function() {
 		$('#apply_button').show();
-		$('#ss_failover_save').hide();
 		if (typeof refresh_split_v2_panel === 'function') { refresh_split_v2_panel(); }
 		if (typeof start_split_status_polling === 'function') { start_split_status_polling(); }
 	}
@@ -15183,7 +14747,7 @@ function handle_ss_status_heartbeat(showRefreshPrompt) {
 	dbus_post["ss_heart_beat"] = "0";
 	push_data("dummy_script.sh", "", dbus_post, "2");
 	if (showRefreshPrompt) {
-		layer.confirm('<li>科学上网插件页面需要刷新！</li><br /><li>由于故障转移功能已经在后台切换了节点，为了保证页面显示正确配置！需要刷新此页面！</li><br /><li>确定现在刷新吗？</li>', {
+		layer.confirm('<li>科学上网插件页面需要刷新！</li><br /><li>插件配置已在后台更新，为保证页面显示正确，需要刷新此页面！</li><br /><li>确定现在刷新吗？</li>', {
 			time: 3e4,
 			shade: 0.8
 		}, function(index) {
@@ -15506,15 +15070,15 @@ function get_ss_status_back() {
 		stop_front_status_runtime();
 		return false;
 	}
-	if (E("ss_basic_interval").value == "1"){
+	if ((db_ss["ss_basic_interval"] || "2") == "1"){
 		var time_wait = 3000;
-	}else if(E("ss_basic_interval").value == "2"){
+	}else if((db_ss["ss_basic_interval"] || "2") == "2"){
 		var time_wait = 7000;
-	}else if(E("ss_basic_interval").value == "3"){
+	}else if((db_ss["ss_basic_interval"] || "2") == "3"){
 		var time_wait = 15000;
-	}else if(E("ss_basic_interval").value == "4"){
+	}else if((db_ss["ss_basic_interval"] || "2") == "4"){
 		var time_wait = 31000;
-	}else if(E("ss_basic_interval").value == "5"){
+	}else if((db_ss["ss_basic_interval"] || "2") == "5"){
 		var time_wait = 63000;
 	}
 	//console.log("time_wait: ", time_wait);
@@ -15562,15 +15126,15 @@ function get_ss_status_back_httpd() {
 			set_ss_status_waiting("Waiting....");
 		}
 	});
-	if (E("ss_basic_interval").value == "1"){
+	if ((db_ss["ss_basic_interval"] || "2") == "1"){
 		var time_wait = 3000;
-	}else if(E("ss_basic_interval").value == "2"){
+	}else if((db_ss["ss_basic_interval"] || "2") == "2"){
 		var time_wait = 7000;
-	}else if(E("ss_basic_interval").value == "3"){
+	}else if((db_ss["ss_basic_interval"] || "2") == "3"){
 		var time_wait = 15000;
-	}else if(E("ss_basic_interval").value == "4"){
+	}else if((db_ss["ss_basic_interval"] || "2") == "4"){
 		var time_wait = 31000;
-	}else if(E("ss_basic_interval").value == "5"){
+	}else if((db_ss["ss_basic_interval"] || "2") == "5"){
 		var time_wait = 63000;
 	}
 	setTimeout(get_ss_status_back_httpd, 1000);
@@ -17262,23 +16826,6 @@ function set_cron(action) {
 	}
 	push_data("ss_reboot_job.sh", action, dbus_post);
 }
-function save_failover() {
-	var dbus_post = {};
-		db_ss["ss_basic_action"] = "19";
-	var fov_inp = ["ss_failover_s1", "ss_failover_s2_1", "ss_failover_s2_2", "ss_failover_s3_1", "ss_failover_s3_2", "ss_failover_s4_1", "ss_failover_s5", "ss_basic_interval"];
-	var fov_chk = ["ss_failover_enable", "ss_failover_c1", "ss_failover_c2", "ss_failover_c3"];
-	for (var i = 0; i < fov_inp.length; i++) {
-		dbus_post[fov_inp[i]] = E(fov_inp[i]).value;
-	}
-	for (var i = 0; i < fov_chk.length; i++) {
-		dbus_post[fov_chk[i]] = E(fov_chk[i]).checked ? '1' : '0';
-	}
-	if(is_ws_available()){
-		push_data_ws("ss_status_reset.sh", "", dbus_post);
-	}else{
-		push_data("ss_status_reset.sh", "", dbus_post);
-	}
-}
 function toggleKeyMask(o, show){
 	var el = $(o).attr("id");
 	//console.log(el)
@@ -17571,7 +17118,6 @@ function toggleKeyMask(o, show){
 														<td cellpadding="0" cellspacing="0" style="padding:0" border="1" bordercolor="#222">
 															<input id="show_btn0" class="show-btn0" style="cursor:pointer" type="button" value="帐号设置" />
 															<input id="show_btn1" class="show-btn1" style="cursor:pointer" type="button" value="节点管理" />
-															<input id="show_btn2" class="show-btn2" style="cursor:pointer" type="button" value="故障转移" />
 															<input id="show_btn3" class="show-btn3" style="cursor:pointer" type="button" value="DNS设定" />
 															<input id="show_btn4" class="show-btn4" style="cursor:pointer" type="button" value="黑白名单" />
 															<input id="show_btn7" class="show-btn7" style="cursor:pointer" type="button" value="更新管理" />
@@ -17867,177 +17413,276 @@ function toggleKeyMask(o, show){
 											<div id="tablet_1" style="display: none;">
 												<div id="ss_list_table"></div>
 											</div>
-											<div id="tablet_2" style="display: none;">
-												<table id="table_failover" width="100%" border="1" align="center" cellpadding="4" cellspacing="0" bordercolor="#6b8fa3" class="FormTable" >
-													<script type="text/javascript">
-														var fa1 = ["2", "3", "4", "5"];
-														var fa2_1 = ["10", "15", "20"];
-														var fa2_2 = ["2", "3", "4", "5", "6", "7", "8"];
-														var fa3_1 = ["10", "15", "20"];
-														var fa3_2 = ["100", "150", "200", "250", "300", "350", "400", "450", "500", "1000"];
-														var fa4_1 = [["0", "关闭插件"], ["1", "重启插件"], ["2", "切换备用组合"]];
-														var fa5 = [["1", "2s - 3s"], ["2", "4s - 7s"], ["3", "8s - 15s"], ["4", "16s - 31s"], ["5", "32s - 63s"]];
-														$('#table_failover').forms([
-															{ title: '故障转移开关', id:'ss_failover_enable',type:'checkbox', func:'v', value:false},
-															{ title: '故障转移设置', rid:'failover_settings_1', multi: [
-																{ suffix:'<div style="margin-top: 5px;">' },
-																{ id:'ss_failover_c1', type:'checkbox', value:false },
-																{ suffix:'<lable>👉&nbsp;国外连续发生&nbsp;</lable>' },
-																{ id:'ss_failover_s1', type:'select', style:'width:auto', options:fa1, value:'3'},
-																{ suffix:'<lable>&nbsp;次故障；<br /></lable>' },
-																{ suffix:'</div>' },
-																//line3
-																{ suffix:'<div style="margin-top: 5px;">' },
-																{ id:'ss_failover_c2', type:'checkbox', value:false },
-																{ suffix:'<lable>👉&nbsp;最近&nbsp;</lable>' },
-																{ id:'ss_failover_s2_1', type:'select', style:'width:auto', options:fa2_1, value:'15'},
-																{ suffix:'<lable>&nbsp;次国外状态检测中，故障次数超过&nbsp;</lable>' },
-																{ id:'ss_failover_s2_2', type:'select', style:'width:auto', options:fa2_2, value:'4'},
-																{ suffix:'<lable>&nbsp;次；<br /></lable>' },
-																{ suffix:'</div>' },
-																//line4
-																{ suffix:'<div style="margin-top: 5px;">' },
-																{ id:'ss_failover_c3', type:'checkbox', value:false },
-																{ suffix:'<lable>👉&nbsp;最近&nbsp;</lable>' },
-																{ id:'ss_failover_s3_1', type:'select', style:'width:auto', options:fa3_1, value:'20'},
-																{ suffix:'<lable>&nbsp;次国外状态检测中，平均延迟超过&nbsp;</lable>' },
-																{ id:'ss_failover_s3_2', type:'select', style:'width:auto', options:fa3_2, value:'500'},
-																{ suffix:'<lable>ms<br /></lable>' },
-																{ suffix:'</div>' },
-																//line5
-																{ suffix:'<div style="margin-top: 5px;">' },
-																{ suffix:'<lable>&nbsp;以上有一个条件满足，则&nbsp;</lable>' },
-																{ id:'ss_failover_s4_1', type:'select', style:'width:auto', func:'v', options:fa4_1, value:'2'},
-																{ suffix:'</div>' },
-															]},
-															{ title: '状态检测时间间隔', rid:'interval_settings', multi: [
-																{ id:'ss_basic_interval', type:'select', style:'width:auto',options:fa5, value:'2'},
-																{ suffix:'<small>&nbsp;默认：4 - 7s</small>' },
-															]},
-															{ title: '历史记录保存数量', rid:'failover_settings_2', multi: [
-																{ suffix:'<lable>最多保留&nbsp;</lable>' },
-																{ id:'ss_failover_s5', type:'select', style:'width:auto',options:["1000", "2000", "3000", "4000"], value:'2000'},
-																{ suffix:'<lable>&nbsp;行日志&nbsp;</lable>' },
-															]},
-															{ title: '查看历史状态', rid:'failover_settings_3', multi: [
-																{ suffix:'<a type="button" id="look_logf" class="ss_btn" style="cursor:pointer" onclick="lookup_status_log(1)">国外状态历史</a>&nbsp;' },
-																{ suffix:'<a type="button" id="look_logc" class="ss_btn" style="cursor:pointer" onclick="lookup_status_log(2)">国内状态历史</a>' },
-															]},
-															{ title: '备用节点组合', rid:'failover_combo_section', hint:'201', multi: [
-																{ suffix:'<div id="failover_combo_panel"></div>' },
-															]},
-														]);
-													</script>
-												</table>
-											</div>
 											<div id="tablet_3" style="display: none;">
-												<div id="ss_dns_table"></div>
-												<table id="table_dns" width="100%" border="1" align="center" cellpadding="4" cellspacing="0" bordercolor="#6b8fa3" class="FormTable">
-													<script type="text/javascript">
-													option_dnsp = [
-																  ["1", "chinadns-ng"]
-																  ,["2", "smartdns"]
-																  ];
-														option_domain_for_dig = [
-																			 ["group", "国内域名"],
-																			 ["www.baidu.com", "www.baidu.com"],
-																			 ["www.sina.com.cn", "www.sina.com.cn"],
-																			 ["www.sohu.com", "www.sohu.com"],
-																			 ["www.163.com", "www.163.com"],
-																			 ["www.qq.com", "www.qq.com"],
-																			 ["www.taobao.com", "www.taobao.com"],
-																			 ["www.jd.com", "www.jd.com"],
-																			 ["www.bilibili.com", "www.bilibili.com"],
-																			 ["www.bing.com", "www.bing.com"],
-																			 ["group", "国外域名"],
-																			 ["www.google.com", "www.google.com"],
-																			 ["www.google.com.hk", "www.google.com.hk"],
-																			 ["www.youtube.com", "www.youtube.com"],
-																			 ["www.facebook.com", "www.facebook.com"],
-																			 ["www.twitter.com", "www.twitter.com"],
-																			 ["www.wikipedia.org", "www.wikipedia.org"],
-																			 ["www.instagram.com", "www.instagram.com"],
-																			 ["www.netflix.com", "www.netflix.com"],
-																			 ["www.reddit.com", "www.reddit.com"],
-																			 ["www.github.com", "www.github.com"],
-																			 ["group", "自定义域名"],
-																			 ["99", "自定义域名"]
-																			 ];
-														option_smrt = [
-																   ["1", "1：【国内优先】"],
-																   ["2", "2：【国外优先】"],
-																   ["3", "3：【智能判断】"],
-																  ];
-														option_chng = [
-																	   ["1", "1：【国内优先】"],
-																	   ["2", "2：【国外优先】"],
-																	   ["3", "3：【智能判断】"],
-																	  ];
-														var ph1 = "需端口号如：8.8.8.8:53";
-														var ph3 = "# 填入自定义的dnsmasq设置，一行一个&#10;# 例如hosts设置：&#10;address=/weibo.com/2.2.2.2&#10;# 防DNS劫持设置：&#10;bogus-nxdomain=220.250.64.18"
-														$('#table_dns').forms([
-															// new_dns: chinadns-ng
-															{ title: '<em>DNS设置</em>', th:'2'},
-															{ title: '选择DNS主方案', hint:'153', class:'new_dns_main', multi: [
-																{ id: 'ss_basic_dns_plan', type:'select', func:'u', options:option_dnsp, style:'width:112px;', value:'1'},
-																{ suffix: '&nbsp;&nbsp;'}
-															]},
-															{ title: '&nbsp;&nbsp;*选择smartdns策略', hint:'154', class:'new_dns smrt', multi: [
-																{ id: 'ss_basic_smrt', type:'select', func:'u', options:option_smrt, style:'width:112px;', value:'1'},
-															]},
-															{ title: '&nbsp;&nbsp;*选择chn组DNS', class:'new_dns smrt', multi: [
-																{ suffix: '<select id="smartdns_chn_selector" class="input_option smartdns-dns-select" style="width:320px;"></select>'},
-																{ suffix: '&nbsp;&nbsp;<a type="button" class="ss_btn smartdns-add-btn" style="cursor:pointer" title="添加chn组DNS" onclick="add_smartdns_dns_item(\'chn\')"><span class="smartdns-add-icon" aria-hidden="true"></span></a>'},
-															]},
-															{ title: '&nbsp;&nbsp;*chn组DNS', class:'new_dns smrt', suffix: '<div id="smartdns_chn_chips" class="smartdns-chip-wrap"></div>'},
-															{ title: '&nbsp;&nbsp;*选择gfw组DNS', class:'new_dns smrt', multi: [
-																{ suffix: '<select id="smartdns_gfw_selector" class="input_option smartdns-dns-select" style="width:320px;"></select>'},
-																{ suffix: '&nbsp;&nbsp;<a type="button" class="ss_btn smartdns-add-btn" style="cursor:pointer" title="添加gfw组DNS" onclick="add_smartdns_dns_item(\'gfw\')"><span class="smartdns-add-icon" aria-hidden="true"></span></a>'},
-															]},
-															{ title: '&nbsp;&nbsp;*gfw组DNS', class:'new_dns smrt', suffix: '<div id="smartdns_gfw_chips" class="smartdns-chip-wrap"></div>'},
-															{ title: '&nbsp;&nbsp;*屏蔽BlockList域名解析', id:'ss_basic_block_resov', type:'checkbox', hint:'104', func:'u', value:false},
-															{ title: '&nbsp;&nbsp;*替换dnsmasq(实验特性)', id:'ss_basic_dns_serverx', type:'checkbox', hint:'105', func:'u', value:false},
-															{ title: '<em>其它DNS相关设置</em>', th:'2'},
-															{ title: 'DNS重定向', id:'ss_basic_dns_hijack', type:'checkbox', hint:'106', value:true},
-															{ title: 'DNS解析测试', rid: 'ss_dns_test', multi: [
-																{ suffix:'<a type="button" class="ss_btn" style="cursor:pointer" onclick="dns_test(1)">测试cdn</a>&nbsp;&nbsp;'},
-																{ suffix:'<a type="button" class="ss_btn" style="cursor:pointer" onclick="dns_test(2)">测试apple china</a>&nbsp;&nbsp;'},
-																{ suffix:'<a type="button" class="ss_btn" style="cursor:pointer" onclick="dns_test(3)">测试google china</a>&nbsp;&nbsp;'},
-																{ suffix:'<a type="button" class="ss_btn" style="cursor:pointer" onclick="dns_test(4)">测试gfwlist</a>&nbsp;&nbsp;'},
-																{ suffix:'<a type="button" class="ss_btn" style="cursor:pointer" onclick="dns_test(5)">测试chnlist</a>&nbsp;&nbsp;'},
-															]},
-															{ title: 'DNS解析测试(dig)', rid: 'ss_dig_test', multi: [
-																{ id: 'ss_basic_dig_opt', type:'select', func:'u', options:option_domain_for_dig, style:'width:240px;', value:'1'},
-																{ id: 'ss_basic_dig_opt_usr', type: 'text', style:'width:145px;', ph:'输入域名', value:''},
-																{ suffix: '&nbsp;&nbsp;' },
-																{ suffix:'<a type="button" class="ss_btn" style="cursor:pointer" onclick="dns_test(6)">dig</a>&nbsp;&nbsp;'},
-															]},
-															{ title: '重启dnsmasq', rid: 'ss_dnsmasq_restart', multi: [	
-																{ suffix:'<a type="button" class="ss_btn" style="cursor:pointer" onclick="restart_dnsmaq()">重启dnsmasq</a>'},
-															]},	
-															{ title: '自定义dnsmasq', rid: 'ss_dnsmasq_cus', id:'ss_dnsmasq', type:'textarea', hint:'34', rows:'12', ph:ph3},
-															]);
-															// chinadns-ng preset DNS servers moved to /res/dns_servers.json.js
+	<div id="ss_dns_table"></div>
+	<div class="ss-card-wrap">
+		<div class="ss-card">
+			<div class="ss-card-hd"><span class="ss-card-ttl">DNS 解析引擎</span><span class="ss-card-desc">选择解析国内外域名的核心引擎</span></div>
+			<table id="table_dns" width="100%" border="1" align="center" cellpadding="4" cellspacing="0" bordercolor="#6b8fa3" class="FormTable ss-card-tbl"></table>
+		</div>
+		<div class="ss-card chng">
+			<div class="ss-card-hd"><span class="ss-card-ttl">chinadns-ng 上游 DNS</span><span class="ss-card-desc">仅在「DNS 解析引擎」选为 chinadns-ng 时生效</span></div>
+			<table id="table_dns_chinadns" width="100%" border="1" align="center" cellpadding="4" cellspacing="0" bordercolor="#6b8fa3" class="FormTable ss-card-tbl">
+				<tbody>
+					<tr><th width="30%">国内 DNS upstream</th><td><textarea id="ss_split_dns_china_upstream" style="display:none;"></textarea><div id="rows_ss_split_dns_china_upstream" class="dns-up-rows"></div><a class="ss_btn dns-up-add" style="cursor:pointer;" onclick="add_dns_upstream_row('ss_split_dns_china_upstream','',true)">+ 添加</a></td></tr>
+					<tr><th>国外 / 可信 DNS upstream</th><td><textarea id="ss_split_dns_overseas_upstream" style="display:none;"></textarea><div id="rows_ss_split_dns_overseas_upstream" class="dns-up-rows"></div><a class="ss_btn dns-up-add" style="cursor:pointer;" onclick="add_dns_upstream_row('ss_split_dns_overseas_upstream','',true)">+ 添加</a></td></tr>
+					<tr><th>全局模式 DNS upstream（单一海外）</th><td><input type="hidden" id="ss_split_dns_global_upstream" /><div id="grow_ss_split_dns_global_upstream" class="dns-up-rows"></div></td></tr>
+					<tr><td colspan="2" style="font-size:11px;color:#9fb0c6;padding:6px 2px;line-height:1.6;">分流实例：国内域名走「国内 upstream」、国外域名走「国外 / 可信 upstream」（经代理）；全局实例：所有域名走「全局 upstream」（经代理）。每个 Mode 通过 dns_mode 字段选择走哪一轨。</td></tr>
+				</tbody>
+			</table>
+		</div>
+		<div class="ss-card smrt">
+			<div class="ss-card-hd"><span class="ss-card-ttl">smartdns 高级配置</span><span class="ss-card-desc">仅在「DNS 解析引擎」选为 smartdns 时生效</span></div>
+			<table id="table_dns_smartdns" width="100%" border="1" align="center" cellpadding="4" cellspacing="0" bordercolor="#6b8fa3" class="FormTable ss-card-tbl"></table>
+		</div>
+		<div class="ss-card">
+			<div class="ss-card-hd"><span class="ss-card-ttl">DNS 行为与高级</span><span class="ss-card-desc">重定向劫持、实验特性与自定义 dnsmasq 规则</span></div>
+			<table id="table_dns_behavior" width="100%" border="1" align="center" cellpadding="4" cellspacing="0" bordercolor="#6b8fa3" class="FormTable ss-card-tbl"></table>
+		</div>
+		<div class="ss-card">
+			<div class="ss-card-hd"><span class="ss-card-ttl">DNS 诊断工具</span><span class="ss-card-desc">测试解析结果、对指定域名做 dig、重启 dnsmasq</span></div>
+			<table id="table_dns_tools" width="100%" border="1" align="center" cellpadding="4" cellspacing="0" bordercolor="#6b8fa3" class="FormTable ss-card-tbl"></table>
+		</div>
+	</div>
+	<script type="text/javascript">
+/* doge.14: chinadns-ng 上游 DNS 可增删输入行 + 协议下拉（防止手填协议前缀出错）。
+   隐藏 textarea/input(原 id) 仍存"每行一条"真实 upstream 字符串，save()/conf2obj()
+   的 base64 通道一字不改；可见行的「协议下拉 + 地址框」任何增删改实时同步回隐藏框。
+   协议: udp(普通,裸地址) / tcp / tls(DoT) / https(DoH)。未知前缀按 udp 原样保留。 */
+var DNS_PROTOS = [["udp", "普通 (UDP)"], ["tcp", "TCP"], ["tls", "DoT 加密"], ["https", "DoH 加密"]];
+var DNS_ADDR_PH = {
+  "udp": "223.5.5.5  或  223.5.5.5#5353",
+  "tcp": "223.5.5.5  或  223.5.5.5#5353",
+  "tls": "dns.alidns.com@223.5.5.5  (域名@IP)",
+  "https": "dns.google/dns-query  (域名/路径)"
+};
+function dns_split_proto(line) {
+  line = String(line == null ? "" : line).replace(/^\s+|\s+$/g, "");
+  var m = line.match(/^(udp|tcp|tls|https):\/\/(.*)$/i);
+  if (m) return { proto: m[1].toLowerCase(), addr: m[2] };
+  return { proto: "udp", addr: line };
+}
+function dns_join_proto(proto, addr) {
+  addr = String(addr == null ? "" : addr).replace(/^\s+|\s+$/g, "");
+  if (addr === "") return "";
+  if (proto === "udp") return addr;
+  return proto + "://" + addr;
+}
+function dns_make_proto_select(proto) {
+  var sel = document.createElement("select");
+  sel.className = "dns-up-proto";
+  for (var i = 0; i < DNS_PROTOS.length; i++) {
+    var op = document.createElement("option");
+    op.value = DNS_PROTOS[i][0];
+    op.text = DNS_PROTOS[i][1];
+    if (DNS_PROTOS[i][0] === proto) op.selected = true;
+    sel.appendChild(op);
+  }
+  return sel;
+}
+function sync_dns_upstream_rows(key) {
+  var box = document.getElementById("rows_" + key);
+  var ta = document.getElementById(key);
+  if (!box || !ta) return;
+  var rows = box.getElementsByClassName("dns-up-row");
+  var lines = [];
+  for (var i = 0; i < rows.length; i++) {
+    var sel = rows[i].getElementsByClassName("dns-up-proto")[0];
+    var inp = rows[i].getElementsByClassName("dns-up-inp")[0];
+    if (!sel || !inp) continue;
+    var combined = dns_join_proto(sel.value, inp.value);
+    if (combined !== "") lines.push(combined);
+  }
+  ta.value = lines.join("\n");
+}
+function add_dns_upstream_row(key, val, focus) {
+  var box = document.getElementById("rows_" + key);
+  if (!box) return;
+  var parsed = dns_split_proto(val || "");
+  var row = document.createElement("div");
+  row.className = "dns-up-row";
+  var sel = dns_make_proto_select(parsed.proto);
+  var inp = document.createElement("input");
+  inp.type = "text";
+  inp.className = "dns-up-inp";
+  inp.value = parsed.addr;
+  inp.placeholder = DNS_ADDR_PH[parsed.proto] || "";
+  inp.oninput = function () { sync_dns_upstream_rows(key); };
+  sel.onchange = function () { inp.placeholder = DNS_ADDR_PH[sel.value] || ""; sync_dns_upstream_rows(key); };
+  var rmBtn = document.createElement("a");
+  rmBtn.className = "dns-up-del";
+  rmBtn.title = "删除这条 DNS";
+  rmBtn.innerHTML = "&times;";
+  rmBtn.onclick = function () {
+    box.removeChild(row);
+    if (box.getElementsByClassName("dns-up-row").length === 0) { add_dns_upstream_row(key, "", false); }
+    sync_dns_upstream_rows(key);
+  };
+  row.appendChild(sel);
+  row.appendChild(inp);
+  row.appendChild(rmBtn);
+  box.appendChild(row);
+  if (focus) inp.focus();
+}
+function render_one_dns_upstream(key) {
+  var ta = document.getElementById(key);
+  var box = document.getElementById("rows_" + key);
+  if (!ta || !box) return;
+  box.innerHTML = "";
+  var raw = (ta.value || "").split("\n");
+  var added = 0;
+  for (var i = 0; i < raw.length; i++) {
+    var v = raw[i].replace(/\r$/, "").replace(/^\s+|\s+$/g, "");
+    if (v === "") continue;
+    add_dns_upstream_row(key, v, false);
+    added++;
+  }
+  if (added === 0) add_dns_upstream_row(key, "", false);
+}
+function sync_dns_global_upstream() {
+  var box = document.getElementById("grow_ss_split_dns_global_upstream");
+  var ta = document.getElementById("ss_split_dns_global_upstream");
+  if (!box || !ta) return;
+  var sel = box.getElementsByClassName("dns-up-proto")[0];
+  var inp = box.getElementsByClassName("dns-up-inp")[0];
+  if (!sel || !inp) return;
+  ta.value = dns_join_proto(sel.value, inp.value);
+}
+function render_dns_global_upstream() {
+  var ta = document.getElementById("ss_split_dns_global_upstream");
+  var box = document.getElementById("grow_ss_split_dns_global_upstream");
+  if (!ta || !box) return;
+  box.innerHTML = "";
+  var parsed = dns_split_proto((ta.value || "").split("\n")[0] || "");
+  var row = document.createElement("div");
+  row.className = "dns-up-row";
+  var sel = dns_make_proto_select(parsed.proto);
+  var inp = document.createElement("input");
+  inp.type = "text";
+  inp.className = "dns-up-inp";
+  inp.value = parsed.addr;
+  inp.placeholder = DNS_ADDR_PH[parsed.proto] || "";
+  inp.oninput = function () { sync_dns_global_upstream(); };
+  sel.onchange = function () { inp.placeholder = DNS_ADDR_PH[sel.value] || ""; sync_dns_global_upstream(); };
+  row.appendChild(sel);
+  row.appendChild(inp);
+  box.appendChild(row);
+}
+function render_dns_upstream_rows() {
+  render_one_dns_upstream("ss_split_dns_china_upstream");
+  render_one_dns_upstream("ss_split_dns_overseas_upstream");
+  render_dns_global_upstream();
+}
+</script>
+			<table id="table_dns_legacy" style="display:none;">
+		<script type="text/javascript">
+		option_dnsp = [
+				  ["1", "chinadns-ng"]
+				  ,["2", "smartdns"]
+				  ];
+			option_domain_for_dig = [
+								 ["group", "国内域名"],
+								 ["www.baidu.com", "www.baidu.com"],
+								 ["www.sina.com.cn", "www.sina.com.cn"],
+								 ["www.sohu.com", "www.sohu.com"],
+								 ["www.163.com", "www.163.com"],
+								 ["www.qq.com", "www.qq.com"],
+								 ["www.taobao.com", "www.taobao.com"],
+								 ["www.jd.com", "www.jd.com"],
+								 ["www.bilibili.com", "www.bilibili.com"],
+								 ["www.bing.com", "www.bing.com"],
+								 ["group", "国外域名"],
+								 ["www.google.com", "www.google.com"],
+								 ["www.google.com.hk", "www.google.com.hk"],
+								 ["www.youtube.com", "www.youtube.com"],
+								 ["www.facebook.com", "www.facebook.com"],
+								 ["www.twitter.com", "www.twitter.com"],
+								 ["www.wikipedia.org", "www.wikipedia.org"],
+								 ["www.instagram.com", "www.instagram.com"],
+								 ["www.netflix.com", "www.netflix.com"],
+								 ["www.reddit.com", "www.reddit.com"],
+								 ["www.github.com", "www.github.com"],
+								 ["group", "自定义域名"],
+								 ["99", "自定义域名"]
+								 ];
+			option_smrt = [
+				   ["1", "1：【国内优先】"],
+				   ["2", "2：【国外优先】"],
+				   ["3", "3：【智能判断】"],
+				  ];
+			option_chng = [
+						   ["1", "1：【国内优先】"],
+						   ["2", "2：【国外优先】"],
+						   ["3", "3：【智能判断】"],
+						  ];
+			var ph1 = "需端口号如：8.8.8.8:53";
+			var ph3 = "# 填入自定义的dnsmasq设置，一行一个&#10;# 例如hosts设置：&#10;address=/weibo.com/2.2.2.2&#10;# 防DNS劫持设置：&#10;bogus-nxdomain=220.250.64.18"
+			$('#table_dns').forms([
+				{ title: '选择DNS主方案', hint:'153', class:'new_dns_main', multi: [
+					{ id: 'ss_basic_dns_plan', type:'select', func:'u', options:option_dnsp, style:'width:112px;', value:'1'},
+					{ suffix: '&nbsp;&nbsp;'}
+				]},
+				]);
+			$('#table_dns_smartdns').forms([
+				{ title: 'smartdns 策略', hint:'154', class:'new_dns smrt', multi: [
+					{ id: 'ss_basic_smrt', type:'select', func:'u', options:option_smrt, style:'width:112px;', value:'1'},
+				]},
+				{ title: 'chn 组 DNS', class:'new_dns smrt', multi: [
+					{ suffix: '<select id="smartdns_chn_selector" class="input_option smartdns-dns-select" style="width:320px;"></select>'},
+					{ suffix: '&nbsp;&nbsp;<a type="button" class="ss_btn smartdns-add-btn" style="cursor:pointer" title="添加chn组DNS" onclick="add_smartdns_dns_item(\'chn\')"><span class="smartdns-add-icon" aria-hidden="true"></span></a>'},
+				]},
+				{ title: 'chn 组当前列表', class:'new_dns smrt', suffix: '<div id="smartdns_chn_chips" class="smartdns-chip-wrap"></div>'},
+				{ title: 'gfw 组 DNS', class:'new_dns smrt', multi: [
+					{ suffix: '<select id="smartdns_gfw_selector" class="input_option smartdns-dns-select" style="width:320px;"></select>'},
+					{ suffix: '&nbsp;&nbsp;<a type="button" class="ss_btn smartdns-add-btn" style="cursor:pointer" title="添加gfw组DNS" onclick="add_smartdns_dns_item(\'gfw\')"><span class="smartdns-add-icon" aria-hidden="true"></span></a>'},
+				]},
+				{ title: 'gfw 组当前列表', class:'new_dns smrt', suffix: '<div id="smartdns_gfw_chips" class="smartdns-chip-wrap"></div>'},
+				]);
+			$('#table_dns_behavior').forms([
+				{ title: '屏蔽 BlockList 域名解析', id:'ss_basic_block_resov', type:'checkbox', hint:'104', func:'u', value:false},
+				{ title: '替换 dnsmasq（实验特性）', id:'ss_basic_dns_serverx', type:'checkbox', hint:'105', func:'u', value:false},
+				{ title: 'DNS 重定向', id:'ss_basic_dns_hijack', type:'checkbox', hint:'106', value:true},
+				{ title: '自定义 dnsmasq', rid: 'ss_dnsmasq_cus', id:'ss_dnsmasq', type:'textarea', hint:'34', rows:'12', ph:ph3},
+				]);
+			$('#table_dns_tools').forms([
+				{ title: 'DNS 解析测试', rid: 'ss_dns_test', multi: [
+					{ suffix:'<a type="button" class="ss_btn" style="cursor:pointer" onclick="dns_test(1)">测试cdn</a>&nbsp;&nbsp;'},
+					{ suffix:'<a type="button" class="ss_btn" style="cursor:pointer" onclick="dns_test(2)">测试apple china</a>&nbsp;&nbsp;'},
+					{ suffix:'<a type="button" class="ss_btn" style="cursor:pointer" onclick="dns_test(3)">测试google china</a>&nbsp;&nbsp;'},
+					{ suffix:'<a type="button" class="ss_btn" style="cursor:pointer" onclick="dns_test(4)">测试gfwlist</a>&nbsp;&nbsp;'},
+					{ suffix:'<a type="button" class="ss_btn" style="cursor:pointer" onclick="dns_test(5)">测试chnlist</a>&nbsp;&nbsp;'},
+				]},
+				{ title: 'DNS 解析测试(dig)', rid: 'ss_dig_test', multi: [
+					{ id: 'ss_basic_dig_opt', type:'select', func:'u', options:option_domain_for_dig, style:'width:240px;', value:'1'},
+					{ id: 'ss_basic_dig_opt_usr', type: 'text', style:'width:145px;', ph:'输入域名', value:''},
+					{ suffix: '&nbsp;&nbsp;' },
+					{ suffix:'<a type="button" class="ss_btn" style="cursor:pointer" onclick="dns_test(6)">dig</a>&nbsp;&nbsp;'},
+				]},
+				{ title: '重启 dnsmasq', rid: 'ss_dnsmasq_restart', multi: [
+					{ suffix:'<a type="button" class="ss_btn" style="cursor:pointer" onclick="restart_dnsmaq()">重启dnsmasq</a>'},
+				]},
+				]);
+			// chinadns-ng preset DNS servers moved to /res/dns_servers.json.js
 
-														var isp_dns_raw='<% nvram_get("wan0_dns"); %>';
-														if(!isp_dns_raw){
-															var isp_dns_raw='<% nvram_get("wan0_dns_r"); %>';
-														}
-														if(!isp_dns_raw){
-															var isp_dns_raw='<% nvram_get("wan_dns"); %>';
-														}
-														if(!isp_dns_raw){
-															var isp_dns_raw='<% nvram_get("wan0_xdns"); %>';
-														}
-														if(!isp_dns_raw){
-															var isp_dns_raw="223.5.5.5 223.6.6.6";
-														}
-														var isp_dns_1=isp_dns_raw.split(" ")[0];
-														var isp_dns_2=isp_dns_raw.split(" ")[1];
-														validator.ipv4_addr(isp_dns_1);
-													</script>
-												</table>
-											</div>
+		var isp_dns_raw='<% nvram_get("wan0_dns"); %>';
+		if(!isp_dns_raw){
+			var isp_dns_raw='<% nvram_get("wan0_dns_r"); %>';
+		}
+		if(!isp_dns_raw){
+			var isp_dns_raw='<% nvram_get("wan_dns"); %>';
+		}
+		if(!isp_dns_raw){
+			var isp_dns_raw='<% nvram_get("wan0_xdns"); %>';
+		}
+		if(!isp_dns_raw){
+			var isp_dns_raw="223.5.5.5 223.6.6.6";
+		}
+		var isp_dns_1=isp_dns_raw.split(" ")[0];
+		var isp_dns_2=isp_dns_raw.split(" ")[1];
+		validator.ipv4_addr(isp_dns_1);
+		</script>
+	</table>
+</div>
 											<div id="tablet_4" style="display: none;">
 												<table id="table_wblist" width="100%" border="1" align="center" cellpadding="4" cellspacing="0" bordercolor="#6b8fa3" class="FormTable">
 													<script type="text/javascript">
@@ -18327,15 +17972,6 @@ function toggleKeyMask(o, show){
 														<tr><td colspan="2" style="padding:6px;"><input type="button" class="ss_btn" style="cursor:pointer;" onclick="split_v2_new_rule();" value="新建 Rule" />&nbsp;&nbsp;<a class="hintstyle" style="color:#03a9f4;font-size:11px;" href="javascript:void(0);" onclick="openssHint(216);"><u>auto-update 说明</u></a></td></tr>
 													</tbody>
 												</table>
-												<table id="table_split_dns" width="100%" border="1" align="center" cellpadding="4" cellspacing="0" bordercolor="#6b8fa3" class="FormTable" style="margin-top:8px;margin-bottom:4px;">
-													<thead><tr><td class="IPQOSTitle" colspan="2" align="left" style="font-weight:bold;padding:6px 10px;">DNS 设置 V2 (双轨) <a class="hintstyle" style="color:#03a9f4;font-weight:normal;" href="javascript:void(0);" onclick="openssHint(213);"><u>说明</u></a></td></tr></thead>
-													<tbody>
-														<tr><th width="30%">分流 DNS upstream (国内)</th><td><textarea id="ss_split_dns_china_upstream" rows="3" cols="60" style="width:90%;font-family:monospace;" placeholder="每行一条：8.8.8.8 / tcp://8.8.8.8 / https://dns.google/dns-query"></textarea></td></tr>
-														<tr><th>分流 DNS upstream (国外)</th><td><textarea id="ss_split_dns_overseas_upstream" rows="3" cols="60" style="width:90%;font-family:monospace;" placeholder="每行一条：8.8.8.8 / tcp://8.8.8.8 / https://dns.google/dns-query"></textarea></td></tr>
-														<tr><th>全局 DNS upstream (单一海外)</th><td><input type="text" id="ss_split_dns_global_upstream" style="width:60%;font-family:monospace;" placeholder="单条 upstream：8.8.8.8 / tcp://8.8.8.8 / https://dns.google/dns-query" /></td></tr>
-														<tr><td colspan="2" style="font-size:11px;color:#A0A0A0;padding:8px;">分流 DNS = chinadns-ng 智能分流实例；全局 DNS = 单一海外 upstream 实例。Mode 通过 <code>dns_mode</code> 字段选择走哪一轨。</td></tr>
-													</tbody>
-												</table>
 											</div>
 											<div class="apply_gen" id="log_switch_panel" style="display:none;padding-top:10px;">
 												<div class="log-switch-bar">
@@ -18348,7 +17984,6 @@ function toggleKeyMask(o, show){
 											</div>
 											<div id="apply_button" class="apply_gen">
 												<input class="button_gen" type="button" onclick="save()" value="保存&应用">
-												<input style="margin-left:10px" id="ss_failover_save" class="button_gen" onclick="save_failover()" type="button" value="保存本页设置">
 											</div>
 										</td>
 									</tr>

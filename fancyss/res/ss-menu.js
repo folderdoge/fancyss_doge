@@ -575,9 +575,6 @@ function LoadingSSProgress(seconds) {
 	} else if (action == 18) {
 		document.getElementById("loading_block3").innerHTML = "设置节点ping ..."
 		$("#loading_block2").html("<li><font color='#ffcc00'>请勿刷新本页面，应用中 ...</font></li>");
-	} else if (action == 19) {
-		document.getElementById("loading_block3").innerHTML = "设置故障转移 ..."
-		$("#loading_block2").html("<li><font color='#ffcc00'>请勿刷新本页面，应用中 ...</font></li>");
 	} else if (action == 20) {
 		document.getElementById("loading_block3").innerHTML = "XRay 二进制文件更新 ..."
 		$("#loading_block2").html("<li><font color='#ffcc00'>请勿刷新本页面，更新中 ...</font></li>");
@@ -647,7 +644,7 @@ function openssHint(itemNum, flag) {
 			statusmenu = "<li>插件运行状态会定时请求你在【web延迟测试】中设置的检测网址，只取HTTP响应头，不下载完整网页；显示的延迟是HTTP响应时间，不是传统ping。</li>"
 		statusmenu += "<br /><li><font color='#00F'>未开启IPv6代理：</font>国外检测优先使用 <font color='#669900'>-x socks5://127.0.0.1:23456</font>，主要检查节点可用性和路由器本机DNS解析是否正常，这是当前IPv4场景的默认最佳实践。</li>"
 		statusmenu += "<br /><li><font color='#00F'>开启IPv6代理：</font>国外检测会拆分为【国外IPv4】和【国外IPv6】；两项都会直接走透明代理链路，不再使用 <font color='#669900'>-x socks5</font>，这样才能正确检测IPv6透明代理，同时把DNS、ipset、iptables、透明代理一起覆盖到。</li>"
-		statusmenu += "<br /><li><font color='#00F'>提示：</font>web 延迟测试地址使用插件内置检测网址；开启IPv6代理时，建议优先选择支持 IPv6 的国外检测网址。故障转移中的国外状态历史仍然只记录IPv4结果。</li>"
+		statusmenu += "<br /><li><font color='#00F'>提示：</font>web 延迟测试地址使用插件内置检测网址；开启IPv6代理时，建议优先选择支持 IPv6 的国外检测网址。</li>"
 		statusmenu += "<br /><li><font color='#00F'>边界说明：</font>这里的检测结果用于判断当前 fancyss 运行链路对测试域名的访问情况，不等同于节点本身可用性检测；节点可用性请结合 web 延迟测试、详细状态和终端实际访问一起判断。</li>"
 		statusmenu += "<br /><br /><b><font color='#CC0066'>常见结果说明：</font></b>"
 		statusmenu += "<br />&nbsp;&nbsp;&nbsp;&nbsp;<font color='#00F'>1. 国外IPv4 √，国外IPv6 X：</font>节点大概率不支持IPv6，或者远端协议/服务器未提供IPv6能力，建议关闭IPv6代理。"
@@ -658,7 +655,7 @@ function openssHint(itemNum, flag) {
 		statusmenu += "<br />&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;5.1 刷新终端DNS缓存/浏览器缓存，手机可开关飞行模式后重试；"
 		statusmenu += "<br />&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;5.2 把终端自定义DNS改为自动获取，避免本地DNS污染或绕过路由器DNS；"
 		statusmenu += "<br />&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;5.3 清理终端hosts或其它本地解析覆盖规则，避免域名被错误指向。"
-		statusmenu += "<br /><br />如果需要进一步定位，请结合【详细状态】和【故障转移】-【查看历史状态】一起判断。"
+		statusmenu += "<br /><br />如果需要进一步定位，请结合【详细状态】一起判断。"
 		_caption = "状态检测";
 	}
 	if (itemNum == 1) {
@@ -1074,17 +1071,6 @@ function openssHint(itemNum, flag) {
 		statusmenu += "<br />&nbsp;&nbsp;&nbsp;&nbsp;4. 前置节点不能与落地节点相同。<br /><br />";
 		statusmenu += "<b><font color='#669900'>失败处理：</font></b>构建或 xray 自检失败时，自动回滚为非链式（仅落地节点直连），插件依然可用。";
 		_caption = "前置节点 (链式代理)";
-	} else if (itemNum == 201) {
-		width = "560px";
-		statusmenu = "<b>备用节点组合列表</b>用于故障转移时按列表顺序切换备选 (前置, 落地) 组合。<br /><br />";
-		statusmenu += "<b><font color='#CC0066'>切换规则：</font></b>故障触发时按列表顺序选择第一个【可用】的组合并切换。<br /><br />";
-		statusmenu += "<b><font color='#CC0066'>状态说明：</font></b>";
-		statusmenu += "<br />&nbsp;&nbsp;&nbsp;&nbsp;启用中 = 当前正在运行的组合；";
-		statusmenu += "<br />&nbsp;&nbsp;&nbsp;&nbsp;可用 = 等待被切换；";
-		statusmenu += "<br />&nbsp;&nbsp;&nbsp;&nbsp;已失效 = 本轮已被判定故障，用户主动重启插件时清除。<br /><br />";
-		statusmenu += "<b>前置为空</b>表示直连模式（不启用链式代理）。<br /><br />";
-		statusmenu += "<b><font color='#669900'>所有组合都失效时</font></b>保持当前断网状态，便于用户察觉问题。";
-		_caption = "备用节点组合";
 	} else if (itemNum == 202) {
 		width = "560px";
 		statusmenu = "<b>开启后，以下域名会被强制加入白名单（不走代理），与当前主模式（GFW / 智能 / 全局 / 回国等）无关：</b><br /><br />";

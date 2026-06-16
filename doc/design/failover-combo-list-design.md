@@ -1,6 +1,8 @@
 # 故障转移备用组合列表 — 设计文档
 
-> 状态：**设计已定稿，已实施完成**（详见 [doc/implementation/failover-combo-implementation.md](../implementation/failover-combo-implementation.md)）。本文档记录与用户达成共识的最终方案。
+> 🗄️ **已归档（ARCHIVED）— 2026-06-15 / `3.5.28-doge.14-beta.3`**：故障转移功能已整体物理删除，本设计描述的「备用组合列表」机制不再存在于代码中。**仅作历史参考**，不要据此修改代码；如未来重做故障转移，作为全新设计重写。
+
+> 状态：~~设计已定稿，已实施完成~~ → **已于 doge.14-beta.3 物理删除**（详见 [doc/implementation/failover-combo-implementation.md](../implementation/failover-combo-implementation.md) 顶部归档说明）。本文档记录当时与用户达成共识的最终方案，现作历史保留。
 >
 > 关联背景：本 fork 的核心新功能是「链式代理（前置→落地）」。当前的故障转移逻辑只切换"落地节点"，对前置无感知；且切换策略写死了"备用节点 / 下个节点 / web 延迟最低"三选一。本设计将其重构为「备用组合列表」模式。
 

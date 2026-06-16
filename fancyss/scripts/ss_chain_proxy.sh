@@ -140,10 +140,15 @@ fss_chain_build_stream_settings() {
 		elif [ "${alpn_http}" = "1" ]; then
 			alpn_arr='["http/1.1"]'
 		fi
-		tls_block=$(jq -n --arg sni "${sni}" --argjson ai "$(fss_chain_bool_json "${ai}")" --argjson alpn "${alpn_arr}" '
+		# allowInsecure removed by Xray (2026.x); use pinnedPeerCertSha256/verifyPeerCertByName (FORK doge.14)
+		local pcs vcn
+		pcs=$(fss_get_node_field_plain "${id}" "xray_pcs" 2>/dev/null)
+		vcn=$(fss_get_node_field_plain "${id}" "xray_vcn" 2>/dev/null)
+		tls_block=$(jq -n --arg sni "${sni}" --arg pcs "${pcs}" --arg vcn "${vcn}" --argjson alpn "${alpn_arr}" '
 			{
 				serverName: $sni,
-				allowInsecure: $ai,
+				pinnedPeerCertSha256: $pcs,
+				verifyPeerCertByName: $vcn,
 				alpn: (if ($alpn|length) == 0 then null else $alpn end)
 			} | with_entries(select(.value != null and .value != ""))
 		')

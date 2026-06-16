@@ -252,14 +252,6 @@ GET_INTERVAL() {
 	esac
 }
 
-GET_FAILOVER(){
-	if [ "${ss_failover_enable}" == "1" ]; then
-		echo "开启，状态检测时间间隔: $(GET_INTERVAL ${ss_basic_interval})"
-	else
-		echo "关闭"
-	fi
-}
-
 # FORK doge.10: 链式代理状态行（前置节点 ID + 名字 + 类型 + 运行时状态）
 GET_CHAIN_PROXY_STATUS(){
 	local front_id="${ssconf_basic_node_front}"
@@ -610,10 +602,6 @@ GET_PROC_UPTIME_MULTI() {
 }
 
 GET_STATUS_TOOL_MODE() {
-	if [ "${ss_failover_enable}" = "1" ]; then
-		echo "daemon"
-		return 0
-	fi
 	case "$(dbus get ss_basic_status_mode 2>/dev/null)" in
 	serve|"")
 		echo "serve"
@@ -977,7 +965,6 @@ check_status() {
 	echo "🟠 规则版本：gfwlist ${GFWVERSIN} | chnlist ${CDNVERSIN} | chnroute ${CHNVERSIN}"
 	echo "🟠 规则更新：$(GET_RULE_UPDATE)"
 	echo "🟠 订阅更新：$(GET_SUBS_UPDATE)"
-	echo "🟠 故障转移：$(GET_FAILOVER)"
 	echo "🟠 链式代理：$(GET_CHAIN_PROXY_STATUS)"
 	echo "🟠 分流架构V2：$(GET_SPLIT_V2_STATUS)"
 	echo "🟠 直连白名单：$(GET_DIRECT_ASUSGO)"

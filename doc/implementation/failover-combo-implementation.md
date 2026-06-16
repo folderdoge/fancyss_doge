@@ -1,5 +1,7 @@
 # 故障转移备用组合列表 — 实施文档
 
+> 🗄️ **已归档（ARCHIVED）— 2026-06-15 / `3.5.28-doge.14-beta.3`**：故障转移功能已整体物理删除（~1500 行 / 14 文件 + ASP 标签页）。本文档描述的「备用组合列表」机制、所有 `ss_failover_*` / `fss_failover_*` key、`ss_status_main.sh` 轮询守护、`ss_cron_restart.sh` wrapper、`ss_status_reset.sh` 均已不存在；相关 dbus key 由 `install.sh::purge_failover_remnants()` 一次性清除（幂等标志 `fss_failover_purged_v1`）。**本文档仅作历史参考保留，不要据此修改代码**；如未来重新引入故障转移，应作为全新设计重写。
+
 > 关联设计文档：[doc/design/failover-combo-list-design.md](../design/failover-combo-list-design.md)
 >
 > 本文记录"实际改了哪些代码、写在哪里"。新会话过来维护这块功能时，先扫一遍 §2 文件清单 + §3 dbus key 清单，然后回头看具体函数实现即可。

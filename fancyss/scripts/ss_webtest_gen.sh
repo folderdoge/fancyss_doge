@@ -546,7 +546,7 @@ wt_gen_vmess_outbound() {
 			fi
 
 			local tls="{
-				\"allowInsecure\": $(get_function_switch ${v2ray_network_security_ai})
+				\"allowInsecure\": false
 				,\"alpn\": ${apln}
 				,\"serverName\": $(wt_get_value_null ${v2ray_network_security_sni})
 				}"
@@ -754,7 +754,7 @@ wt_gen_vless_outbound() {
 						}"
 			else
 				local _tmp="{
-						\"allowInsecure\": true
+						\"allowInsecure\": false
 						,\"alpn\": ${apln}
 						,\"serverName\": $(wt_get_value_null ${xray_network_security_sni})
 						,\"fingerprint\": $(wt_get_value_empty ${xray_fingerprint})
@@ -986,7 +986,7 @@ wt_gen_trojan_outbound() {
 					"serverName": $(wt_get_value_null ${trojan_sni}),
 					"pinnedPeerCertSha256": $(wt_get_value_empty ${trojan_pcs}),
 					"verifyPeerCertByName": $(wt_get_value_empty ${trojan_vcn}),
-					"allowInsecure": $(get_function_switch ${trojan_ai})
+					"allowInsecure": false
 				},
 				"wsSettings": ${_trojan_ws},
 				"sockopt": {"tcpFastOpen": $(get_function_switch ${trojan_tfo})}
@@ -1056,7 +1056,7 @@ wt_gen_hy2_outbound() {
 		EOF
 	else
 		cat >>"${out_file}" <<-EOF
-						,"allowInsecure": true
+						,"allowInsecure": false
 		EOF
 	fi
 	cat >>"${out_file}" <<-EOF

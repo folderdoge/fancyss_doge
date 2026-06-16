@@ -129,10 +129,6 @@ fss_base_load_current_node_env() {
 	fss_export_current_node_env "${cur_node}" ${base_1} ${base_2}
 	ssconf_basic_node=${cur_node}
 	export ss_basic_mode="${FSS_GLOBAL_BASIC_MODE}"
-	if [ "$(fss_detect_storage_schema)" = "2" ];then
-		ss_failover_s4_3=$(fss_get_failover_node_id)
-		export ss_failover_s4_3
-	fi
 	FSS_CURRENT_NODE_ENV_LOADED=1
 }
 
@@ -674,9 +670,7 @@ __valid_port() {
 
 close_in_five() {
 	# 5秒关闭功能是为了让用户注意到关闭过程，从而及时得知错误信息
-	# 插件在运行过程中不能使用此功能，不然插件被关闭了，无法进行故障转移功能
 	# 在某些条件无法达成时使用5s关闭功能，比如系统配置为中继模式，jffs2_scripts未开启
-	# 节点挂掉等其它情况，不建议使用，不然影响故障转移功能
 	local flag=$1
 	echo_date "插件将在5秒后自动关闭！！"
 	local i=5
@@ -699,11 +693,6 @@ close_in_five() {
 		dbus set ss_basic_wait=1
 		# set ss_basic_status=1，because some scripts still running in background
 		dbus set ss_basic_status=1
-		if [ "$ss_failover_enable" == "1" ]; then
-			echo "=========================================== start/restart ==========================================" >>/tmp/upload/ssf_status.txt
-			echo "=========================================== start/restart ==========================================" >>/tmp/upload/ssc_status.txt
-			run start-stop-daemon -S -q -b -x /koolshare/scripts/ss_status_main.sh
-		fi
 		echo_date "科学上网插件已关闭！！"
 	fi
 	echo_date "======================= 梅林固件 - 【科学上网】 ========================"

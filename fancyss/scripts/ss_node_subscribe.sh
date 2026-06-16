@@ -38,17 +38,11 @@ HY2_DL_SPEED=$(dbus get ss_basic_hy2_dl_speed)
 HY2_TFO_SWITCH=$(dbus get ss_basic_hy2_tfo_switch)
 HY2_CG_OPT=$(dbus get ss_basic_hy2_cg_opt)
 CURR_NODE=""
-FAILOVER_NODE=""
 CURR_NODE_NAME=""
 CURR_NODE_TYPE=""
 CURR_NODE_SERVER=""
 CURR_NODE_PORT=""
 CURR_NODE_IDENTITY=""
-FAILOVER_NODE_NAME=""
-FAILOVER_NODE_TYPE=""
-FAILOVER_NODE_SERVER=""
-FAILOVER_NODE_PORT=""
-FAILOVER_NODE_IDENTITY=""
 SUB_REWRITE_ALL=0
 SUB_FAST_APPEND=0
 SUB_FAST_APPEND_USED=0
@@ -2429,10 +2423,8 @@ sub_refresh_node_state(){
 	SEQ_NU=$(sub_list_node_ids | sed '/^$/d' | wc -l)
 	if [ "${SUB_STORAGE_SCHEMA}" = "2" ];then
 		CURR_NODE=$(fss_get_current_node_id)
-		FAILOVER_NODE=$(fss_get_failover_node_id)
 	else
 		CURR_NODE=$(dbus get ssconf_basic_node)
-		FAILOVER_NODE=$(dbus get ss_failover_s4_3)
 	fi
 	[ -z "${CURR_NODE}" ] && CURR_NODE=$(sub_list_node_ids | sed -n '1p')
 	if [ -n "${CURR_NODE}" ] && ! sub_node_exists_in_order "${CURR_NODE}";then
@@ -2511,7 +2503,6 @@ sub_node_exists_in_order(){
 
 sub_capture_active_nodes(){
 	local current_snapshot=""
-	local failover_snapshot=""
 	local sep="$(printf '\037')"
 	sub_refresh_node_state
 	current_snapshot=$(sub_get_node_snapshot_plain "${CURR_NODE}" 2>/dev/null)
@@ -2519,11 +2510,6 @@ sub_capture_active_nodes(){
 	${current_snapshot}
 	EOF
 	[ -n "${CURR_NODE_IDENTITY}" ] || CURR_NODE_IDENTITY=$(sub_get_node_identity_plain "${CURR_NODE}")
-	failover_snapshot=$(sub_get_node_snapshot_plain "${FAILOVER_NODE}" 2>/dev/null)
-	IFS="${sep}" read -r FAILOVER_NODE_NAME FAILOVER_NODE_TYPE FAILOVER_NODE_SERVER FAILOVER_NODE_PORT FAILOVER_NODE_IDENTITY <<-EOF
-	${failover_snapshot}
-	EOF
-	[ -n "${FAILOVER_NODE_IDENTITY}" ] || FAILOVER_NODE_IDENTITY=$(sub_get_node_identity_plain "${FAILOVER_NODE}")
 }
 
 sub_find_node_id_in_file(){
@@ -3464,17 +3450,13 @@ sub_reference_notice_commit(){
 sub_collect_runtime_reference_notice_after_rewrite(){
 	local input_file="$1"
 	local matched_current=""
-	local matched_failover=""
 	local restored_current=""
-	local restored_failover=""
 	local restored_current_name=""
-	local restored_failover_name=""
 
 	[ "${SUB_STORAGE_SCHEMA}" = "2" ] || return 0
 	[ -f "${input_file}" ] || return 0
 	if [ -n "${SUB_NODE_TOOL_PLAN_FILE_CURRENT}" ] && [ -f "${SUB_NODE_TOOL_PLAN_FILE_CURRENT}" ];then
 		restored_current="$(awk -F '\t' '$1 == "current" {print $4; exit}' "${SUB_NODE_TOOL_PLAN_FILE_CURRENT}" 2>/dev/null)"
-		restored_failover="$(awk -F '\t' '$1 == "failover" {print $4; exit}' "${SUB_NODE_TOOL_PLAN_FILE_CURRENT}" 2>/dev/null)"
 		if [ -n "${CURR_NODE}" ] && [ -n "${restored_current}" ] && [ "${restored_current}" != "${CURR_NODE}" ];then
 			restored_current_name="$(sub_get_node_field_plain "${restored_current}" name)"
 			sub_reference_notice_add \
@@ -3485,36 +3467,13 @@ sub_collect_runtime_reference_notice_after_rewrite(){
 				"${restored_current}" \
 				"fallback"
 		fi
-		if [ -n "${FAILOVER_NODE}" ];then
-			if [ -n "${restored_failover}" ] && [ "${restored_failover}" != "${FAILOVER_NODE}" ];then
-				restored_failover_name="$(sub_get_node_field_plain "${restored_failover}" name)"
-				sub_reference_notice_add \
-					"failover" \
-					"故障转移节点已调整" \
-					"原故障转移节点【${FAILOVER_NODE_NAME:-ID ${FAILOVER_NODE}}】已无法恢复，系统已改为【${restored_failover_name:-ID ${restored_failover}}】。请确认故障转移配置。" \
-					"${FAILOVER_NODE}" \
-					"${restored_failover}" \
-					"fallback"
-			elif [ -z "${restored_failover}" ];then
-				sub_reference_notice_add \
-					"failover" \
-					"故障转移节点已失效" \
-					"原故障转移节点【${FAILOVER_NODE_NAME:-ID ${FAILOVER_NODE}}】已无法恢复，当前已清空故障转移目标，请重新选择。" \
-					"${FAILOVER_NODE}" \
-					"" \
-					"missing"
-			fi
-		fi
 		return 0
 	fi
 	if sub_node_exists_in_order "${CURR_NODE}";then
-		if [ -z "${FAILOVER_NODE}" ] || sub_node_exists_in_order "${FAILOVER_NODE}";then
-			return 0
-		fi
+		return 0
 	fi
 
 	restored_current="$(fss_get_current_node_id 2>/dev/null)"
-	restored_failover="$(fss_get_failover_node_id 2>/dev/null)"
 
 	if [ -n "${CURR_NODE}" ];then
 		matched_current="$(sub_find_node_id_by_identity_in_file "${input_file}" "${CURR_NODE_IDENTITY}")"
@@ -3532,33 +3491,6 @@ sub_collect_runtime_reference_notice_after_rewrite(){
 				"fallback"
 		fi
 	fi
-
-	if [ -n "${FAILOVER_NODE}" ];then
-		matched_failover="$(sub_find_node_id_by_identity_in_file "${input_file}" "${FAILOVER_NODE_IDENTITY}")"
-		if [ -z "${matched_failover}" ];then
-			matched_failover="$(sub_find_node_id_in_file "${input_file}" "${FAILOVER_NODE_NAME}" "${FAILOVER_NODE_TYPE}" "${FAILOVER_NODE_SERVER}" "${FAILOVER_NODE_PORT}")"
-		fi
-		if [ -z "${matched_failover}" ];then
-			if [ -n "${restored_failover}" ] && [ "${restored_failover}" != "${FAILOVER_NODE}" ];then
-				restored_failover_name="$(sub_get_node_field_plain "${restored_failover}" name)"
-				sub_reference_notice_add \
-					"failover" \
-					"故障转移节点已调整" \
-					"原故障转移节点【${FAILOVER_NODE_NAME:-ID ${FAILOVER_NODE}}】已无法恢复，系统已改为【${restored_failover_name:-ID ${restored_failover}}】。请确认故障转移配置。" \
-					"${FAILOVER_NODE}" \
-					"${restored_failover}" \
-					"fallback"
-			else
-				sub_reference_notice_add \
-					"failover" \
-					"故障转移节点已失效" \
-					"原故障转移节点【${FAILOVER_NODE_NAME:-ID ${FAILOVER_NODE}}】已无法恢复，当前已清空故障转移目标，请重新选择。" \
-					"${FAILOVER_NODE}" \
-					"" \
-					"missing"
-			fi
-		fi
-	fi
 }
 
 sub_node_tool_plan_current_changed(){
@@ -3566,19 +3498,6 @@ sub_node_tool_plan_current_changed(){
 	[ -f "${SUB_NODE_TOOL_PLAN_FILE_CURRENT}" ] || return 1
 	awk -F '\t' '
 		$1 == "current" {
-			if ($2 != $4 || $3 != $5) found = 1
-			seen = 1
-			exit
-		}
-		END { exit(found ? 0 : 1) }
-	' "${SUB_NODE_TOOL_PLAN_FILE_CURRENT}" 2>/dev/null
-}
-
-sub_node_tool_plan_failover_changed(){
-	[ -n "${SUB_NODE_TOOL_PLAN_FILE_CURRENT}" ] || return 1
-	[ -f "${SUB_NODE_TOOL_PLAN_FILE_CURRENT}" ] || return 1
-	awk -F '\t' '
-		$1 == "failover" {
 			if ($2 != $4 || $3 != $5) found = 1
 			seen = 1
 			exit
@@ -3627,7 +3546,6 @@ sub_should_run_reference_postwrite(){
 		return 0
 	fi
 	sub_node_tool_plan_current_changed && return 0
-	sub_node_tool_plan_failover_changed && return 0
 	return 1
 }
 
@@ -4530,16 +4448,12 @@ sub_try_sync_single_source_fast_path(){
 
 sub_restore_active_nodes_after_rewrite(){
 	local input_file="$1"
-	local restore_current="" restore_failover="" first_id=""
+	local restore_current="" first_id=""
 
 	if [ -n "${SUB_NODE_TOOL_PLAN_FILE_CURRENT}" ] && [ -f "${SUB_NODE_TOOL_PLAN_FILE_CURRENT}" ];then
 		restore_current="$(awk -F '\t' '$1 == "current" {print $4; exit}' "${SUB_NODE_TOOL_PLAN_FILE_CURRENT}" 2>/dev/null)"
-		restore_failover="$(awk -F '\t' '$1 == "failover" {print $4; exit}' "${SUB_NODE_TOOL_PLAN_FILE_CURRENT}" 2>/dev/null)"
 		[ -z "${restore_current}" ] && restore_current="$(sub_list_node_ids | sed -n '1p')"
 		fss_set_current_node_id "${restore_current}"
-		fss_set_failover_node_id "${restore_failover}"
-		# fork 新增：通过 identity 把备用组合的 _id 字段重解析回最新值
-		fss_failover_combos_resync_after_subscribe >/dev/null 2>&1
 		return 0
 	fi
 
@@ -4555,19 +4469,7 @@ sub_restore_active_nodes_after_rewrite(){
 	fi
 	[ -z "${restore_current}" ] && restore_current="${first_id}"
 
-	if sub_node_exists_in_order "${FAILOVER_NODE}";then
-		restore_failover="${FAILOVER_NODE}"
-	else
-		restore_failover=$(sub_find_node_id_by_identity_in_file "${input_file}" "${FAILOVER_NODE_IDENTITY}")
-	fi
-	if [ -z "${restore_failover}" ];then
-		restore_failover=$(sub_find_node_id_in_file "${input_file}" "${FAILOVER_NODE_NAME}" "${FAILOVER_NODE_TYPE}" "${FAILOVER_NODE_SERVER}" "${FAILOVER_NODE_PORT}")
-	fi
-
 	fss_set_current_node_id "${restore_current}"
-	fss_set_failover_node_id "${restore_failover}"
-	# fork 新增：通过 identity 把备用组合的 _id 字段重解析回最新值
-	fss_failover_combos_resync_after_subscribe >/dev/null 2>&1
 }
 
 sub_refresh_node_state
@@ -5421,7 +5323,6 @@ remove_sub_node(){
 		local first_keep=""
 		local max_keep="0"
 		local restore_current=""
-		local restore_failover=""
 		sub_capture_active_nodes
 		for remove_nu in $(sub_list_node_ids)
 		do
@@ -5460,13 +5361,7 @@ remove_sub_node(){
 		else
 			restore_current="${first_keep}"
 		fi
-		if sub_node_exists_in_order "${FAILOVER_NODE}";then
-			restore_failover="${FAILOVER_NODE}"
-		fi
 		fss_set_current_node_id "${restore_current}"
-		fss_set_failover_node_id "${restore_failover}"
-		# fork 新增：通过 identity 把备用组合的 _id 字段重解析回最新值
-		fss_failover_combos_resync_after_subscribe >/dev/null 2>&1
 		dbus set fss_node_next_id="$((max_keep + 1))"
 		fss_mark_native_schema2_storage >/dev/null 2>&1 || true
 		fss_clear_webtest_runtime_results

@@ -51,13 +51,10 @@ profile_remove_bound_nodes() {
 	local max_keep="0"
 	local removed_count="0"
 	local current_id=""
-	local failover_id=""
 	local current_identity=""
-	local failover_identity=""
 	local fallback_current=""
 	local node_scope=""
 	local resolved_current=""
-	local resolved_failover=""
 	local node_tool=""
 	local node_tool_output=""
 	local node_tool_removed="0"
@@ -84,9 +81,7 @@ profile_remove_bound_nodes() {
 	[ -n "${last_url_hash}" ] && source_scope="${source_scope}_${last_url_hash}"
 
 	current_id="$(fss_get_current_node_id 2>/dev/null)" || current_id=""
-	failover_id="$(fss_get_failover_node_id 2>/dev/null)" || failover_id=""
 	[ -n "${current_id}" ] && current_identity="$(fss_get_node_identity_by_id "${current_id}" 2>/dev/null)" || current_identity=""
-	[ -n "${failover_id}" ] && failover_identity="$(fss_get_node_identity_by_id "${failover_id}" 2>/dev/null)" || failover_identity=""
 	node_tool="$(fss_pick_node_tool 2>/dev/null)" || node_tool=""
 
 	if [ -n "${node_tool}" ]; then
@@ -134,12 +129,6 @@ profile_remove_bound_nodes() {
 	else
 		resolved_current="$(fss_find_node_id_by_identity "${current_identity}" 2>/dev/null)" || resolved_current=""
 		[ -n "${resolved_current}" ] && fss_set_current_node_id "${resolved_current}" || fss_set_current_node_id "${fallback_current}"
-	fi
-	if [ -n "${failover_id}" ] && fss_node_id_exists "${failover_id}"; then
-		fss_set_failover_node_id "${failover_id}"
-	else
-		resolved_failover="$(fss_find_node_id_by_identity "${failover_identity}" 2>/dev/null)" || resolved_failover=""
-		fss_set_failover_node_id "${resolved_failover}"
 	fi
 
 	fss_clear_webtest_runtime_results

@@ -1,5 +1,7 @@
 # fancyss 新旧版本键值对应表（Schema 1 / Schema 2）
 
+> ⚠️ **部分过时（2026-06-15 / `3.5.28-doge.14-beta.3`）**：表中所有 `ss_failover_*`（`ss_failover_enable` / `c1..c3` / `s1..s5` / `s4_3` 等）与 `fss_node_failover_backup` 等**故障转移相关键已整体物理删除**（由 `install.sh::purge_failover_remnants()` 清除），现仅作历史保留。另：总开关 `ss_split_enabled` 也已在 doge.14 物理移除（分流是唯一路径）。
+
 本文用于说明 fancyss 从旧节点存储结构（Schema 1）升级到新节点存储结构（Schema 2）后，
 各类持久化键值的对应关系、用途和变化点。
 

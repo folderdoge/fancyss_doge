@@ -155,6 +155,15 @@ dbus key 中的 `<m>` (Mode 索引) / `<r>` (rule 序号) / `<i>` (Rule 索引) 
 
 > **doge.13 beta 兑现路径**（详见 §6.2 D1 兑现段）：`install.sh::migrate_split_routing_v2` 把老 `ss_basic_chng_china_dns_*` / `ss_basic_chng_trust_dns_*` 一次性切到新 key（**不删老 key**，保留 fallback 兜底），落 `fss_split_migrated_v2=1` 守卫；`ssconfig.sh::generate_chinadns_split_conf` / `generate_chinadns_global_conf` 优先读新 key，新 key 为空时回退老路径。
 
+#### 1.6.1.1 DNS upstream 输入 UI：协议下拉 + 地址框（doge.14-beta.3，2026-06-15）
+
+DNS tab 的「国内 / 国外（可增删行）」+「全局（单行）」三处 upstream **输入控件**从纯文本框升级为 **`[协议▼] + [地址]`** 两段式（防止用户把协议前缀打错）。**纯前端表现层改动，后端 0 改动** —— 上面三个 `ss_split_dns_*` base64 key 的存储格式（每行一条 upstream 字符串）和 `save()` / `conf2obj()` 的 base64 通道一字未改。
+
+- 隐藏的原 `<textarea>` / `<input>`（原 id）仍存「每行一条」真实 upstream 字符串，是真理之源；可见的协议下拉+地址框只是它的双向投影。
+- 关键 JS（`Module_shadowsocks.asp`）：`DNS_PROTOS`（udp / tcp / tls / https 四选项）、`dns_split_proto(line)`（把 `tcp://1.2.3.4` / `tls://host@ip` / `https://host/path` 拆成 `{proto, addr}`；裸地址或未知协议 → `udp` + 原样保留）、`dns_join_proto(proto, addr)`（拼回，`udp` = 裸地址不加前缀）、`dns_make_proto_select()`、`add_dns_upstream_row` / `sync_dns_upstream_rows`（国内/国外多行）、`render_dns_global_upstream` / `sync_dns_global_upstream`（全局单行，原 input 改 `type=hidden` + `#grow_*` 容器）。
+- 地址框 placeholder 随协议变（DoT = `域名@IP`、DoH = `域名/路径`）。CSS 加 `.dns-up-proto`（[fancyss/res/fancyss.css](../../fancyss/res/fancyss.css)）。
+- **改这块前注意**：协议下拉只认 udp / tcp / tls / https 四种；遇到 dbus 里存的其它协议（如 h3）会 fallback 成 udp + 把整串当地址原样保留（不丢数据），下拉显示回落到 udp —— 符合 CLAUDE.md 硬规则 #9「找不到选项不要 `val("")`」的精神（这里是 fallback 保留而非清空）。
+
 ### 1.6.2 Mode CRUD helper 协议（`ss_split_mode_save.sh`，doge.13 beta 新增）
 
 `ss_split_mode_save.sh` 是 Mode 编辑/添加/删除的后端 sanitize 入口（对标 `ss_split_rule_save.sh`，解决 §6.1 alpha "Mode name 后端 sanitize 缺口"）。前端通过 dummy_script.sh 把以下临时 key 写入 dbus 后调用 `ss_split_mode_save.sh`，helper 校验后落到正式 `ss_split_mode_<m>_*` key 并删除临时 key。

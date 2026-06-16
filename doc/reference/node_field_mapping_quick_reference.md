@@ -1,5 +1,7 @@
 # fancyss 节点字段精简速查表
 
+> ⚠️ **部分过时（2026-06-15 / `3.5.28-doge.14-beta.3`）**：表中的备用节点键 `ss_failover_s4_3` / `fss_node_failover_backup` 随**故障转移功能整体物理删除**已不存在（由 `install.sh::purge_failover_remnants()` 清除），相关行仅作历史保留。
+
 本文是 `doc/reference/dbus_key_mapping_reference.md` 的节点专用精简版，只保留：
 
 - 当前节点/备用节点/顺序相关键

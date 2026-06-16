@@ -334,7 +334,6 @@ status_serve_process_running(){
 }
 
 ensure_status_serve_runtime(){
-	[ "${ss_failover_enable}" != "1" ] || return 1
 	[ -x "${STATUS_CTL_BIN}" ] || return 1
 	if [ -S "${STATUS_SERVE_SOCKET}" ] && status_serve_args_match;then
 		status_serve_process_running && return 0
@@ -360,27 +359,10 @@ prepare(){
 		set_waiting_status
 		return 1
 	fi
-	if [ "${ss_failover_enable}" != "1" ] && ! status_socks5_ready;then
+	if ! status_socks5_ready;then
 		set_waiting_status
 		return 1
 	fi
-	return 0
-}
-
-resolve_payload(){
-	local payload=""
-	if payload="$(read_front_cache)"; then
-		printf '%s' "${payload}"
-		return 0
-	fi
-	if status_tool_bin="$(pick_status_tool)"; then
-		if payload="$(refresh_payload_once "${status_tool_bin}")"; then
-			printf '%s' "${payload}"
-			return 0
-		fi
-	fi
-	set_waiting_status
-	get_status_payload
 	return 0
 }
 
@@ -428,11 +410,7 @@ if [ -z "$1" ] && [ -z "$2" ];then
 		exit 0
 	fi
 	trap 'release_status_ws_lock' EXIT INT TERM
-	if [ "${ss_failover_enable}" = "1" ];then
-		payload="$(resolve_payload)"
-	else
-		payload="$(resolve_payload_once_only)"
-	fi
+	payload="$(resolve_payload_once_only)"
 	write_ws_cache "${payload}" >/dev/null 2>&1
 	emit_status_payload "${payload}"
 	exit
@@ -457,11 +435,7 @@ ws)
 			exit 0
 		fi
 		trap 'release_status_ws_lock' EXIT INT TERM
-		if [ "${ss_failover_enable}" = "1" ];then
-			payload="$(resolve_payload)"
-		else
-			payload="$(resolve_payload_once_only)"
-		fi
+		payload="$(resolve_payload_once_only)"
 		write_ws_cache "${payload}" >/dev/null 2>&1
 		emit_status_payload "${payload}"
 		;;
@@ -470,24 +444,16 @@ ws)
 			set_waiting_status
 			payload="$(get_status_payload)"
 		else
-			if [ "${ss_failover_enable}" = "1" ];then
-				payload="$(resolve_payload)"
+			if ! acquire_status_http_lock; then
+				payload="$(read_front_cache)" || payload="$(read_ws_cache)" || {
+					set_waiting_status
+					payload="$(get_status_payload)"
+				}
 			else
-				if ! acquire_status_http_lock; then
-					payload="$(read_front_cache)" || payload="$(read_ws_cache)" || {
-						set_waiting_status
-						payload="$(get_status_payload)"
-					}
-				else
-					trap 'release_status_http_lock' EXIT INT TERM
-					payload="$(resolve_payload_once_only)"
-				fi
+				trap 'release_status_http_lock' EXIT INT TERM
+				payload="$(resolve_payload_once_only)"
 			fi
 		fi
-		if [ "${ss_failover_enable}" = "1" ];then
-			printf '%s@@%s\n' "${payload}" "${HEART_STATUS}" > "${STATUS_BACK_CACHE}"
-		else
-			http_response "${payload}" >/dev/null 2>&1
-		fi
+		http_response "${payload}" >/dev/null 2>&1
 		;;
 esac
