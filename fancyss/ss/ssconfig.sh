@@ -7444,15 +7444,6 @@ stop_status() {
 		killall statusctl >/dev/null 2>&1
 	fi
 
-	pids="$(ps w | grep -F "/tmp/upload/ssf_status.stream" | grep -v grep | awk '{print $1}')"
-	stop_status_kill_pid_list "国外状态详情流tail进程" "${pids}" "-15" || true
-
-	pids="$(ps w | grep -F "/tmp/upload/ssc_status.stream" | grep -v grep | awk '{print $1}')"
-	stop_status_kill_pid_list "状态详情流tail进程" "${pids}" "-15" || true
-
-	pids="$(ps w | grep -F "sh /koolshare/scripts/ss_status_ws.sh" | grep -v grep | awk '{print $1}')"
-	stop_status_kill_pid_list "状态详情流脚本" "${pids}" "-15" || true
-
 	stop_status_kill_pidfile "status-tool daemon进程" "${status_daemon_pidfile}" || true
 	stop_status_kill_pidfile "status-tool serve进程" "${status_serve_pidfile}" || true
 

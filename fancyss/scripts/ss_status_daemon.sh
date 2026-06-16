@@ -12,18 +12,6 @@ STATUS_SERVE_ARGS_FILE="/tmp/status-tool-serve.args"
 STATUS_WS_LOCK_DIR="/tmp/fancyss_status_ws.lock"
 STATUS_HTTP_LOCK_DIR="/tmp/fancyss_status_http.lock"
 
-kill_status_stream_followers() {
-	ps w | grep -F "/tmp/upload/ssf_status.stream" | grep -v grep | awk '{print $1}' | while read -r pid; do
-		[ -n "${pid}" ] && kill "${pid}" >/dev/null 2>&1
-	done
-	ps w | grep -F "/tmp/upload/ssc_status.stream" | grep -v grep | awk '{print $1}' | while read -r pid; do
-		[ -n "${pid}" ] && kill "${pid}" >/dev/null 2>&1
-	done
-	ps w | grep -F "sh /koolshare/scripts/ss_status_ws.sh" | grep -v grep | awk '{print $1}' | while read -r pid; do
-		[ -n "${pid}" ] && kill "${pid}" >/dev/null 2>&1
-	done
-}
-
 status_tool_tz() {
 	local tz=""
 	tz="$(nvram get time_zone 2>/dev/null)"
@@ -117,7 +105,6 @@ start_status_serve() {
 }
 
 stop_status_daemon() {
-	kill_status_stream_followers
 	if [ -f "${STATUS_DAEMON_PIDFILE}" ];then
 		start-stop-daemon -K -q -p "${STATUS_DAEMON_PIDFILE}" >/dev/null 2>&1
 	fi

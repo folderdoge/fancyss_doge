@@ -401,30 +401,6 @@ migrate_schema2_now(){
 	esac
 }
 
-download_ssf(){
-	rm -rf /tmp/files
-	rm -rf /koolshare/webs/files
-	mkdir -p /tmp/files
-	ln -sf /tmp/files /koolshare/webs/files
-	if [ -f "/tmp/upload/ssf_status.txt" ];then
-		cp -rf /tmp/upload/ssf_status.txt /tmp/files/ssf_status.txt
-	else
-		echo "日志为空" > /tmp/files/ssf_status.txt
-	fi
-}
-
-download_ssc(){
-	rm -rf /tmp/files
-	rm -rf /koolshare/webs/files
-	mkdir -p /tmp/files
-	ln -sf /tmp/files /koolshare/webs/files
-	if [ -f "/tmp/upload/ssc_status.txt" ];then
-		cp -rf /tmp/upload/ssc_status.txt /tmp/files/ssc_status.txt
-	else
-		echo "日志为空" > /tmp/files/ssc_status.txt
-	fi
-}
-
 restart_dnsmasq(){
 	echo_date "重启dnsmasq..."
 	local OLD_PID=$(pidof dnsmasq)
@@ -546,16 +522,6 @@ case $act in
 	;;
 5)
 	reomve_ping
-	;;
-6)
-	true > ${LOG_FILE}
-	download_ssf
-	http_response "$1"
-	;;
-7)
-	true > ${LOG_FILE}
-	download_ssc
-	http_response "$1"
 	;;
 8)
 	true > ${LOG_FILE}
