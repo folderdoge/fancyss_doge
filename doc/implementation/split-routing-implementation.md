@@ -619,6 +619,16 @@ migrate_split_routing_v3() {
 - **I5**：`params_input` 数组 L8303-8317 仍含 14 个 `ss_basic_chng_*` 字段引用（save() 写空 → install 又删，无害但 noisy）
 - **L1605 / L2588**：ssconfig.sh 老 `chng_chk` → UDP relay 检测 dead path
 
+#### D27: UDP/STUN 不走白名单直连 — domain+ip 合写一条 rule 的 AND 陷阱（doge.14-beta.5 修复）
+
+2026-06-17 用户报 WebRTC 泄露检测里国内 STUN 也显示代理 IP。51.1 实证根因 + 修复：
+
+- **根因**：`generate_xray_json_split`（ssconfig.sh）per-Rule emit 把每条 Rule 的 `domains` 与 `ips` 写进**同一条** xray routing rule（`{domain:[...],ip:[...],outboundTag}`）。xray 同一 rule 内多 matcher 是 **AND**：UDP（STUN/WebRTC 等）无可嗅探域名 → `domain` 条件恒 false → 整条 rule miss → 落兜底。「大陆白名单」= chnlist 域名 + cn.txt 中国 IP 合写一条 → 国内 STUN（stun.miwifi.com → 111.206.174.x，IP 在 cn.txt 的 `111.192.0.0/12` 内）UDP 走代理；国内网页 TCP 有嗅探域名能命中 domain 故正常，掩盖了 bug。
+- **51.1 四象限实证**：修前 miwifi STUN reflexive = 代理 `86.53.160.85`；加 ip-only rule 后 = 真实 `123.158.55.243`（浙江联通）。修后国内 TCP/UDP 直连、海外 TCP/UDP 代理全部正确，无回归。
+- **修复**：per-Rule emit 拆成两条独立 rule（domain-only + ip-only，同 outboundTag）。顺带修好「白名单只有 IP 无域名」条目（AND 下也曾失效）—— 对齐"白名单内 IP **或** 域名走直连"的预期。
+- **实现踩坑**（armv7l busybox，大陆白名单 domain 11 万 / domain rule ~2MB 单行）：① `map(tojson)|join` → tojson 复制 2MB 串 OOM 被 Killed → emit 截断 → `jq_merge_failed` 回退基线；② `jq -c` 流式 + `while read` → busybox read 截断 2MB 单行变量 → 同样损坏；③ ✅ 两次独立 `jq -c '… else empty end'` + `cat`（cat 不受行长限制）。
+- **影响面**：所有"域名+IP 混排"的 Rule（大陆白名单、Telegram 等）的无域名 UDP；全局黑白名单(`ss_wan_white_domain`)按设计仍 domain-only，不受影响；webtest 路由只用 inboundTag→outboundTag 无 domain/ip matcher，不受影响。
+
 ### 6.4 实施期约定的回溯修订
 
 **alpha 阶段（doge.12.alpha-1 → alpha.18）**：
