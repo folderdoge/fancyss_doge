@@ -4629,18 +4629,24 @@ EOF
 					# 没 domain/ip"的 field rule → xray 当全匹配 → 抢在兜底前命中 → 整 Mode
 					# 流量被这条空 rule 吞掉。所以用 `if length>0 then ... else empty end`
 					# 包一层，让空 rule 文件不产 routing 条目，让兜底接管（行为更安全）。
-					if jq --arg tag "mode_${mid}" --arg ob "${rtag}" '
-						if (.domains | length) > 0 or (.ips | length) > 0 then
-							{ type: "field", inboundTag: [$tag], outboundTag: $ob }
-							+ (if (.domains | length) > 0 then { domain: .domains } else {} end)
-							+ (if (.ips | length) > 0 then { ip: .ips } else {} end)
-						else empty end
-					' "${rdata_file}" > "${emit_tmp}" 2>/dev/null && [ -s "${emit_tmp}" ]; then
-						if [ "${first_rule}" = "1" ]; then
-							first_rule=0
-						else
-							echo "," >> "${routing_rules_file}"
-						fi
+					# doge.14.x BLOCKER fix (UDP/STUN 不按白名单直连): domain 与 ip 不能塞进同一条 routing
+					# rule —— xray 同一 rule 内多 matcher 是 AND，UDP(STUN/WebRTC/部分游戏)无可嗅探域名 →
+					# domain 条件恒不命中 → 整条 rule 对 UDP 失效 → 落兜底走代理(即便目标 IP 在白名单 ip 段)。
+					# 拆成两条独立 rule(同 outboundTag): TCP 命中域名、UDP 命中 IP，各自按规则走。
+					# 实现约束(两次踩坑): ①不能 map(tojson)|join——大陆白名单 domain 11 万条会再复制 ~2MB
+					# 字符串在 armv7l OOM 被 Killed；②不能 jq -c 流式 + while-read 逐行——domain rule 是
+					# ~2MB 单行，busybox read 截断变量 → JSON 损坏 → jq_merge_failed 回退基线丢分流。
+					# 故两次 jq -c 各 emit 单 object(各自 empty-guard)，用 cat 追加(cat 不受行长限制；
+					# jq 单 object 引用输入数组不复制，峰值内存与旧版持平)。空 rule 两次都 empty → [ -s ]
+					# 跳过 → 兜底接管(空 rule guard 保留)。
+					# domain-only rule (TCP 按嗅探域名命中)
+					if jq -c --arg tag "mode_${mid}" --arg ob "${rtag}" 'if (.domains | length) > 0 then {type:"field",inboundTag:[$tag],domain:.domains,outboundTag:$ob} else empty end' "${rdata_file}" > "${emit_tmp}" 2>/dev/null && [ -s "${emit_tmp}" ]; then
+						if [ "${first_rule}" = "1" ]; then first_rule=0; else echo "," >> "${routing_rules_file}"; fi
+						cat "${emit_tmp}" >> "${routing_rules_file}"
+					fi
+					# ip-only rule (UDP/STUN 等无域名流量按目标 IP 命中 —— 本次 BLOCKER 修复点)
+					if jq -c --arg tag "mode_${mid}" --arg ob "${rtag}" 'if (.ips | length) > 0 then {type:"field",inboundTag:[$tag],ip:.ips,outboundTag:$ob} else empty end' "${rdata_file}" > "${emit_tmp}" 2>/dev/null && [ -s "${emit_tmp}" ]; then
+						if [ "${first_rule}" = "1" ]; then first_rule=0; else echo "," >> "${routing_rules_file}"; fi
 						cat "${emit_tmp}" >> "${routing_rules_file}"
 					fi
 				fi
@@ -4880,9 +4886,12 @@ start_xray() {
 	# 并追加 proxy_front outbound（其 tag 在 xray.json 此前不存在），无 duplicate tag
 	# 冲突。
 	type fss_chain_apply >/dev/null 2>&1 && fss_chain_apply /koolshare/ss/xray.json
-	run_bg /koolshare/bin/xray run -c /koolshare/ss/xray.json
+	# doge.14: 捕获 xray 启动 stderr（run_bg 会吞掉），配合 detect_running_status3 的崩溃 dump，
+	# 让“配置 -test 过但运行时崩/慢”的情况能看到真实原因。
+	rm -f /tmp/xray_run.err
+	env -i PATH=${PATH} /koolshare/bin/xray run -c /koolshare/ss/xray.json >/tmp/xray_run.err 2>&1 &
 	# alpha.17 P1-2: VERBOSE=1 让 detect_running_status3 打印探测结果；启动后探 pid/监听端口
-	detect_running_status3 xray 23456 1 force
+	detect_running_status3 xray 23456 1 force /tmp/xray_run.err
 	local _xray_pid=$(pidof xray | awk '{print $1}')
 	local _xray_listen=$(netstat -lntup 2>/dev/null | grep -E "xray" | awk '{print $4}' | sort -u | tr '\n' ' ')
 	echo_date "✅ Xray 启动完成 pid=${_xray_pid:-N/A} 监听端口=${_xray_listen:-无}"

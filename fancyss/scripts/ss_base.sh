@@ -762,26 +762,74 @@ detect_running_status2(){
 	fi
 }
 
+__detect_dump_errlog() {
+	# 把进程启动 stderr（若有捕获）打几行到日志，便于定位“配置 -test 过但运行时崩”
+	local _bin="$1"
+	local _log="$2"
+	[ -n "${_log}" ] || return 0
+	[ -f "${_log}" ] || return 0
+	local _content=$(grep -vE '^[[:space:]]*$' "${_log}" 2>/dev/null | tail -n 8)
+	[ -n "${_content}" ] || return 0
+	echo_date "--- ${_bin} 启动输出（最后几行）---"
+	echo "${_content}" | while IFS= read -r _line; do
+		echo_date "  ${_line}"
+	done
+	echo_date "--- 完整日志见 ${_log} ---"
+}
+
 detect_running_status3(){
 	# detect process by netstat
 	local BINNAME=$1
 	local PORT=$2
 	local VERBOSE=$3
 	local FORCE=$4
+	local ERRLOG=$5
 	[ "${ss_basic_noruncheck}" == "1" -a -z "${FORCE}" ] && return
-	local i=50
-	local RET
- 	until [ -n "${RET}" ]; do
- 		# wait for 0.1s
-		usleep 100000
-		i=$(($i - 1))
+	# doge.14: 就绪检测从“死等 ~5s 窗口”改成“看进程死活”——
+	#   端口起来=成功；进程活着但端口没起=继续等（大配置/多模式慢启动，最长 ~60s）；
+	#   进程起来后又消失=启动即崩溃，快速失败并 dump 真实报错（若传了 ERRLOG）。
+	# 背景：多模式 × 11万域名大表时 xray 合法启动会超过老 5s 窗口被误杀。
+	local max_wait=600
+	local dead_grace=10
+	local i=0
+	local dead=0
+	local seen_alive=0
+	local RET=""
+	while [ "${i}" -lt "${max_wait}" ]; do
 		RET=$(netstat -nlp 2>/dev/null|grep -Ew "${PORT}"|grep -Eo "${BINNAME}"|head -n1)
-		if [ "$i" -lt 1 ]; then
-			echo_date "$1进程启动失败，请检查你的配置！"
-			#return 1
-			close_in_five flag
+		[ -n "${RET}" ] && break
+		if [ -n "$(pidof ${BINNAME})" ]; then
+			seen_alive=1
+			dead=0
+		else
+			if [ "${seen_alive}" = "1" ]; then
+				dead=$((dead + 1))
+				if [ "${dead}" -ge "${dead_grace}" ]; then
+					echo_date "${BINNAME} 进程启动后已退出（配置或运行时错误）！"
+					__detect_dump_errlog "${BINNAME}" "${ERRLOG}"
+					close_in_five flag
+					return 1
+				fi
+			elif [ "${i}" -ge 100 ]; then
+				echo_date "${BINNAME}进程启动失败（10秒内未见进程），请检查你的配置！"
+				__detect_dump_errlog "${BINNAME}" "${ERRLOG}"
+				close_in_five flag
+				return 1
+			fi
 		fi
+		usleep 100000
+		i=$((i + 1))
 	done
+	if [ -z "${RET}" ]; then
+		if [ -n "$(pidof ${BINNAME})" ]; then
+			echo_date "${BINNAME} 进程在运行，但约 60 秒内未监听 ${PORT} 端口（配置过大/端口被占？），请检查！"
+		else
+			echo_date "${BINNAME}进程启动失败，请检查你的配置！"
+		fi
+		__detect_dump_errlog "${BINNAME}" "${ERRLOG}"
+		close_in_five flag
+		return 1
+	fi
 	if [ "${VERBOSE}" == "1" ];then
 		local _pid=$(pidof ${BINNAME})
 		if [ -n "${_pid}" ];then

@@ -6482,12 +6482,12 @@ function conf2obj(obj, action) {
 			continue;
 		}
 		*/
-		if (field == "ss_basic_anytls_pass") {		//fancyss-full
+		if (el != null && field == "ss_basic_anytls_pass") {		//fancyss-full
 			el.value = decode_legacy_anytls_pass_if_needed(obj[field]);	//fancyss-full
 			continue;								//fancyss-full
 		}											//fancyss-full
 		// base64_decode then format json then fill
-		if (field == "ss_basic_v2ray_json" || field == "ss_basic_xray_json") {
+		if (el != null && (field == "ss_basic_v2ray_json" || field == "ss_basic_xray_json")) {
 			el.value = do_js_beautify(Base64.decode(obj[field]));
 			continue;
 		}
@@ -6823,64 +6823,135 @@ function render_split_enabled_state() {
 	// FORK doge.14: ss_split_enabled 永远 1（分流架构是唯一路径），unwrap 老 if/else
 	$('#ss_split_enabled_state').html("<span style='color:#22ab39;'>● 新架构已启用（重启代理后生效）</span>");
 }
-// 渲染 Mode 列表
+// 渲染 Mode 列表（FORK doge.14: 卡片化 UI，仅换皮，不动数据/CRUD）
+function ensure_split_card_styles() {
+	if (document.getElementById("split_card_style")) return;
+	var css = ".split-card-stack{display:flex;flex-direction:column;gap:10px;padding:4px 2px;}"
+		+ ".split-card{position:relative;border:1px solid rgba(69,93,120,0.30);border-radius:10px;background:linear-gradient(180deg,rgba(24,32,44,0.97),rgba(15,21,30,0.95));box-shadow:0 8px 20px rgba(0,0,0,0.12),inset 0 1px 0 rgba(255,255,255,0.03);padding:10px 12px;transition:transform .18s ease,border-color .18s ease,box-shadow .18s ease;}"
+		+ ".split-card:hover{transform:translateY(-2px);border-color:rgba(110,168,254,0.42);box-shadow:0 14px 28px rgba(0,0,0,0.18),inset 0 1px 0 rgba(255,255,255,0.05);}"
+		+ ".split-card-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px;}"
+		+ ".split-card-title{display:flex;align-items:center;gap:7px;min-width:0;font-size:14px;font-weight:600;color:#eef5fc;}"
+		+ ".split-card-id{display:inline-flex;align-items:center;justify-content:center;min-width:24px;height:20px;padding:0 6px;border-radius:6px;background:rgba(110,168,254,0.16);border:1px solid rgba(110,168,254,0.30);color:#9cc4ff;font-size:12px;font-weight:700;}"
+		+ ".split-card-name{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}"
+		+ ".split-badge-builtin{font-size:10px;color:#93a8bc;border:1px solid rgba(143,163,184,0.32);border-radius:4px;padding:1px 5px;font-weight:500;letter-spacing:.5px;}"
+		+ ".split-card-actions{display:flex;gap:6px;flex-shrink:0;}"
+		+ ".split-act{display:inline-flex;align-items:center;font-size:12px;text-decoration:none;padding:3px 10px;border-radius:6px;border:1px solid rgba(255,255,255,0.10);background:rgba(255,255,255,0.04);color:#cfe0f2;cursor:pointer;transition:all .15s ease;}"
+		+ ".split-act:hover{background:rgba(110,168,254,0.16);border-color:rgba(110,168,254,0.40);color:#fff;}"
+		+ ".split-act-del{color:#ff93b2;}"
+		+ ".split-act-del:hover{background:rgba(237,66,100,0.18);border-color:rgba(237,66,100,0.45);color:#fff;}"
+		+ ".split-chip-row{display:flex;flex-wrap:wrap;gap:6px;align-items:center;}"
+		+ ".split-chip{display:inline-flex;align-items:center;gap:4px;font-size:11px;line-height:1.4;padding:4px 9px;border-radius:999px;background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.08);color:#b9c8d8;white-space:nowrap;}"
+		+ ".split-chip b{color:#eaf2fb;font-weight:700;}"
+		+ ".split-chip.on{background:rgba(34,171,57,0.13);border-color:rgba(34,171,57,0.32);color:#84e09c;}"
+		+ ".split-chip.off{color:#76838f;}"
+		+ ".split-chip.fallback{background:rgba(110,168,254,0.13);border-color:rgba(110,168,254,0.32);color:#bcd6ff;font-family:Consolas,Menlo,monospace;}"
+		+ ".split-chip.dns-split{background:rgba(127,127,213,0.15);border-color:rgba(127,127,213,0.34);color:#c7c7f2;}"
+		+ ".split-chip.dns-global{background:rgba(242,153,74,0.13);border-color:rgba(242,153,74,0.32);color:#f4c79a;}"
+		+ ".split-chip.src{max-width:260px;overflow:hidden;text-overflow:ellipsis;font-family:Consolas,Menlo,monospace;}"
+		+ ".split-empty{padding:14px 10px;color:#8a99a8;font-size:12px;text-align:center;}";
+	css += "#ss_split_runtime_status{display:block;}";
+	css += "#tablet_11 table.FormTable{background:linear-gradient(180deg,rgba(20,27,38,0.97),rgba(13,18,26,0.96)) !important;border:1px solid rgba(69,93,120,0.28) !important;border-radius:12px !important;box-shadow:0 10px 26px rgba(0,0,0,0.16);border-collapse:separate !important;border-spacing:0;overflow:hidden;}";
+	css += "#tablet_11 table.FormTable>thead>tr>td{border:none !important;}";
+	css += "#tablet_11 table.FormTable>tbody>tr>th{background:rgba(255,255,255,0.02) !important;color:#cdd9e5 !important;border:none !important;border-bottom:1px solid rgba(69,93,120,0.16) !important;border-right:1px solid rgba(69,93,120,0.16) !important;font-weight:600;text-align:left;padding:10px 14px !important;vertical-align:middle;}";
+	css += "#tablet_11 table.FormTable>tbody>tr>td{background:transparent !important;color:#c4d2e0 !important;border:none !important;border-bottom:1px solid rgba(69,93,120,0.16) !important;}";
+	css += "#tablet_11 table.FormTable>tbody>tr:last-child>th,#tablet_11 table.FormTable>tbody>tr:last-child>td{border-bottom:none !important;}";
+	css += "#tablet_11 table.FormTable a,#tablet_11 table.FormTable .hintstyle{color:#9cc4ff !important;}";
+	css += "#tablet_11 .split-banner{background:linear-gradient(180deg,rgba(24,32,44,0.96),rgba(15,21,30,0.94)) !important;color:#c4d2e0 !important;border:1px solid rgba(110,168,254,0.22) !important;border-left:3px solid #6ea8fe !important;border-radius:10px !important;padding:11px 14px !important;line-height:1.65;}";
+	css += "#tablet_11 .split-banner b{color:#9cc4ff;}";
+	css += "#tablet_11 .split-sec-head{background:linear-gradient(90deg,rgba(110,168,254,0.16),rgba(110,168,254,0.03)) !important;color:#eaf2fb !important;font-weight:600 !important;padding:10px 14px !important;border:none !important;border-bottom:1px solid rgba(110,168,254,0.18) !important;letter-spacing:.3px;}";
+	css += "#tablet_11 .split-sec-head a,#tablet_11 .split-sec-head .hintstyle{color:#9cc4ff !important;font-weight:normal;}";
+	css += ".split-stat-row{display:flex;flex-wrap:wrap;gap:8px;align-items:stretch;}";
+	css += ".split-stat-card{display:flex;flex-direction:column;gap:3px;justify-content:center;min-width:92px;padding:8px 13px;border-radius:9px;background:linear-gradient(180deg,rgba(28,37,50,0.95),rgba(17,23,32,0.92));border:1px solid rgba(69,93,120,0.30);}";
+	css += ".split-stat-k{font-size:10px;color:#8a99a8;letter-spacing:.4px;}";
+	css += ".split-stat-v{font-size:15px;font-weight:700;color:#eef5fc;line-height:1.1;}";
+	css += ".split-stat-card.ok .split-stat-v{color:#5fd17a;}";
+	css += ".split-stat-card.down .split-stat-v{color:#ff7a9c;}";
+	css += ".split-stat-card.muted .split-stat-v{color:#9fb0c0;}";
+	css += ".split-stat-card.wide .split-stat-v{font-size:12px;font-weight:600;color:#9fb0c0;}";
+	css += ".split-add-slot{display:block;}";
+	css += ".split-add-card{display:flex;align-items:center;justify-content:center;gap:9px;padding:13px;border-radius:10px;border:1.5px dashed rgba(110,168,254,0.42);background:rgba(110,168,254,0.045);color:#9cc4ff;cursor:pointer;font-size:13px;font-weight:600;transition:all .18s ease;}";
+	css += ".split-add-card:hover{border-color:rgba(110,168,254,0.78);background:rgba(110,168,254,0.11);color:#cfe0f2;transform:translateY(-1px);}";
+	css += ".split-add-plus{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:50%;border:1.5px solid currentColor;font-size:16px;line-height:1;animation:splitBreathe 2.4s ease-in-out infinite;}";
+	css += ".split-add-card:hover .split-add-plus{animation:none;}";
+	css += ".split-add-cap{display:block;text-align:center;color:#7d8b99;font-size:11px;margin-top:7px;}";
+	css += ".split-add-cap a{color:#6ea8fe !important;}";
+	css += "@keyframes splitBreathe{0%,100%{opacity:.5;transform:scale(1);}50%{opacity:1;transform:scale(1.13);}}";
+	var st = document.createElement("style");
+	st.id = "split_card_style";
+	st.type = "text/css";
+	st.appendChild(document.createTextNode(css));
+	(document.head || document.getElementsByTagName("head")[0]).appendChild(st);
+}
 function render_split_mode_list() {
 	var $wrap = $('#split_mode_list_wrap');
 	if (!$wrap.length) return;
+	ensure_split_card_styles();
+	$('#split_mode_addslot').html('<div class="split-add-card" onclick="split_v2_new_mode();"><span class="split-add-plus">+</span> 新建 Mode</div>');
 	var n = parseInt(db_ss['ss_split_mode_count'] || '0', 10);
 	if (isNaN(n) || n <= 0) {
-		$wrap.html("<span style='color:#888;'>暂无 Mode（首次启用新架构后，install.sh 的 migrate_split_routing_v1 会种子内置 Mode #1 全局代理 / Mode #2 大陆白名单）</span>");
+		$wrap.html("<div class='split-empty'>暂无 Mode（首次启用新架构后，install.sh 的 migrate_split_routing_v1 会种子内置 Mode #1 全局代理 / Mode #2 大陆白名单）</div>");
 		return;
 	}
-	var html = '<table width="100%" cellpadding="4" cellspacing="0" style="font-size:12px;border-collapse:collapse;"><thead><tr style="background:#445;color:#fff;"><th align="left">Mode</th><th align="left">UDP</th><th align="left">QUIC屏蔽</th><th align="left">DNS</th><th align="left">规则数</th><th align="left">兜底</th><th align="left">操作</th></tr></thead><tbody>';
+	var html = '<div class="split-card-stack">';
 	for (var m = 1; m <= n; m++) {
 		var id = db_ss['ss_split_mode_' + m + '_id'] || '?';
 		var name = db_ss['ss_split_mode_' + m + '_name'] || '(unnamed)';
 		var builtin = db_ss['ss_split_mode_' + m + '_builtin'] == '1';
-		var udp = db_ss['ss_split_mode_' + m + '_udp_proxy'] == '1' ? '✓' : '—';
-		var quic = db_ss['ss_split_mode_' + m + '_block_quic'] == '1' ? '✓' : '—';
+		var udp = db_ss['ss_split_mode_' + m + '_udp_proxy'] == '1';
+		var quic = db_ss['ss_split_mode_' + m + '_block_quic'] == '1';
 		var dnsMode = db_ss['ss_split_mode_' + m + '_dns_mode'] || 'split';
 		var ruleCount = db_ss['ss_split_mode_' + m + '_rule_count'] || '0';
 		var defAction = db_ss['ss_split_mode_' + m + '_default_action'] || '(unset)';
-		var tag = builtin ? ' <span style="color:#888;font-size:10px;">[内置]</span>' : '';
-		html += '<tr style="border-bottom:1px solid #ccc;"><td>#' + split_v2_html_escape(id) + ' ' + split_v2_html_escape(name) + tag + '</td><td>' + udp + '</td><td>' + quic + '</td><td>' + split_v2_html_escape(dnsMode) + '</td><td>' + split_v2_html_escape(ruleCount) + '</td><td><code style="font-size:11px;">' + split_v2_html_escape(defAction) + '</code></td>';
-		html += '<td><a href="javascript:void(0);" onclick="split_v2_edit_mode(' + m + ');">编辑</a>';
-		if (!builtin) {
-			html += ' | <a href="javascript:void(0);" onclick="split_v2_delete_mode(' + m + ');" style="color:#CC0066;">删除</a>';
-		}
-		html += '</td></tr>';
+		html += '<div class="split-card">';
+		html += '<div class="split-card-head"><div class="split-card-title"><span class="split-card-id">#' + split_v2_html_escape(id) + '</span><span class="split-card-name">' + split_v2_html_escape(name) + '</span>' + (builtin ? '<span class="split-badge-builtin">内置</span>' : '') + '</div>';
+		html += '<div class="split-card-actions"><a class="split-act" href="javascript:void(0);" onclick="split_v2_edit_mode(' + m + ');">✎ 编辑</a>';
+		if (!builtin) { html += '<a class="split-act split-act-del" href="javascript:void(0);" onclick="split_v2_delete_mode(' + m + ');">✕ 删除</a>'; }
+		html += '</div></div>';
+		html += '<div class="split-chip-row">';
+		html += '<span class="split-chip fallback" title="兜底出站">兜底 ' + split_v2_html_escape(defAction) + '</span>';
+		html += '<span class="split-chip ' + (dnsMode == 'split' ? 'dns-split' : 'dns-global') + '">DNS ' + (dnsMode == 'split' ? '分流' : '全局') + '</span>';
+		html += '<span class="split-chip">规则 <b>' + split_v2_html_escape(ruleCount) + '</b></span>';
+		html += '<span class="split-chip ' + (udp ? 'on' : 'off') + '">UDP ' + (udp ? '转发' : '关') + '</span>';
+		html += '<span class="split-chip ' + (quic ? 'on' : 'off') + '">QUIC ' + (quic ? '屏蔽' : '放行') + '</span>';
+		html += '</div></div>';
 	}
-	html += '</tbody></table>';
+	html += '</div>';
 	$wrap.html(html);
 }
 // 渲染 Rule 列表
 function render_split_rule_list() {
 	var $wrap = $('#split_rule_list_wrap');
 	if (!$wrap.length) return;
+	ensure_split_card_styles();
+	$('#split_rule_addslot').html('<div class="split-add-card" onclick="split_v2_new_rule();"><span class="split-add-plus">+</span> 新建 Rule</div><span class="split-add-cap"><a href="javascript:void(0);" onclick="openssHint(216);">auto-update 说明</a></span>');
 	var n = parseInt(db_ss['ss_split_rule_count'] || '0', 10);
 	if (isNaN(n) || n <= 0) {
-		$wrap.html("<span style='color:#888;'>暂无 Rule（首次启用新架构后，install.sh 的 migrate_split_routing_v1 会种子 8 条内置 Rule）</span>");
+		$wrap.html("<div class='split-empty'>暂无 Rule（首次启用新架构后，install.sh 的 migrate_split_routing_v1 会种子 8 条内置 Rule）</div>");
 		return;
 	}
-	var html = '<table width="100%" cellpadding="4" cellspacing="0" style="font-size:12px;border-collapse:collapse;"><thead><tr style="background:#445;color:#fff;"><th align="left">Rule</th><th align="left">域名</th><th align="left">IP/CIDR</th><th align="left">来源</th><th align="left">更新</th><th align="left">操作</th></tr></thead><tbody>';
+	var html = '<div class="split-card-stack">';
 	for (var r = 1; r <= n; r++) {
 		var id = db_ss['ss_split_rule_' + r + '_id'] || '?';
 		var name = db_ss['ss_split_rule_' + r + '_name'] || '(unnamed)';
 		var builtin = db_ss['ss_split_rule_' + r + '_builtin'] == '1';
 		var statD = db_ss['ss_split_rule_' + r + '_stat_domains'] || '?';
 		var statI = db_ss['ss_split_rule_' + r + '_stat_ips'] || '?';
-		var src = db_ss['ss_split_rule_' + r + '_source_url'] || '(手编)';
+		var src = db_ss['ss_split_rule_' + r + '_source_url'] || '';
 		var hrs = db_ss['ss_split_rule_' + r + '_update_hours'] || '0';
-		var tag = builtin ? ' <span style="color:#888;font-size:10px;">[内置]</span>' : '';
-		var srcShort = src.length > 35 ? src.substr(0,32) + '...' : src;
-		html += '<tr style="border-bottom:1px solid #ccc;"><td>#' + split_v2_html_escape(id) + ' ' + split_v2_html_escape(name) + tag + '</td><td>' + split_v2_html_escape(statD) + '</td><td>' + split_v2_html_escape(statI) + '</td><td title="' + split_v2_html_escape(src) + '" style="font-family:monospace;font-size:11px;">' + split_v2_html_escape(srcShort) + '</td><td>' + (hrs == '0' ? '禁用' : split_v2_html_escape(hrs) + 'h') + '</td>';
-		html += '<td><a href="javascript:void(0);" onclick="split_v2_edit_rule(' + r + ');">编辑</a>';
-		if (!builtin) {
-			html += ' | <a href="javascript:void(0);" onclick="split_v2_delete_rule(' + r + ');" style="color:#CC0066;">删除</a>';
-		}
-		html += '</td></tr>';
+		var srcLabel = src ? (src.length > 40 ? src.substr(0, 37) + '...' : src) : '手编';
+		html += '<div class="split-card">';
+		html += '<div class="split-card-head"><div class="split-card-title"><span class="split-card-id">#' + split_v2_html_escape(id) + '</span><span class="split-card-name">' + split_v2_html_escape(name) + '</span>' + (builtin ? '<span class="split-badge-builtin">内置</span>' : '') + '</div>';
+		html += '<div class="split-card-actions"><a class="split-act" href="javascript:void(0);" onclick="split_v2_edit_rule(' + r + ');">✎ 编辑</a>';
+		if (!builtin) { html += '<a class="split-act split-act-del" href="javascript:void(0);" onclick="split_v2_delete_rule(' + r + ');">✕ 删除</a>'; }
+		html += '</div></div>';
+		html += '<div class="split-chip-row">';
+		html += '<span class="split-chip">域名 <b>' + split_v2_html_escape(statD) + '</b></span>';
+		html += '<span class="split-chip">IP/CIDR <b>' + split_v2_html_escape(statI) + '</b></span>';
+		html += '<span class="split-chip ' + (hrs == '0' ? 'off' : 'on') + '">' + (hrs == '0' ? '不自动更新' : ('每 ' + split_v2_html_escape(hrs) + 'h 更新')) + '</span>';
+		html += '<span class="split-chip src" title="' + split_v2_html_escape(src) + '">来源 ' + split_v2_html_escape(srcLabel) + '</span>';
+		html += '</div></div>';
 	}
-	html += '</tbody></table>';
+	html += '</div>';
 	$wrap.html(html);
 }
 // 渲染默认 Mode select (硬规则 #9: 不静默 val(''))
@@ -6940,10 +7011,16 @@ function render_split_runtime_status() {
 	var ds = db_ss['ss_split_dns_split_status'] || '?';
 	var dg = db_ss['ss_split_dns_global_status'] || '?';
 	var tsTxt = (ts && ts != '0') ? new Date(parseInt(ts,10) * 1000).toLocaleString() : '(未重启)';
-	var dnsColor = function(v) { return v == 'ok' ? '#22ab39' : (v == 'down' ? '#CC0066' : '#888'); };
-	var html = '活跃 Mode: <b>' + ac + '</b> | xray outbound: <b>' + ob + '</b> | 最近重启: ' + tsTxt;
-	html += ' | DNS-分流: <span style="color:' + dnsColor(ds) + ';">' + ds + '</span>';
-	html += ' | DNS-全局: <span style="color:' + dnsColor(dg) + ';">' + dg + '</span>';
+	var dnsCls = function(v){ return v == 'ok' ? 'ok' : (v == 'down' ? 'down' : 'muted'); };
+	var dnsTxt = function(v){ return v == 'ok' ? '正常' : (v == 'down' ? '异常' : v); };
+	function statCard(k, v, cls){ return '<div class="split-stat-card ' + cls + '"><span class="split-stat-k">' + k + '</span><span class="split-stat-v">' + v + '</span></div>'; }
+	var html = '<div class="split-stat-row">';
+	html += statCard('活跃 Mode', ac, '');
+	html += statCard('xray 出站', ob, '');
+	html += statCard('DNS · 分流', dnsTxt(ds), dnsCls(ds));
+	html += statCard('DNS · 全局', dnsTxt(dg), dnsCls(dg));
+	html += statCard('最近重启', tsTxt, 'wide');
+	html += '</div>';
 	$el.html(html);
 }
 function start_split_status_polling() {
@@ -7852,7 +7929,7 @@ function save() {
 	if (node_sel) {
 		E("ssconf_basic_node").value = node_sel;
 	}
-	saveMainPanelNode = should_save_main_panel_node(node_sel);
+	saveMainPanelNode = false; // FORK doge.14: 落地节点 inline 配置编辑器已移除，节点配置统一走「节点管理」(ss_node_table_*)，主面板写回块不再执行
 	var node_type = get_node_type(node_sel);
 	submit_flag="1";
 	if (get_node_storage_schema() == 2) {
@@ -8033,16 +8110,9 @@ function save() {
 			var rowid = tr[i].getAttribute("id").split("_")[2];
 			var aclMode = E("ss_acl_mode_" + rowid).value;
 			dbus["ss_acl_name_" + rowid] = E("ss_acl_name_" + rowid).value;
+			// FORK doge.14: ACL 直接选分流 Mode，aclMode 即 split Mode id（0=不代理），不再翻译老模式
 			dbus["ss_acl_mode_" + rowid] = aclMode;
-			// FORK doge.12 alpha.18 Q2: 同步翻译到 ss_acl_split_mode_<rowid>，否则 V2 分流 (ss_split_enabled=1) 下 load_iptables_split 读不到，
-			// 该 MAC 静默落到默认 Mode (大陆白名单) fallback。翻译规则与 install.sh::migrate_split_routing_v1 step 4 严格一致：0→0 (不代理), 5→1 (全局/Mode 1), 其余→2 (大陆白名单/Mode 2)。
-			var splitMode = "2";
-			if (String(aclMode) == "0") splitMode = "0";
-			else if (String(aclMode) == "5") splitMode = "1";
-			dbus["ss_acl_split_mode_" + rowid] = splitMode;
-			dbus["ss_acl_port_" + rowid] = get_acl_port_save_value("ss_acl_port_" + rowid);
-			dbus["ss_acl_udp_" + rowid] = get_acl_checkbox_save_value("ss_acl_udp_" + rowid);
-			dbus["ss_acl_quic_" + rowid] = get_acl_checkbox_save_value("ss_acl_quic_" + rowid);
+			dbus["ss_acl_split_mode_" + rowid] = aclMode;
 		}
 	}
 	// node data: write node data under using from the main pannel incase of data change
@@ -8302,7 +8372,7 @@ function save() {
 		}
 	// show different title when subscribe
 	if(E("ss_basic_enable").checked){
-		var sel_mode = E("ss_basic_mode").value;
+		var sel_mode = E("ss_basic_mode") ? E("ss_basic_mode").value : (db_ss["ss_basic_mode"] || "2");
 		if (sel_mode == "1") {
 			db_ss["ss_basic_action"] = "1";
 		} else if (sel_mode == "2") {
@@ -9270,6 +9340,7 @@ function verifyFields(r) {
 			var hy2_on = false;
 		}
 		//fancyss_anytls_2
+	if (E("ss_basic_v2ray_use_json")) { // FORK doge.14: 落地 inline 配置表单已删，无字段可显隐时整段跳过
 	var v_json_on = E("ss_basic_v2ray_use_json").checked == true;
 	var v_json_off = E("ss_basic_v2ray_use_json").checked == false;
 	var v_http_on = E("ss_basic_v2ray_network").value == "tcp" && E("ss_basic_v2ray_headtype_tcp").value == "http";
@@ -9349,6 +9420,7 @@ function verifyFields(r) {
 	}else{
 		$("#ss_basic_xray_network_path_tr > th > a").html("* 路径 (path)");
 	}
+	} // FORK doge.14: /inline 配置显隐包裹
 	applyNodeVisibility();
 	// 插件重启功能
 	var Ti = E("ss_reboot_check").value;
@@ -14461,6 +14533,7 @@ var tab_actions = {
 		$('#apply_button').show();
 		if (typeof refresh_split_v2_panel === 'function') { refresh_split_v2_panel(); }
 		if (typeof start_split_status_polling === 'function') { start_split_status_polling(); }
+		if (typeof change_select_width === 'function') { change_select_width('#ssconf_basic_node'); change_select_width('#ssconf_basic_node_front'); }
 	}
 };
 
@@ -14524,7 +14597,7 @@ function toggle_func() {
 		$('.sub-btn2').addClass('active2');
 		verifyFields()
 	});
-	var default_tab = parseInt(E("ss_basic_tablet").checked ? "1":"0");
+	var default_tab = parseInt((E("ss_basic_tablet") && E("ss_basic_tablet").checked) ? "1":"11"); // FORK doge.14: 账号设置已删，默认落到分流
 	if (node_nu == 0 && poped == 0) {
 		$(".show-btn1").trigger("click");
 	}else{
@@ -15295,7 +15368,7 @@ function getACLConfigs() {
 	}
 	acl_confs = {};
 	var p = "ss_acl";
-	var params = ["ip", "port", "mode"];
+	var params = ["ip", "mode"]; // FORK doge.14: 端口列已删，不再要求 ss_acl_port 存在
 	for (var field in dict) {
 		var obj = {};
 		if (typeof db_acl[p + "_name_" + field] == "undefined") {
@@ -15315,6 +15388,7 @@ function getACLConfigs() {
 			obj["mac"] = db_acl[p + "_mac_" + field] || "";
 			obj["udp"] = get_acl_udp_value(obj["mode"], db_acl[p + "_udp_" + field]);
 			obj["quic"] = get_acl_quic_value(db_acl[p + "_quic_" + field]);
+			obj["split_mode"] = (typeof db_acl[p + "_split_mode_" + field] != "undefined") ? db_acl[p + "_split_mode_" + field] : ((String(db_acl[p + "_mode_" + field]) == "0") ? "0" : (String(db_acl[p + "_mode_" + field]) == "5" ? "1" : "2"));
 			var node_a = parseInt(field);
 			if (node_a > acl_node_max) {
 				acl_node_max = node_a;
@@ -15330,12 +15404,10 @@ function addTr() {
 	var p = "ss_acl";
 	acl_node_max += 1;
 	acls[p + "_ip_" + acl_node_max] = $('#' + p + "_ip").val();
-	acls[p + "_name_" + acl_node_max] = $('#' + p + "_name").val();
-	acls[p + "_mode_" + acl_node_max] = $('#' + p + "_mode").val();
-	acls[p + "_port_" + acl_node_max] = get_acl_port_save_value("ss_acl_port");
-	acls[p + "_mac_" + acl_node_max] = E("ss_acl_mac").value || "";
-	acls[p + "_udp_" + acl_node_max] = get_acl_checkbox_save_value("ss_acl_udp");
-	acls[p + "_quic_" + acl_node_max] = get_acl_checkbox_save_value("ss_acl_quic");
+		acls[p + "_name_" + acl_node_max] = $('#' + p + "_name").val();
+		acls[p + "_mode_" + acl_node_max] = $('#' + p + "_mode").val();
+		acls[p + "_split_mode_" + acl_node_max] = $('#' + p + "_mode").val();
+		acls[p + "_mac_" + acl_node_max] = E("ss_acl_mac").value || "";
 	var id = parseInt(Math.random() * 100000000);
 	var postData = {"id": id, "method": "dummy_script.sh", "params":[], "fields": acls};
 	$.ajax({
@@ -15766,17 +15838,8 @@ function get_acl_port_by_mode(mode) {
 	}
 	return "22,80,443,8080,8443";
 }
-function set_mode_1() {
-	sync_acl_port_state("ss_acl_port", $('#ss_acl_mode').val());
-	update_acl_udp_quic_label_pair("ss_acl_udp", "ss_acl_quic");
-}
-function set_mode_2(o) {
-	var id2 = $(o).attr("id");
-	var ids2 = id2.split("_");
-	id2 = ids2[ids2.length - 1];
-	sync_acl_port_state("ss_acl_port_" + id2, $(o).val());
-	update_acl_udp_quic_label_pair("ss_acl_udp_" + id2, "ss_acl_quic_" + id2);
-}
+function set_mode_1() {} // FORK doge.14: ACL 去端口/UDP/QUIC，Mode 选择无需联动
+function set_mode_2(o) {}
 function set_default_port() {
 	sync_acl_default_mode_follow_option();
 	sync_acl_port_state("ss_acl_default_ports", $('#ss_acl_default_mode').val());
@@ -16051,39 +16114,12 @@ function sync_acl_default_mode_follow_option() {
 	}
 }
 function apply_acl_form_states() {
-	var defaultRawMode = get_acl_default_raw_mode_from_dbus();
-	if (E("ss_acl_default_mode")) {
-		$('#ss_acl_default_mode').val(defaultRawMode);
-	}
-	set_acl_raw_port_state("ss_acl_default_ports", get_acl_default_raw_port_from_dbus());
-	set_acl_raw_bool_state("ss_acl_default_udp", get_acl_default_raw_udp_from_dbus());
-	set_acl_raw_bool_state("ss_acl_default_quic", typeof db_acl["ss_acl_default_quic"] != "undefined" ? db_acl["ss_acl_default_quic"] : "1");
-
+	// FORK doge.14: Mode 选中已在 render 阶段由 build_acl_mode_options 完成，这里只回填别名
 	for (var i = 1; i < acl_node_max + 1; i++) {
-		if (!E("ss_acl_mode_" + i)) {
-			continue;
-		}
-		$('#ss_acl_mode_' + i).val(db_acl["ss_acl_mode_" + i]);
+		if (!E("ss_acl_mode_" + i)) continue;
 		$('#ss_acl_name_' + i).val(db_acl["ss_acl_name_" + i]);
-		set_acl_raw_port_state("ss_acl_port_" + i, typeof db_acl["ss_acl_port_" + i] != "undefined" ? db_acl["ss_acl_port_" + i] : get_acl_port_by_mode(db_acl["ss_acl_mode_" + i]));
-		set_acl_raw_bool_state("ss_acl_udp_" + i, typeof db_acl["ss_acl_udp_" + i] != "undefined" ? db_acl["ss_acl_udp_" + i] : "0");
-		set_acl_raw_bool_state("ss_acl_quic_" + i, typeof db_acl["ss_acl_quic_" + i] != "undefined" ? db_acl["ss_acl_quic_" + i] : "1");
-		sync_acl_port_state("ss_acl_port_" + i, db_acl["ss_acl_mode_" + i]);
-		update_acl_udp_quic_label_pair("ss_acl_udp_" + i, "ss_acl_quic_" + i);
 	}
-
-	$('#ss_acl_mode').val("1");
-	set_acl_raw_port_state("ss_acl_port", "80,443");
-	set_acl_raw_bool_state("ss_acl_udp", "0");
-	set_acl_raw_bool_state("ss_acl_quic", "1");
 	set_acl_input_mac("");
-
-	sync_acl_default_mode_follow_option();
-	sync_acl_port_state("ss_acl_default_ports", E("ss_acl_default_mode") ? $('#ss_acl_default_mode').val() : "follow");
-	update_acl_udp_quic_label_pair("ss_acl_default_udp", "ss_acl_default_quic");
-	sync_acl_port_state("ss_acl_port", $('#ss_acl_mode').val());
-	update_acl_udp_quic_label_pair("ss_acl_udp", "ss_acl_quic");
-	sync_acl_udp_quic_labels();
 }
 function bind_acl_mode_sync() {
 	$("#ss_basic_mode").off("change.acl_sync").on("change.acl_sync", function() {
@@ -16095,6 +16131,7 @@ function bind_acl_mode_sync() {
 	});
 }
 function bind_shunt_mode_sync() {
+	if (!E("ss_basic_mode")) return; // FORK doge.14: 模式 select 已删（账号设置标签移除），shunt-mode 同步无对象
 	$("#ss_basic_mode").data("prev-mode", $("#ss_basic_mode").val() || get_selected_main_mode());
 	$("#ss_basic_mode").off("change.shunt_sync").on("change.shunt_sync", function() {
 		var nextMode = String($(this).val() || "");
@@ -16142,164 +16179,106 @@ function render_acl_quic_control(udpId, quicId, quicChecked) {
 	code += '</div>';
 	return code;
 }
+// FORK doge.14: ACL 简化——每台设备直接选「分流 Mode」，去掉 UDP代理 / 屏蔽QUIC / 代理端口 三列；离线设备也可在下拉里选
+function build_acl_mode_options(selectedId) {
+	var sel = String(selectedId == null ? "" : selectedId);
+	var html = '<option value="0"' + (sel == "0" ? ' selected' : '') + '>不通过代理（直连）</option>';
+	var n = parseInt(db_ss['ss_split_mode_count'] || '0', 10);
+	var found = (sel == "0");
+	for (var m = 1; m <= n; m++) {
+		var id = String(db_ss['ss_split_mode_' + m + '_id'] || '');
+		if (!id) continue;
+		var name = db_ss['ss_split_mode_' + m + '_name'] || '';
+		var isSel = (sel == id);
+		if (isSel) found = true;
+		html += '<option value="' + escape_acl_attr(id) + '"' + (isSel ? ' selected' : '') + '>#' + escape_acl_html(id) + ' ' + escape_acl_html(name) + '</option>';
+	}
+	// 硬规则 #9 精神：dbus 里有 Mode id 但当前 Mode 列表里没有——保留占位，别静默丢
+	if (sel && !found) {
+		html += '<option value="' + escape_acl_attr(sel) + '" selected data-stale="1">⚠️ Mode ' + escape_acl_html(sel) + '（已删）</option>';
+	}
+	return html;
+}
+function get_split_default_mode_label() {
+	var did = String(db_ss['ss_split_default_mode_id'] || '');
+	var n = parseInt(db_ss['ss_split_mode_count'] || '0', 10);
+	for (var m = 1; m <= n; m++) {
+		if (String(db_ss['ss_split_mode_' + m + '_id'] || '') == did) {
+			return '#' + did + ' ' + (db_ss['ss_split_mode_' + m + '_name'] || '');
+		}
+	}
+	return did ? ('#' + did) : '(未设置)';
+}
 function refresh_acl_html() {
 	acl_confs = getACLConfigs();
 	var n = 0;
-	for (var i in acl_confs) {
-		n++;
-	}
+	for (var i in acl_confs) { n++; }
+	var defModeForAdd = String(db_ss['ss_split_default_mode_id'] || '0');
 	var code = '';
-	// acl table th
-	code += '<table width="100%" border="0" align="center" cellpadding="4" cellspacing="0" class="FormTable_table acl_lists" style="margin:-1px 0px 0px 0px;">'
-	code += '<tr>'
-	code += '<th width="18%">客户端地址</th>'
-	code += '<th width="20%">主机别名</th>'
-	code += '<th width="18%">访问控制</th>'
-	code += '<th width="8%"><a onmouseover="mOver(this, 150)" onmouseout="RunmOut(this)" class="hintstyle" style="color:#03a9f4;" href="javascript:void(0);">UDP代理</a></th>'
-	code += '<th width="8%"><a onmouseover="mOver(this, 152)" onmouseout="RunmOut(this)" class="hintstyle" style="color:#03a9f4;" href="javascript:void(0);">屏蔽QUIC</a></th>'
-	code += '<th width="22%">代理端口</th>'
-	code += '<th width="6%">操作</th>'
-	code += '</tr>'
-	code += '</table>'
-	// acl table input area
-	code += '<table id="ACL_table" width="100%" border="0" align="center" cellpadding="4" cellspacing="0" class="list_table acl_lists" style="margin:-1px 0px 0px 0px;">'
-	code += '<tr>'
-	// ip addr
-	code += '<td width="18%">'
-	code += '<div style="display:flex;align-items:center;gap:0;padding:0 4px;box-sizing:border-box;">'
-		code += '<input type="text" maxlength="18" class="input_ss_table" id="ss_acl_ip" align="left" style="flex:1;min-width:0;width:auto;height:25px;line-height:25px;margin-left:0;text-align:center;box-sizing:border-box;" autocomplete="off" oninput="clear_acl_input_mac();" onClick="hideClients_Block();" autocorrect="off" autocapitalize="off">'
-	code += '<input type="hidden" id="ss_acl_mac" value="" />'
-	code += '<img id="pull_arrow" height="14px;" src="/res/arrow-down.gif" style="flex:none;cursor:pointer;" onclick="pullLANIPList(this);" title="<#select_IP#>">'
-	code += '</div>'
-	code += '<div id="ClientList_Block" class="clientlist_dropdown" style="margin-left:2px;margin-top:25px;"></div>'
-	code += '</td>'
-	// name
-	code += '<td width="20%">'
-	code += '<input type="text" id="ss_acl_name" class="input_ss_table" maxlength="50" style="display:block;width:92%;max-width:92%;height:25px;line-height:25px;margin:0 auto;box-sizing:border-box;text-align:center" placeholder="" />'
-	code += '</td>'
-	// mode
-	code += '<td width="18%">'
-	code += '<select id="ss_acl_mode" style="width:100%;max-width:100%;box-sizing:border-box;margin:0;text-align:center;text-align-last:center;padding-left:0;" class="input_option" onchange="set_mode_1(this);">'
-	code += '<option value="0">不通过代理</option>'
-	code += '<option value="1">gfw黑名单模式</option>'
-	code += '<option value="2">大陆白名单模式</option>'
-	code += '<option value="3">游戏模式</option>'
-	code += '<option value="5">全局代理模式</option>'
-	// code += '<option value="6">回国模式</option>'
-	code += '</select>'
-	code += '</td>'
-	code += '<td width="8%">'
-	code += render_acl_udp_control('ss_acl_udp', 'ss_acl_quic', false);
-	code += '</td>'
-	code += '<td width="8%">'
-	code += render_acl_quic_control('ss_acl_udp', 'ss_acl_quic', true);
-	code += '</td>'
-	// port
-	code += '<td width="22%">'
-	code += render_acl_port_select('ss_acl_port', 'input_option', 'width:100%;max-width:100%;box-sizing:border-box;margin:0;text-align-last:center;padding-left:0;')
-	code += '</td>'
-	// add/delete
-	code += '<td width="6%">'
-	code += '<input style="margin-left: 6px;margin: -2px 0px -4px -2px;" type="button" class="add_btn" onclick="addTr()" value="" />'
-	code += '</td>'
-	code += '</tr>'
-	// acl table rule area
+	// header
+	code += '<table width="100%" border="0" align="center" cellpadding="4" cellspacing="0" class="FormTable_table acl_lists" style="margin:-1px 0px 0px 0px;">';
+	code += '<tr>';
+	code += '<th width="24%">客户端地址</th>';
+	code += '<th width="30%">主机别名</th>';
+	code += '<th width="34%">访问控制 (分流 Mode)</th>';
+	code += '<th width="12%">操作</th>';
+	code += '</tr>';
+	code += '</table>';
+	// input row
+	code += '<table id="ACL_table" width="100%" border="0" align="center" cellpadding="4" cellspacing="0" class="list_table acl_lists" style="margin:-1px 0px 0px 0px;">';
+	code += '<tr>';
+	code += '<td width="24%">';
+	code += '<div style="display:flex;align-items:center;gap:0;padding:0 4px;box-sizing:border-box;">';
+	code += '<input type="text" maxlength="18" class="input_ss_table" id="ss_acl_ip" align="left" style="flex:1;min-width:0;width:auto;height:25px;line-height:25px;margin-left:0;text-align:center;box-sizing:border-box;" autocomplete="off" oninput="clear_acl_input_mac();" onClick="hideClients_Block();" autocorrect="off" autocapitalize="off">';
+	code += '<input type="hidden" id="ss_acl_mac" value="" />';
+	code += '<img id="pull_arrow" height="14px;" src="/res/arrow-down.gif" style="flex:none;cursor:pointer;" onclick="pullLANIPList(this);" title="选择设备">';
+	code += '</div>';
+	code += '<div id="ClientList_Block" class="clientlist_dropdown" style="margin-left:2px;margin-top:25px;"></div>';
+	code += '</td>';
+	code += '<td width="30%">';
+	code += '<input type="text" id="ss_acl_name" class="input_ss_table" maxlength="50" style="display:block;width:92%;max-width:92%;height:25px;line-height:25px;margin:0 auto;box-sizing:border-box;text-align:center" placeholder="" />';
+	code += '</td>';
+	code += '<td width="34%">';
+	code += '<select id="ss_acl_mode" style="width:100%;max-width:100%;box-sizing:border-box;margin:0;text-align:center;text-align-last:center;padding-left:0;" class="input_option">';
+	code += build_acl_mode_options(defModeForAdd);
+	code += '</select>';
+	code += '</td>';
+	code += '<td width="12%">';
+	code += '<input style="margin-left: 6px;margin: -2px 0px -4px -2px;" type="button" class="add_btn" onclick="addTr()" value="" />';
+	code += '</td>';
+	code += '</tr>';
+	// per-device rows (saved entries — shown regardless of online/offline)
 	for (var field in acl_confs) {
 		var ac = acl_confs[field];
 		code += '<tr id="acl_tr_' + ac["acl_node"] + '">';
-		
 		code += render_acl_source_cell(ac["ip"], ac["mac"]);
-		
-		code += '<td width="20%">';
+		code += '<td width="30%">';
 		code += '<input type="text" placeholder="' + ac["acl_node"] + '号机" id="ss_acl_name_' + ac["acl_node"] + '" name="ss_acl_name_' + ac["acl_node"] + '" class="input_option_2" maxlength="50" style="display:block;width:92%;max-width:92%;height:25px;line-height:25px;margin:0 auto;box-sizing:border-box;" placeholder="" />';
 		code += '</td>';
-		
-		code += '<td width="18%">';
-		code += '<select id="ss_acl_mode_' + ac["acl_node"] + '" name="ss_acl_mode_' + ac["acl_node"] + '" style="width:100%;max-width:100%;box-sizing:border-box;margin:0;" class="sel_option" onchange="set_mode_2(this);">';
-		if ($("#ss_basic_mode").val() == 6) {
-			code += '<option value="0">不通过代理</option>';
-			//code += '<option value="6">回国模式</option>';
-		} else {
-			code += '<option value="0">不通过代理</option>';
-			code += '<option value="1">gfw黑名单模式</option>';
-			code += '<option value="2">大陆白名单模式</option>';
-			code += '<option value="3">游戏模式</option>';
-			code += '<option value="5">全局代理模式</option>';
-			//code += '<option value="6">回国模式</option>';
-		}
-		code += '</select>'
+		code += '<td width="34%">';
+		code += '<select id="ss_acl_mode_' + ac["acl_node"] + '" name="ss_acl_mode_' + ac["acl_node"] + '" style="width:100%;max-width:100%;box-sizing:border-box;margin:0;" class="sel_option">';
+		code += build_acl_mode_options(ac["split_mode"]);
+		code += '</select>';
 		code += '</td>';
-		code += '<td width="8%">';
-		code += render_acl_udp_control('ss_acl_udp_' + ac["acl_node"], 'ss_acl_quic_' + ac["acl_node"], ac["udp"]);
-		code += '</td>';
-		code += '<td width="8%">';
-		code += render_acl_quic_control('ss_acl_udp_' + ac["acl_node"], 'ss_acl_quic_' + ac["acl_node"], ac["quic"]);
-		code += '</td>';
-		code += '<td width="22%">';
-		code += render_acl_port_select('ss_acl_port_' + ac["acl_node"], 'sel_option', 'width:100%;max-width:100%;box-sizing:border-box;');
-		code += '</td>';
-		
-		code += '<td width="6%">';
-		code += '<input style="margin: -2px 0px -4px -2px;" id="acl_node_' + ac["acl_node"] + '" class="remove_btn" type="button" onclick="delTr(this);" value="">'
+		code += '<td width="12%">';
+		code += '<input style="margin: -2px 0px -4px -2px;" id="acl_node_' + ac["acl_node"] + '" class="remove_btn" type="button" onclick="delTr(this);" value="">';
 		code += '</td>';
 		code += '</tr>';
 	}
+	// default rule row (unlisted devices follow 分流 default Mode)
 	code += '<tr>';
-	if (n == 0) {
-		code += '<td width="18%">所有主机</td>';
-	} else {
-		code += '<td width="18%">其它主机</td>';
-	}
-	code += '<td width="20%">默认规则</td>';
-	ssmode = E("ss_basic_mode").value;
-	var defaultMode = get_acl_default_raw_mode_from_dbus();
-	var defaultUdp = get_acl_udp_value(defaultMode, get_acl_default_raw_udp_from_dbus(), false);
-	var defaultQuic = get_acl_quic_value(db_acl["ss_acl_default_quic"], true);
-	if (n == 0) {
-		if (ssmode == 0) {
-			code += '<td width="18%"><span id="ss_acl_default_mode_text">插件未启用</span></td>';
-		} else if (ssmode == 1) {
-			code += '<td width="18%"><span id="ss_acl_default_mode_text">gfw黑名单模式</span></td>';
-		} else if (ssmode == 2) {
-			code += '<td width="18%"><span id="ss_acl_default_mode_text">大陆白名单模式</span></td>';
-		} else if (ssmode == 3) {
-			code += '<td width="18%"><span id="ss_acl_default_mode_text">游戏模式</span></td>';
-		} else if (ssmode == 5) {
-			code += '<td width="18%"><span id="ss_acl_default_mode_text">全局代理模式</span></td>';
-		} else if (ssmode == 6) {
-			//code += '<td width="18%">回国模式</td>';
-		}
-	} else {
-		code += '<td width="18%">';
-		code += '<select id="ss_acl_default_mode" style="width:100%;max-width:100%;box-sizing:border-box;margin:0;" class="sel_option" onchange="set_default_port();">';
-		if (ssmode == 0) {
-			code += '<td>插件未启用</td>';
-		} else {
-			code += '<option value="follow"' + (String(defaultMode) == "follow" ? ' selected' : '') + '>' + get_acl_follow_mode_option_text() + '</option>';
-			code += '<option value="0"' + (String(defaultMode) == "0" ? ' selected' : '') + '>不通过代理</option>';
-		}
-		code += '</select>';
-		code += '</td>';
-	}
-	code += '<td width="8%">';
-	code += render_acl_udp_control('ss_acl_default_udp', 'ss_acl_default_quic', defaultUdp);
-	code += '</td>';
-	code += '<td width="8%">';
-	code += render_acl_quic_control('ss_acl_default_udp', 'ss_acl_default_quic', defaultQuic);
-	code += '</td>';
-	code += '<td width="22%">';
-	code += render_acl_port_select('ss_acl_default_ports', 'sel_option', 'width:100%;max-width:100%;box-sizing:border-box;');
-	code += '</td>';
-	code += '<td width="6%">';
-	code += '</td>';
+	code += '<td width="24%">' + (n == 0 ? '所有主机' : '其它主机') + '</td>';
+	code += '<td width="30%">默认规则</td>';
+	code += '<td width="34%"><span style="color:#9fb0c0;font-size:12px;">跟随「分流」页默认 Mode：<b style="color:#9cc4ff;">' + escape_acl_html(get_split_default_mode_label()) + '</b><br><span style="color:#7d8b99;">（未单独指定的设备走此 Mode，在「分流」页顶部修改）</span></span></td>';
+	code += '<td width="12%"></td>';
 	code += '</tr>';
 	code += '</table>';
 
 	$(".acl_lists").remove();
 	$('#ss_acl_table').append(code);
-	sync_acl_udp_quic_labels();
-	
-	showDropdownClientList('setClientIP', 'ip>mac', 'all', 'ClientList_Block', 'pull_arrow', 'online');
+
+	// 'all' = 在线 + 离线（已知）设备都列进下拉，方便给没开机的设备先配好规则
+	showDropdownClientList('setClientIP', 'ip>mac', 'all', 'ClientList_Block', 'pull_arrow', 'all');
 }
 function setClientIP(ip, mac, name) {
 	E("ss_acl_ip").value = ip;
@@ -16790,7 +16769,7 @@ function toggleKeyMask(o, show){
 												<table style="margin:10px 0px 0px 0px;border-collapse:collapse" width="100%" height="37px">
 													<tr>
 														<td cellpadding="0" cellspacing="0" style="padding:0" border="1" bordercolor="#222">
-															<input id="show_btn0" class="show-btn0" style="cursor:pointer" type="button" value="帐号设置" />
+															<input id="show_btn11" class="show-btn11" style="cursor:pointer;background:#FFEBA0;color:#CC0066;" type="button" value="分流" title="智能分流架构" />
 															<input id="show_btn1" class="show-btn1" style="cursor:pointer" type="button" value="节点管理" />
 															<input id="show_btn3" class="show-btn3" style="cursor:pointer" type="button" value="DNS设定" />
 															<input id="show_btn4" class="show-btn4" style="cursor:pointer" type="button" value="黑白名单" />
@@ -16798,7 +16777,7 @@ function toggleKeyMask(o, show){
 															<input id="show_btn8" class="show-btn8" style="cursor:pointer" type="button" value="访问控制" />
 															<input id="show_btn9" class="show-btn9" style="cursor:pointer" type="button" value="附加功能" />
 															<input id="show_btn10" class="show-btn10" style="cursor:pointer" type="button" value="查看日志" />
-															<input id="show_btn11" class="show-btn11" style="cursor:pointer;background:#FFEBA0;color:#CC0066;" type="button" value="分流" title="智能分流架构" />
+															
 														</td>
 													</tr>
 												</table>
@@ -16956,133 +16935,6 @@ function toggleKeyMask(o, show){
 													<input id="edit_node" style="display: none;" class="button_gen" type="button" onclick="edit_ss_node_conf(save_flag);" value="修改">
 													<a id="continue_add" style="display: none;margin-left: 20px;"><input id="continue_add_box" type="checkbox"  />连续添加</a>
 												</div>
-											</div>
-											<div id="tablet_0" style="display: none;">
-												<table id="table_basic" width="100%" border="0" align="center" cellpadding="4" cellspacing="0" bordercolor="#6b8fa3" class="FormTable">
-													<tbody id="tb_main"></tbody>
-													<tbody id="tb_landing_section" class="props-section is-collapsed">
-														<tr class="props-section-head" onclick="return toggle_props_section('landing');">
-															<th colspan="2">落地节点配置 <span class="props-section-arrow">&#9662;</span></th>
-														</tr>
-													</tbody>
-													<tbody id="tb_front_section" class="props-section is-collapsed">
-														<tr class="props-section-head" onclick="return toggle_props_section('front');">
-															<th colspan="2">前置节点配置 <span class="props-section-arrow">&#9662;</span></th>
-														</tr>
-													</tbody>
-													<script type="text/javascript">
-														$('#tb_main').forms([
-															// commom
-															{ title: '落地节点', id:'ssconf_basic_node', type:'select', func:'onchange="ss_node_sel();"', style:'width:auto;min-width:164px;max-width:450px;', options:[], value: "1"},
-															{ title: '前置节点', id:'ssconf_basic_node_front', type:'select', func:'onchange="ss_node_front_sel();"', hint:'200', style:'width:auto;min-width:164px;max-width:450px;', options:[], value: ""},
-															{ title: '模式', id:'ss_basic_mode', type:'select', func:'v', hint:'1', options:option_main_modes, value: "1"},
-														]);
-														$('#tb_landing_section').forms([
-															{ title: '使用json配置', id:'ss_basic_v2ray_use_json', data:{show:'v2ray_on'}, type:'checkbox', func:'v', hint:'27'},
-															{ title: '使用json配置', id:'ss_basic_xray_use_json', data:{show:'xray_on'}, type:'checkbox', func:'v', hint:'27'},
-															{ title: '服务器地址', id:'ss_basic_server', data:{show:'basic_server_on'}, type:'text', maxlen:'100'},
-															{ title: '服务器端口', id:'ss_basic_port', data:{show:'basic_server_on'}, type:'text', maxlen:'100'},
-															{ title: '密码', id:'ss_basic_password', data:{show:'basic_pass_on'}, type:'password', maxlen:'100', peekaboo:'1'},
-															{ title: '加密方式', id:'ss_basic_method', data:{show:'basic_pass_on'}, type:'select', func:'v', style:'width:auto;min-width:135px;', options:option_method},
-															// ss
-															{ title: '混淆 (obfs)', id:'ss_basic_ss_obfs', data:{show:'ss_on'}, type:'select', func:'v', options:[["0", "关闭"], ["tls", "tls"], ["http", "http"]], value: "0"},
-															{ title: '混淆主机名 (obfs_host)', id:'ss_basic_ss_obfs_host', data:{show:'ss_obfs_host_on'}, type:'text', maxlen:'100', ph:'bing.com'},
-															// ssr
-															{ title: '协议 (protocol)', id:'ss_basic_rss_protocol', data:{show:'ssr_on'}, type:'select', func:'v', options:option_protocals},
-															{ title: '协议参数 (protocol_param)', id:'ss_basic_rss_protocol_param', data:{show:'ssr_on'}, type:'password', hint:'54', maxlen:'100', ph:'id:password', peekaboo:'1'},
-															{ title: '混淆 (obfs)', id:'ss_basic_rss_obfs', data:{show:'ssr_on'}, type:'select', func:'v', options:option_obfs},
-															{ title: '混淆参数 (obfs_param)', id:'ss_basic_rss_obfs_param', data:{show:'ssr_on'}, type:'text', hint:'11', maxlen:'300', ph:'cloudflare.com;bing.com'},
-															// v2ray
-															{ title: '用户id (id)', id:'ss_basic_v2ray_uuid', data:{show:'v2ray_on v_json_off'}, type:'password', hint:'49', maxlen:'300', style:'width:300px;', peekaboo:'1'},
-															{ title: '额外ID (Alterld)', id:'ss_basic_v2ray_alterid', data:{show:'v2ray_on v_json_off'}, type:'text', hint:'48', maxlen:'50'},
-															{ title: '加密方式 (security)', id:'ss_basic_v2ray_security', data:{show:'v2ray_on v_json_off'}, type:'select', hint:'47', options:option_v2enc},
-															{ title: '传输协议 (network)', id:'ss_basic_v2ray_network', data:{show:'v2ray_on v_json_off'}, type:'select', func:'v', hint:'35', options:["tcp", "kcp", "ws", "h2", "quic", "grpc", "httpupgrade"]},
-															{ title: '* tcp伪装类型 (type)', id:'ss_basic_v2ray_headtype_tcp', data:{show:'v2ray_on v_json_off v_net_tcp'}, type:'select', func:'v', hint:'36', options:option_headtcp},
-															{ title: '* kcp伪装类型 (type)', id:'ss_basic_v2ray_headtype_kcp', data:{show:'v2ray_on v_json_off v_net_kcp'}, type:'select', func:'v', hint:'37', options:option_headkcp},
-															{ title: '* quic伪装类型 (type)', id:'ss_basic_v2ray_headtype_quic', data:{show:'v2ray_on v_json_off v_net_quic'}, type:'select', options:option_headquic},
-															{ title: '* grpc模式', id:'ss_basic_v2ray_grpc_mode', data:{show:'v2ray_on v_json_off v_net_grpc'}, type:'select', options:option_grpcmode},
-															{ title: '* authority', id:'ss_basic_v2ray_grpc_authority', data:{show:'v2ray_on v_json_off v_net_grpc'}, type:'text', maxlen:'300', ph:'没有请留空'},
-															{ title: '* 伪装域名 (host)', id:'ss_basic_v2ray_network_host', data:{show:'v2ray_on v_json_off v_host_on'}, type:'text', maxlen:'300', ph:'没有请留空'},
-															{ title: '* 路径 (path)', rid:'ss_basic_v2ray_network_path_tr', id:'ss_basic_v2ray_network_path', data:{show:'v2ray_on v_json_off v_path_on'}, type:'text', hint:'29', maxlen:'300', ph:'没有请留空'},
-															{ title: '* kcp seed', id:'ss_basic_v2ray_kcp_seed', data:{show:'v2ray_on v_json_off v_net_kcp'}, type:'text', maxlen:'300', ph:'没有请留空'},
-															{ title: '底层传输安全', id:'ss_basic_v2ray_network_security', data:{show:'v2ray_on v_json_off'}, type:'select', func:'v', options:[["none", "关闭"], ["tls", "tls"]]},
-															{ title: '* 跳过证书验证 (AllowInsecure)', id:'ss_basic_v2ray_network_security_ai', data:{show:'fss_ai_removed'}, type:'checkbox'},
-															{ title: '* alpn', id:'ss_basic_v2ray_network_security_alpn', data:{show:'v2ray_on v_json_off v_tls_on'}, multi: [
-																{ suffix: '<input type="checkbox" id="ss_basic_v2ray_network_security_alpn_h2">h2' },
-																{ suffix: '<input type="checkbox" id="ss_basic_v2ray_network_security_alpn_http">http/1.1' },
-															]},
-															{ title: '* SNI', id:'ss_basic_v2ray_network_security_sni', data:{show:'v2ray_on v_json_off v_tls_on'}, type:'text'},
-															{ title: '多路复用 (Mux)', id:'ss_basic_v2ray_mux_enable', data:{show:'v2ray_on v_json_off'}, type:'checkbox', func:'v', hint:'31'},
-															{ title: 'Mux并发连接数', id:'ss_basic_v2ray_mux_concurrency', data:{show:'v2ray_on v_json_off v_mux_on'}, type:'text', hint:'32', maxlen:'300'},
-															{ title: 'v2ray json', id:'ss_basic_v2ray_json', data:{show:'v2ray_on v_json_on'}, type:'textarea', rows:'36', ph:ph_v2ray},
-															// xray
-															{ title: '用户id (id)', id:'ss_basic_xray_uuid', data:{show:'xray_on x_json_off'}, type:'password', hint:'49', maxlen:'300', style:'width:300px;', peekaboo:'1'},
-															{ title: '加密 (encryption)', id:'ss_basic_xray_encryption', data:{show:'xray_on x_json_off'}, type:'text', hint:'55', maxlen:'300'},
-															{ title: 'flow (流控模式，没有请留空)', id:'ss_basic_xray_flow', data:{show:'xray_on x_json_off x_flow_on'}, type:'select', options:option_xflow},
-															{ title: '传输协议 (network)', id:'ss_basic_xray_network', data:{show:'xray_on x_json_off'}, type:'select', func:'v', hint:'35', options:["tcp", "kcp", "ws", "h2", "quic", "grpc", "httpupgrade", "xhttp"]},
-															{ title: '* tcp伪装类型 (type)', id:'ss_basic_xray_headtype_tcp', data:{show:'xray_on x_json_off x_net_tcp'}, type:'select', func:'v', hint:'36', options:option_headtcp},
-															{ title: '* kcp伪装类型 (type)', id:'ss_basic_xray_headtype_kcp', data:{show:'xray_on x_json_off x_net_kcp'}, type:'select', func:'v', hint:'37', options:option_headkcp},
-															{ title: '* quic伪装类型 (type)', id:'ss_basic_xray_headtype_quic', data:{show:'xray_on x_json_off x_net_quic'}, type:'select', options:option_headquic},
-															{ title: '* grpc模式', id:'ss_basic_xray_grpc_mode', data:{show:'xray_on x_json_off x_net_grpc'}, type:'select', options:option_grpcmode},
-															{ title: '* authority', id:'ss_basic_xray_grpc_authority', data:{show:'xray_on x_json_off x_net_grpc'}, type:'text', maxlen:'300', ph:'没有请留空'},
-															{ title: '* xhttp模式', id:'ss_basic_xray_xhttp_mode', data:{show:'xray_on x_json_off x_xhttp_on'}, type:'select', options:option_xhttpmode, value: "auto"},
-															{ title: '* 伪装域名 (host)', id:'ss_basic_xray_network_host', data:{show:'xray_on x_json_off x_host_on'}, type:'text', maxlen:'300', ph:'没有请留空'},
-															{ title: '* 路径 (path)', rid:'ss_basic_xray_network_path_tr', id:'ss_basic_xray_network_path', data:{show:'xray_on x_json_off x_path_on'}, type:'text', maxlen:'300', ph:'没有请留空'},
-															{ title: '* kcp seed', id:'ss_basic_xray_kcp_seed', data:{show:'xray_on x_json_off x_net_kcp'}, type:'text', maxlen:'300', ph:'没有请留空'},
-															{ title: '底层传输安全', id:'ss_basic_xray_network_security', data:{show:'xray_on x_json_off'}, type:'select', func:'v', options:[["none", "关闭"], ["tls", "tls"], ["reality", "reality"]]},
-															{ title: '* 跳过证书验证 (AllowInsecure)', id:'ss_basic_xray_network_security_ai', data:{show:'fss_ai_removed'}, type:'checkbox', func:'v'},
-															{ title: '* pinnedPeerCertSha256', id:'ss_basic_xray_pcs', data:{show:'xray_on x_json_off x_tls_on'}, type:'text', style:'width:440px', ph:'没有请留空'},
-															{ title: '* verifyPeerCertByName', id:'ss_basic_xray_vcn', data:{show:'xray_on x_json_off x_tls_on'}, type:'text', ph:'没有请留空'},
-															{ title: '* alpn', id:'ss_basic_xray_network_security_alpn', data:{show:'xray_on x_json_off x_tls_on'}, multi: [
-																{ suffix: '<input type="checkbox" id="ss_basic_xray_network_security_alpn_h2">h2' },
-																{ suffix: '<input type="checkbox" id="ss_basic_xray_network_security_alpn_http">http/1.1' },
-															]},
-															{ title: '* show', id:'ss_basic_xray_show', data:{show:'xray_on x_json_off x_real_on'}, type:'checkbox'},
-															{ title: '* fingerprint', id:'ss_basic_xray_fingerprint', data:{show:'xray_on x_json_off', showAny:'x_tls_on x_real_on'}, type:'select', options:option_fingerprint},
-															{ title: '* SNI', id:'ss_basic_xray_network_security_sni', data:{show:'xray_on x_json_off', showAny:'x_tls_on x_real_on'}, type:'text', ph:'realitySettings中的serverName'},
-															{ title: '* publickey', id:'ss_basic_xray_publickey', data:{show:'xray_on x_json_off x_real_on'}, type:'password', maxlen:'300', style:'width:320px;', ph:'填写公钥', peekaboo:'1'},
-															{ title: '* shortId', id:'ss_basic_xray_shortid', data:{show:'xray_on x_json_off x_real_on'}, type:'text', ph:'没有请留空'},
-															{ title: '* spiderX', id:'ss_basic_xray_spiderx', data:{show:'xray_on x_json_off x_real_on'}, type:'text', ph:'没有请留空'},
-															{ title: 'xray json', id:'ss_basic_xray_json', data:{show:'xray_on x_json_on'}, type:'textarea', rows:'36', ph:ph_xray},
-															{ title: '其它', rid:'xray_binary_update_tr', data:{show:'xray_on'}, prefix: '<a type="button" class="ss_btn" style="cursor:pointer" onclick="xray_binary_update(2)">更新xray程序</a>'},
-															//trojan
-															{ title: 'trojan 密码', id:'ss_basic_trojan_uuid', data:{show:'trojan_on'}, type:'password', maxlen:'300', style:'width:280px;', peekaboo:'1'},
-															{ title: '跳过证书验证 (AllowInsecure)', id:'ss_basic_trojan_ai', data:{show:'fss_ai_removed'}, type:'checkbox', func:'v'},
-															{ title: 'pinnedPeerCertSha256', id:'ss_basic_trojan_pcs', data:{show:'trojan_on'}, type:'text', style:'width:440px', ph:'没有请留空'},
-															{ title: 'verifyPeerCertByName', id:'ss_basic_trojan_vcn', data:{show:'trojan_on'}, type:'text', ph:'没有请留空'},
-															{ title: 'SNI', id:'ss_basic_trojan_sni', data:{show:'trojan_on'}, type:'text'},
-															{ title: 'tcp fast open', id:'ss_basic_trojan_tfo', data:{show:'trojan_on'}, type:'checkbox'},
-															// naive
-															{ title: 'NaïveProxy 协议', id:'ss_basic_naive_prot', data:{show:'naive_on'}, type:'select', func:'v', options:option_naive_prot, maxlen:'300', value: "https"},								//fancyss-full
-															{ title: 'NaïveProxy 服务器', id:'ss_basic_naive_server', data:{show:'naive_on'}, type:'text', maxlen:'300'},																					//fancyss-full
-															{ title: 'NaïveProxy 端口', id:'ss_basic_naive_port', data:{show:'naive_on'}, type:'text', maxlen:'300', value: "443"},																			//fancyss-full
-															{ title: 'NaïveProxy 账户', id:'ss_basic_naive_user', data:{show:'naive_on'}, type:'text', maxlen:'300'},																						//fancyss-full
-																{ title: 'NaïveProxy 密码', id:'ss_basic_naive_pass', data:{show:'naive_on'}, type:'text', maxlen:'300'},																						//fancyss-full
-																//tuic
-																{ title: 'tuic json', id:'ss_basic_tuic_json', data:{show:'tuic_on'}, type:'textarea', rows:'18', ph:ph_tuic},																					//fancyss-full
-																//anytls
-																{ title: '服务器', id:'ss_basic_anytls_server', data:{show:'anytls_on'}, type:'text', maxlen:'300'},																		//fancyss-full
-																{ title: '端口', id:'ss_basic_anytls_port', data:{show:'anytls_on'}, type:'text', maxlen:'300', value: "443"},															//fancyss-full
-																{ title: '认证密码', id:'ss_basic_anytls_pass', data:{show:'anytls_on'}, type:'text', maxlen:'300'},																		//fancyss-full
-																{ title: 'SNI（域名）', id:'ss_basic_anytls_sni', data:{show:'anytls_on'}, type:'text'},																					//fancyss-full
-																{ title: '允许不安全', id:'ss_basic_anytls_ai', data:{show:'anytls_on'}, type:'checkbox', func:'v'},																		//fancyss-full
-																//hysteria2
-															{ title: '服务器', id:'ss_basic_hy2_server', data:{show:'hy2_on'}, type:'text', maxlen:'300'},
-															{ title: '端口', id:'ss_basic_hy2_port', data:{show:'hy2_on'}, type:'text', maxlen:'300'},
-															{ title: '认证密码', id:'ss_basic_hy2_pass', data:{show:'hy2_on'}, type:'text', maxlen:'300'},
-															{ title: '最大上行（mbps）', id:'ss_basic_hy2_up', data:{show:'hy2_on'}, type:'text', maxlen:'300'},
-															{ title: '最大下行（mbps）', id:'ss_basic_hy2_dl', data:{show:'hy2_on'}, type:'text', maxlen:'300'},
-															{ title: 'tcp fast open', id:'ss_basic_hy2_tfo', data:{show:'hy2_on'}, type:'checkbox'},
-															{ title: '混淆类型', id:'ss_basic_hy2_obfs', data:{show:'hy2_on'}, type:'select', func:'v', options:option_hy2_obfs, maxlen:'300', value: "0"},
-															{ title: '混淆密码', id:'ss_basic_hy2_obfs_pass', data:{show:'hy2_on hy2_obfs_on'}, type:'text', maxlen:'300'},
-															{ title: 'SNI（域名）', id:'ss_basic_hy2_sni', data:{show:'hy2_on'}, type:'text'},
-															{ title: '允许不安全', id:'ss_basic_hy2_ai', data:{show:'fss_ai_removed'}, type:'checkbox', func:'v'},
-															{ title: 'pinnedPeerCertSha256', id:'ss_basic_hy2_pcs', data:{show:'hy2_on'}, type:'text', style:'width:440px', ph:'没有请留空'},
-															{ title: 'verifyPeerCertByName', id:'ss_basic_hy2_vcn', data:{show:'hy2_on'}, type:'text', ph:'没有请留空'},
-															{ title: 'congestion', id:'ss_basic_hy2_cg', data:{show:'hy2_on'}, type:'select', func:'v', options:option_hy2_cg, maxlen:'300', value: "brutal"},
-														]);
-													</script>
-												</table>
 											</div>
 											<div id="tablet_1" style="display: none;">
 												<div id="ss_list_table"></div>
@@ -17510,11 +17362,10 @@ function render_dns_upstream_rows() {
 											<div id="tablet_8" style="display: none;">
 												<div id="ss_acl_table"></div>
 												<div id="ACL_note" style="margin:10px 0 0 5px">
-													<div><i>1&nbsp;&nbsp;默认状态下，所有局域网的设备流量都会走当前节点的模式（主模式），即相当于不启用局域网访问控制。</i></div>
-													<div><i>2&nbsp;&nbsp;当你设置默认规则为不通过代理，添加了主机走大陆白名单模式，则只有添加的主机才会走代理(大陆白名单模式)。</i></div>
-													<div><i>3&nbsp;&nbsp;当你设置默认规则为正在使用节点的模式，除了添加的主机才会走相应的模式，未添加的主机会走默认规则的模式。</i></div>
-													<div><i>4&nbsp;&nbsp;开启udp代理的情况下，建议勾选屏蔽QUIC，不屏蔽QUIC的话一些媒体网站如youtube使用QUIC流量，速度可能会比较慢</i></div>
-													<div><i>5&nbsp;&nbsp;关闭udp代理的情况下，建议勾选屏蔽QUIC，不屏蔽QUIC的话会直连访问http3网站，导致比如chatgpt，gemini等检测到国内ip地址</i></div>
+													<div><i>1&nbsp;&nbsp;默认情况下所有设备都走「分流」页设置的默认 Mode（见下方“其它主机”行）。</i></div>
+													<div><i>2&nbsp;&nbsp;在上面给某台设备单独指定一个 Mode，它就按该 Mode 分流；选“不通过代理（直连）”则该设备完全不走代理。</i></div>
+													<div><i>3&nbsp;&nbsp;离线（没开机）的设备也能在地址栏右侧下拉里选到，方便提前配好规则。</i></div>
+													<div><i>4&nbsp;&nbsp;UDP 转发、屏蔽 QUIC、端口范围现在都在每个 Mode 里设置（「分流」页 → 编辑 Mode），不在这里逐设备配。</i></div>
 												</div>
 											</div>
 											<div id="tablet_9" style="display: none;">
@@ -17617,33 +17468,30 @@ function render_dns_upstream_rows() {
 											<div id="tablet_11" style="display: none;">
 												<!-- FORK doge.12: 分流架构入口 -->
 												<table id="table_split_v2_main" width="100%" border="1" align="center" cellpadding="4" cellspacing="0" bordercolor="#6b8fa3" class="FormTable" style="margin-top:4px;">
-													<thead><tr><td class="IPQOSTitle" colspan="2" align="left" style="background:#CC0066;color:#fff;font-weight:bold;padding:6px 10px;">分流架构</td></tr></thead>
+													<thead><tr><td class="IPQOSTitle split-sec-head" colspan="2" align="left">分流架构</td></tr></thead><tbody id="split_node_picker_tb"></tbody>
 													<tbody>
-														<tr><td colspan="2" style="background:#FFEBA0;color:#CC0066;padding:8px;border:1px dashed #CC0066;line-height:1.6;">
+														<tr><td colspan="2" class="split-banner">
 															<b>智能分流</b>：基于 per-Mode TPROXY + xray sniffing + 双轨 DNS 的分流架构。按设备/规则分配不同代理策略。
 															详见 <a href="javascript:void(0);" onclick="openssHint(210);" style="color:#03a9f4;"><u>说明</u></a>。
 														</td></tr>
-														<tr><th width="30%"><a class="hintstyle" style="color:#03a9f4;" href="javascript:void(0);" onclick="openssHint(210);">启用分流</a></th>
-															<td><select id="ss_split_enabled" style="width:auto"><option value="0">未启用</option><option value="1">已启用 (默认)</option></select>
-															&nbsp;<span id="ss_split_enabled_state" style="color:#888;font-size:11px;"></span></td></tr>
 														<tr><th>默认 Mode</th>
 															<td><select id="ss_split_default_mode_id" style="width:auto"></select>
 															&nbsp;<span style="color:#888;font-size:11px;">用于未在访问控制里特别指定 Mode 的设备</span></td></tr>
 														<tr><th>运行状态</th><td><span id="ss_split_runtime_status" style="color:#888;font-size:12px;">(等待轮询)</span></td></tr>
 													</tbody>
 												</table>
-												<table id="table_split_modes" width="100%" border="1" align="center" cellpadding="4" cellspacing="0" bordercolor="#6b8fa3" class="FormTable" style="margin-top:8px;">
-													<thead><tr><td class="IPQOSTitle" colspan="2" align="left" style="font-weight:bold;padding:6px 10px;">模式 (Mode) 管理 <a class="hintstyle" style="color:#03a9f4;font-weight:normal;" href="javascript:void(0);" onclick="openssHint(211);"><u>说明</u></a></td></tr></thead>
+												<script type="text/javascript">try{ $('#split_node_picker_tb').forms([{ title: '落地节点', id:'ssconf_basic_node', type:'select', func:'onchange="ss_node_sel();"', style:'width:auto;min-width:164px;max-width:450px;', options:[], value: "1"},{ title: '前置节点', id:'ssconf_basic_node_front', type:'select', func:'onchange="ss_node_front_sel();"', hint:'200', style:'width:auto;min-width:164px;max-width:450px;', options:[], value: ""}]); }catch(e){ if(window.console&&console.warn) console.warn('split picker forms failed', e); }</script><table id="table_split_modes" width="100%" border="1" align="center" cellpadding="4" cellspacing="0" bordercolor="#6b8fa3" class="FormTable" style="margin-top:8px;">
+													<thead><tr><td class="IPQOSTitle split-sec-head" colspan="2" align="left">模式 (Mode) 管理 <a class="hintstyle" style="color:#03a9f4;font-weight:normal;" href="javascript:void(0);" onclick="openssHint(211);"><u>说明</u></a></td></tr></thead>
 													<tbody>
 														<tr><td colspan="2" style="padding:0;"><div id="split_mode_list_wrap" style="min-height:60px;padding:8px;"><span style="color:#888;">(等到主代理重启代理后此处会有数据)</span></div></td></tr>
-														<tr><td colspan="2" style="padding:6px;"><input type="button" class="ss_btn" style="cursor:pointer;" onclick="split_v2_new_mode();" value="新建 Mode" />&nbsp;&nbsp;<span style="color:#888;font-size:11px;">支持编辑、删除、新建</span></td></tr>
+														<tr><td colspan="2" style="padding:6px;"><div id="split_mode_addslot" class="split-add-slot"></div></td></tr>
 													</tbody>
 												</table>
 												<table id="table_split_rules" width="100%" border="1" align="center" cellpadding="4" cellspacing="0" bordercolor="#6b8fa3" class="FormTable" style="margin-top:8px;">
-													<thead><tr><td class="IPQOSTitle" colspan="2" align="left" style="font-weight:bold;padding:6px 10px;">规则 (Rule) 管理 <a class="hintstyle" style="color:#03a9f4;font-weight:normal;" href="javascript:void(0);" onclick="openssHint(212);"><u>说明</u></a></td></tr></thead>
+													<thead><tr><td class="IPQOSTitle split-sec-head" colspan="2" align="left">规则 (Rule) 管理 <a class="hintstyle" style="color:#03a9f4;font-weight:normal;" href="javascript:void(0);" onclick="openssHint(212);"><u>说明</u></a></td></tr></thead>
 													<tbody>
 														<tr><td colspan="2" style="padding:0;"><div id="split_rule_list_wrap" style="min-height:60px;padding:8px;"><span style="color:#888;">(等到主代理重启代理后此处会有数据)</span></div></td></tr>
-														<tr><td colspan="2" style="padding:6px;"><input type="button" class="ss_btn" style="cursor:pointer;" onclick="split_v2_new_rule();" value="新建 Rule" />&nbsp;&nbsp;<a class="hintstyle" style="color:#03a9f4;font-size:11px;" href="javascript:void(0);" onclick="openssHint(216);"><u>auto-update 说明</u></a></td></tr>
+														<tr><td colspan="2" style="padding:6px;"><div id="split_rule_addslot" class="split-add-slot"></div></td></tr>
 													</tbody>
 												</table>
 											</div>
