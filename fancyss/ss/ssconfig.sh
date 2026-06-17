@@ -36,6 +36,10 @@ LINUX_VER=$(uname -r|awk -F"." '{print $1$2}')
 
 # 分流架构 per-Mode TPROXY/REDIRECT 端口基址（详见 split-routing-architecture.md §5.1）
 SS_SPLIT_PORT_BASE="13333"
+# FORK doge.14-beta.8 启动提速：xray geosite/geoip 共享资源目录（install 已部署 .dat 到此）。
+# 内置大表规则（chnlist→geosite:cn+geoip:cn / gfwlist→geosite:gfw）改发"引用"而非内联 11 万行，
+# xray 启动只加载一次共享 .dat，免去每模式 ~3MB JSON 内联 + 每模式 awk 生成（详见 split-routing-implementation.md §6.3 D30）。
+SS_XRAY_ASSET_DIR="/koolshare/ss/rules_ng2/dat"
 # 双轨 chinadns-ng 实例端口（详见 split-routing-architecture.md §6.2）
 SS_SPLIT_DNS_SPLIT_PORT="65353"
 SS_SPLIT_DNS_GLOBAL_PORT="65354"
@@ -4613,8 +4617,34 @@ EOF
 			out_direct|out_reject|out_main|out_node_*|out_chain_*) : ;;
 			*) rtag="out_main" ;;
 			esac
+
+			# FORK doge.14-beta.8 启动提速（D30）：内置大表规则改发 geosite/geoip 共享引用。
+			# 行为不变：geosite:cn 由同份 chnlist.gz 编译、geosite:gfw 由 gfwlist.gz、geoip:cn 由 chnroute，
+			# 条数与内联一致；domain(geosite)与 ip(geoip)仍各自独立成条 rule → D27/D29 的 UDP 修复不回归。
+			# 收益：xray 启动只加载一次共享 .dat，省掉每模式 ~3MB JSON 内联 + 每模式 ss_split_rule_to_json 的 awk。
+			# 安全闸：仅当对应 .dat 存在且非空才发引用，否则 geo_emitted=0 → fall through 到下面内联兜底
+			#（.dat 缺失却发引用会让 xray -test 失败 → 回滚基线 → LAN 断，alpha.8 实证陷阱）。
+			local rgeosite=$(dbus get ss_split_rule_${rid}_geosite 2>/dev/null)
+			local rgeoip=$(dbus get ss_split_rule_${rid}_geoip 2>/dev/null)
+			local geo_emitted=0
+			if [ -n "${rid}" ] && { [ -n "${rgeosite}" ] || [ -n "${rgeoip}" ]; }; then
+				if [ -n "${rgeosite}" ] && [ -s "${SS_XRAY_ASSET_DIR}/geosite.dat" ]; then
+					local gdoms=$(printf '%s' "${rgeosite}" | jq -R 'split(",")|map(select(length>0)|"geosite:"+.)' 2>/dev/null)
+					if [ -n "${gdoms}" ] && [ "${gdoms}" != "[]" ]; then
+						__split_emit_rule "$(jq -n --arg tag "mode_${mid}" --argjson d "${gdoms}" --arg ob "${rtag}" '{type:"field",inboundTag:[$tag],domain:$d,outboundTag:$ob}')"
+						geo_emitted=1
+					fi
+				fi
+				if [ -n "${rgeoip}" ] && [ -s "${SS_XRAY_ASSET_DIR}/geoip.dat" ]; then
+					local gips=$(printf '%s' "${rgeoip}" | jq -R 'split(",")|map(select(length>0)|"geoip:"+.)' 2>/dev/null)
+					if [ -n "${gips}" ] && [ "${gips}" != "[]" ]; then
+						__split_emit_rule "$(jq -n --arg tag "mode_${mid}" --argjson i "${gips}" --arg ob "${rtag}" '{type:"field",inboundTag:[$tag],ip:$i,outboundTag:$ob}')"
+						geo_emitted=1
+					fi
+				fi
+			fi
 			local rfile="${rules_user_dir}/rule_${rid}.txt"
-			if [ -n "${rid}" ] && [ -f "${rfile}" ]; then
+			if [ "${geo_emitted}" = "0" ] && [ -n "${rid}" ] && [ -f "${rfile}" ]; then
 				# alpha.13: rule 文件可能 11 万行 chnlist（~1.6MB JSON）—— 不能灌进
 				# shell 变量。busybox `[ "${X}" ]` 内置 ARG_MAX ~128KB 必爆，alpha.12
 				# 实地踩坑（41s hang + Mode 2 大文件 rule 静默吞掉）。
@@ -4815,7 +4845,7 @@ EOF
 
 	# 5. 自检（失败时显式回滚基线）
 	if [ -x /koolshare/bin/xray ]; then
-		if ! /koolshare/bin/xray run -test -c "${xray_json}" >/tmp/fss_split_xray.testlog 2>&1; then
+		if ! XRAY_LOCATION_ASSET="${SS_XRAY_ASSET_DIR}" /koolshare/bin/xray run -test -c "${xray_json}" >/tmp/fss_split_xray.testlog 2>&1; then
 			echo_date "❌ split: xray -test 自检失败，详见 /tmp/fss_split_xray.testlog。回滚到基线 xray.json。"
 			dbus set fss_split_xray_warn="xray_test_failed"
 			if [ -s "${xray_json_bak}" ]; then
@@ -4889,7 +4919,7 @@ start_xray() {
 	# doge.14: 捕获 xray 启动 stderr（run_bg 会吞掉），配合 detect_running_status3 的崩溃 dump，
 	# 让“配置 -test 过但运行时崩/慢”的情况能看到真实原因。
 	rm -f /tmp/xray_run.err
-	env -i PATH=${PATH} /koolshare/bin/xray run -c /koolshare/ss/xray.json >/tmp/xray_run.err 2>&1 &
+	env -i PATH=${PATH} XRAY_LOCATION_ASSET="${SS_XRAY_ASSET_DIR}" /koolshare/bin/xray run -c /koolshare/ss/xray.json >/tmp/xray_run.err 2>&1 &
 	# alpha.17 P1-2: VERBOSE=1 让 detect_running_status3 打印探测结果；启动后探 pid/监听端口
 	detect_running_status3 xray 23456 1 force /tmp/xray_run.err
 	local _xray_pid=$(pidof xray | awk '{print $1}')

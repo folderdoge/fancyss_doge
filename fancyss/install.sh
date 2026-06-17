@@ -862,6 +862,32 @@ repair_builtin_udp_proxy_v1(){
 	fi
 }
 
+# FORK doge.14-beta.8 启动提速：给内置大表规则打 geosite/geoip 共享引用标记（行为不变）。
+# Rule 1(大陆白名单=chnlist 域名 + cn IP) → geosite:cn + geoip:cn；Rule 2(GFW=gfwlist) → geosite:gfw。
+# 这些 .dat 分类由同一份 chnlist.gz/gfwlist.gz/chnroute 在构建期编译，条数与内联完全一致 → 分流结果不变。
+# generate_xray_json_split 见标记 + 对应 .dat 存在即发引用，xray 启动只加载一次共享资源，
+# 免去每模式内联 ~3MB JSON + 每模式 awk(126k 行)；多模式场景启动从 ~30s 降到 ~10s（实测 armv7l）。
+# 本迁移每次 install 都跑（覆盖新装 + 已迁移老用户，后者 migrate_v1 marker 已置不再 reseed）；
+# 幂等 fss_split_geo_meta_v1=1；只动 builtin=1 的内置 Rule，用户自定义 Rule（rid>=9）不碰。
+migrate_split_geo_meta_v1(){
+	[ "$(dbus get fss_split_geo_meta_v1)" = "1" ] && return 0
+	local set_cnt=0
+	if [ "$(dbus get ss_split_rule_1_builtin)" = "1" ]; then
+		dbus set ss_split_rule_1_geosite="cn"
+		dbus set ss_split_rule_1_geoip="cn"
+		set_cnt=$((set_cnt + 1))
+	fi
+	if [ "$(dbus get ss_split_rule_2_builtin)" = "1" ]; then
+		dbus set ss_split_rule_2_geosite="gfw"
+		set_cnt=$((set_cnt + 1))
+	fi
+	dbus set fss_split_geo_meta_v1="1"
+	if [ "${set_cnt}" -gt 0 ]; then
+		logger -t "fancyss" "doge.14-beta.8 migrate_split_geo_meta_v1: 内置大表规则启用 geosite/geoip 共享引用 (${set_cnt})"
+		echo_date "✅ FORK doge.14-beta.8: 内置大表规则启用共享 geo 资源（启动提速，分流结果不变）"
+	fi
+}
+
 # FORK doge.13 beta.3: 清理 ss_split_dns_*_upstream 已被多层 base64 污染的值。
 # 根因：D1 在 asp save() params_base64 加了 Base64.encode，但 conf2obj 漏加对应 _base64 decode。
 # 后果：textarea 被填 RAW base64 → 用户每次点"保存&应用"（任意 tab）都会 encode +1 层 → 多次 save 后变 N 层 →
@@ -2574,6 +2600,8 @@ install_now(){
 	repair_builtin_udp_proxy_v1
 	# FORK doge.14: Xray 移除 allowInsecure —— 对升级前开着 cert-skip 的节点一次性提示（幂等）
 	notify_allowinsecure_removed_v1
+	# FORK doge.14-beta.8: 内置大表规则启用 geosite/geoip 共享引用（启动提速，分流结果不变；幂等）
+	migrate_split_geo_meta_v1
 	# FORK doge.12 alpha：分流 Rule 自动更新 cron（每 30 分钟扫一次；详见 doc/design/split-routing-architecture.md §10.3）。
 	# alpha 期内置 Rule 全部 update_hours=0，cron 跑等于 no-op；脚本里有守护跳过。
 	# 用户自定义 Rule + 设置 update_hours>0 + 配置 source_url 才会真正下载。

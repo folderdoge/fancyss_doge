@@ -650,6 +650,23 @@ migrate_split_routing_v3() {
 - **51.1 实证（改源码 + `ssconfig.sh restart` 真实重建链路，非手删规则）**：单 socket 长连 Google 8/8、Cloudflare 8/8（修前 1/6）；快速刷新 15 个新 socket 15/15（= 用户"快速刷新后全挂"场景）；TCP 海外 `api.ip.sb`→UK 代理节点、`api.ipify.org`→AWS London 同节点（分流/TPROXY TCP 不回归）；mangle 链 udp socket-match 缺席、tcp 在席；`fss_split_xray_warn` 空（无 fallback）。
 - **影响面**：所有走分流的 UDP（STUN/WebRTC、UDP 游戏、任意 UDP 应用）现在连续可用；DNS 不受影响（dport 53 在 socket-match 之前已 RETURN，见 D16）；TCP 完全不受影响（删的是 `-p udp` 规则）；`block_quic` 不受影响（DROP udp/443 在 TPROXY 之前、socket-match 之后，逻辑不变）。首包仍 ~1.1s（代理首跳 UDP association 建立的固有延迟，非 bug；③ 已证与嗅探无关），后续包 ~300ms。
 
+#### D30: 多模式大配置启动慢 — 内置大表规则改发 geosite/geoip 共享引用（doge.14-beta.8）
+
+2026-06-17 用户报"模式下存在多个大配置启动慢"。根因 + 治本方案 + 51.1 实证：
+
+- **根因**：`generate_xray_json_split` 把每条 Rule 的域名/IP **内联**进 xray.json（`ss_split_rule_to_json` → `domain:`/CIDR 数组）。内置「大陆白名单」Rule 1 = chnlist 11.8 万域名 + cn IP 1 万条，内联成 JSON ≈ 每个用到它的 Mode **~3MB**，且 **每个 Mode 各一份**（routing rule 按 `inboundTag` 区分，xray 无法跨 inbound 复用同一条 rule）。3 个 Mode 都用 → xray.json ~9MB + xray 启动解析 + 建 3 套匹配表 + 每 Mode 一次 126k 行 awk 生成。
+- **方案（用户选"只提速、行为不变"）**：内置大表规则改发 xray 原生 `geosite:`/`geoip:` **引用**而非内联。仓库早已备好整套 geodata 管线（`rules_ng2/` 源 + `scripts/build_geo*_fancyss.sh` 用 v2fly Go 工具在**构建期**编译 + `binaries/geotool` 只读提取工具 + `fancyss/ss/rules_ng2/dat/{geosite,geoip}.dat` 已打进包、install 已部署到 `/koolshare/ss/rules_ng2/dat/`），仅差"运行时把它接进 xray 配置生成"。
+- **行为不变性（关键）**：`geosite:cn` 由**同一份 `chnlist.gz`** 编译（assets.json `cn` site source = `local_gzip_domain_suffix: rules_ng/chnlist.gz`，rule_counts `cn`=118209 与设备 chnlist 一致）、`geosite:gfw` 由 `gfwlist.gz`、`geoip:cn` 由 `chnroute`。匹配类型同为 `domain:`（后缀/子域）+ CIDR。domain(geosite)/ip(geoip) 仍**各自独立成条 rule** → D27/D29 的 UDP 修复不回归。geotool 实测 `baidu.com/taobao.com/ipip.net` 均在 cn 分类。
+- **实现**（5 处，全在 [ssconfig.sh](../../fancyss/ss/ssconfig.sh) + [install.sh](../../fancyss/install.sh)，behavior-preserving 最小改）：
+  1. `SS_XRAY_ASSET_DIR="/koolshare/ss/rules_ng2/dat"` 全局常量。
+  2. Rule 循环：读 `ss_split_rule_<rid>_geosite` / `_geoip`，非空**且对应 .dat 存在非空**时发 `{domain:["geosite:cn"...]}` / `{ip:["geoip:cn"...]}` 引用并 `geo_emitted=1`，否则 fall through 到原内联路径（`geo_emitted=0`）。
+  3. **安全闸**：`.dat` 缺失绝不发引用（否则 xray -test 失败 → 回滚基线 → LAN 断，= D"陷阱 1"/alpha.8）。
+  4. xray 自检（`xray -test`）+ 主进程启动两处都注入 `XRAY_LOCATION_ASSET=${SS_XRAY_ASSET_DIR}`。**坑**：主进程那行是 `env -i PATH=... xray`，`env -i` 会清空环境 → 必须把 `XRAY_LOCATION_ASSET=` 直接写进 `env -i` 这一行（export 会被 `env -i` 吃掉）。
+  5. `install.sh::migrate_split_geo_meta_v1`（幂等 `fss_split_geo_meta_v1`，每次 install 都跑覆盖新装 + 已迁移老用户）给 builtin Rule 1 种 `geosite=cn`+`geoip=cn`、Rule 2 种 `geosite=gfw`。`ss_split_rule_seed.sh` 仍按原样灌 chnlist 进 rule_1.txt 作 **fallback**（geo 不可用时内联兜底）。
+- **51.1 实证（armv7l，TUF-AX3000）**：① `xray -test` PoC `geosite:cn`+`geoip:cn` → "Configuration OK"（无 asset path 则 `open /data/geosite.dat: no such file` 失败，印证 #4 的 env 注入是关键）；② xray.json **4,332,707 → 11,534 字节（375×）**；③ 整机 `ssconfig.sh restart` 总耗时 **43s（内联）→ 32s（geo）**，仅 1 个 Mode 用 chnlist 就省 11s（多 Mode 收益更大；纯 xray -test 7.2s→4.2s）；④ **A/B 路由完全一致**（Mode 2 大陆白名单：`myip.ipip.net`→直连同一 CN IP `123.158.55.243`、`cloudflare`→代理同一 UK IP `86.53.160.85`，新旧逐字节相同）；⑤ `fss_split_xray_warn` 空、无回滚。
+- **xray 匹配表 per-rule（非全局共享）**：3 个 Mode 各引用 `geosite:cn` → 仍各建一次匹配表（实测 1 Mode 4.2s / 3 Mode 10.2s）；要做到"模式再多启动不变"（实测合并成一条 `inboundTag:[m1,m2,m3]` → 4.2s 持平）需**跨模式合并 rule**，但合并会改变各 Mode 内规则顺序 → 有改动分流结果的风险，与"行为不变"冲突，**本期不做**，留作未来需单独安全性论证的增强。
+- **更新节奏（无 drift，故不需 Step 2）**：doge.14 下 `ss_rule_update.sh` 下载 chnlist.gz/gfwlist.gz 后只 `ssconfig.sh restart`，**不重 seed `rule_1.txt`**（reseed 仅在文件缺失时触发），且老 ipset 消费者已物理删除 → **即便老内联路径，on-device "更新规则" 也不刷新内置白名单的生效域名**。chnlist.gz 与 geosite.dat 都只随**插件版本**更新且一起更新。故 geo 改动**不改变更新节奏**、无引入 drift。（未来增强方向：让 `ss_rule_update.sh` 也下载 fork 发布的 `geosite.dat`/`geoip.dat` → 反而能让"更新规则"真正对内置 CN/GFW 生效，优于现状；非本期范围。）
+
 ### 6.4 实施期约定的回溯修订
 
 **alpha 阶段（doge.12.alpha-1 → alpha.18）**：
