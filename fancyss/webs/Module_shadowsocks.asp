@@ -6834,6 +6834,8 @@ function ensure_split_card_styles() {
 		+ ".split-card-id{display:inline-flex;align-items:center;justify-content:center;min-width:24px;height:20px;padding:0 6px;border-radius:6px;background:rgba(110,168,254,0.16);border:1px solid rgba(110,168,254,0.30);color:#9cc4ff;font-size:12px;font-weight:700;}"
 		+ ".split-card-name{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}"
 		+ ".split-badge-builtin{font-size:10px;color:#93a8bc;border:1px solid rgba(143,163,184,0.32);border-radius:4px;padding:1px 5px;font-weight:500;letter-spacing:.5px;}"
+		+ ".split-badge-kind{font-size:10px;border-radius:4px;padding:1px 5px;font-weight:500;letter-spacing:.5px;border:1px solid rgba(110,168,254,0.32);color:#bcd6ff;}"
+		+ ".split-badge-kind.port{border-color:rgba(242,153,74,0.40);color:#f4c79a;}"
 		+ ".split-card-actions{display:flex;gap:6px;flex-shrink:0;}"
 		+ ".split-act{display:inline-flex;align-items:center;font-size:12px;text-decoration:none;padding:3px 10px;border-radius:6px;border:1px solid rgba(255,255,255,0.10);background:rgba(255,255,255,0.04);color:#cfe0f2;cursor:pointer;transition:all .15s ease;}"
 		+ ".split-act:hover{background:rgba(110,168,254,0.16);border-color:rgba(110,168,254,0.40);color:#fff;}"
@@ -6936,17 +6938,23 @@ function render_split_rule_list() {
 		var builtin = db_ss['ss_split_rule_' + r + '_builtin'] == '1';
 		var statD = db_ss['ss_split_rule_' + r + '_stat_domains'] || '?';
 		var statI = db_ss['ss_split_rule_' + r + '_stat_ips'] || '?';
+		var kind = db_ss['ss_split_rule_' + r + '_kind'] || 'host';
+		var statP = db_ss['ss_split_rule_' + r + '_stat_ports'] || '0';
 		var src = db_ss['ss_split_rule_' + r + '_source_url'] || '';
 		var hrs = db_ss['ss_split_rule_' + r + '_update_hours'] || '0';
 		var srcLabel = src ? (src.length > 40 ? src.substr(0, 37) + '...' : src) : '手编';
 		html += '<div class="split-card">';
-		html += '<div class="split-card-head"><div class="split-card-title"><span class="split-card-id">#' + split_v2_html_escape(id) + '</span><span class="split-card-name">' + split_v2_html_escape(name) + '</span>' + (builtin ? '<span class="split-badge-builtin">内置</span>' : '') + '</div>';
+		html += '<div class="split-card-head"><div class="split-card-title"><span class="split-card-id">#' + split_v2_html_escape(id) + '</span><span class="split-card-name">' + split_v2_html_escape(name) + '</span>' + (kind == 'port' ? '<span class="split-badge-kind port">端口</span>' : '<span class="split-badge-kind">IP 域名</span>') + (builtin ? '<span class="split-badge-builtin">内置</span>' : '') + '</div>';
 		html += '<div class="split-card-actions"><a class="split-act" href="javascript:void(0);" onclick="split_v2_edit_rule(' + r + ');">✎ 编辑</a>';
 		if (!builtin) { html += '<a class="split-act split-act-del" href="javascript:void(0);" onclick="split_v2_delete_rule(' + r + ');">✕ 删除</a>'; }
 		html += '</div></div>';
 		html += '<div class="split-chip-row">';
-		html += '<span class="split-chip">域名 <b>' + split_v2_html_escape(statD) + '</b></span>';
-		html += '<span class="split-chip">IP/CIDR <b>' + split_v2_html_escape(statI) + '</b></span>';
+		if (kind == 'port') {
+			html += '<span class="split-chip">端口 <b>' + split_v2_html_escape(statP) + '</b> 个</span>';
+		} else {
+			html += '<span class="split-chip">域名 <b>' + split_v2_html_escape(statD) + '</b></span>';
+			html += '<span class="split-chip">IP/CIDR <b>' + split_v2_html_escape(statI) + '</b></span>';
+		}
 		html += '<span class="split-chip ' + (hrs == '0' ? 'off' : 'on') + '">' + (hrs == '0' ? '不自动更新' : ('每 ' + split_v2_html_escape(hrs) + 'h 更新')) + '</span>';
 		html += '<span class="split-chip src" title="' + split_v2_html_escape(src) + '">来源 ' + split_v2_html_escape(srcLabel) + '</span>';
 		html += '</div></div>';
@@ -7157,14 +7165,15 @@ function split_v2_refresh_dbss(cb) {
 }
 
 // Rule 持久化（域名/IP 文件 → ss_split_rule_save.sh）
-function split_v2_rule_persist(op, ruleId, name, sourceUrl, updateHours, payloadB64, cb) {
+function split_v2_rule_persist(op, ruleId, name, sourceUrl, updateHours, payloadB64, kind, cb) {
 	var fields = {
 		ss_split_rule_save_op: op,
 		ss_split_rule_save_id: String(ruleId),
 		ss_split_rule_save_name: name || '',
 		ss_split_rule_save_source_url: sourceUrl || '',
 		ss_split_rule_save_update_hours: String(updateHours || 0),
-		ss_split_rule_save_payload_b64: payloadB64 || ''
+		ss_split_rule_save_payload_b64: payloadB64 || '',
+		ss_split_rule_save_kind: kind || 'host'
 	};
 	var reqId = parseInt(Math.random() * 1e8);
 	$.ajax({
@@ -7670,6 +7679,7 @@ function split_v2_edit_rule(r) {
 	var ruleId = db_ss['ss_split_rule_' + r + '_id'] || '';
 	split_v2_open_rule_dialog(r, {
 		id: ruleId,
+		kind: db_ss['ss_split_rule_' + r + '_kind'] || 'host',
 		name: db_ss['ss_split_rule_' + r + '_name'] || '',
 		builtin: db_ss['ss_split_rule_' + r + '_builtin'] || '0',
 		source_url: db_ss['ss_split_rule_' + r + '_source_url'] || '',
@@ -7678,23 +7688,47 @@ function split_v2_edit_rule(r) {
 	});
 }
 
+function split_v2_rule_dlg_kind_changed() {
+	var k = $('#rule_dlg_kind').length ? $('#rule_dlg_kind').val() : _ruleDlgState.kind;
+	_ruleDlgState.kind = (k == 'port') ? 'port' : 'host';
+	var isPort = (_ruleDlgState.kind == 'port');
+	$('#rule_dlg_payload_th').html(isPort
+		? '端口列表<br><span style="color:#888;font-size:11px;font-weight:normal;">一行一个<br>端口或端口段<br>如 25 或 6881-6889</span>'
+		: '规则内容<br><span style="color:#888;font-size:11px;font-weight:normal;">一行一条<br>域名/IP/CIDR 混排<br># 起头为注释</span>');
+	var el = document.getElementById('rule_dlg_payload');
+	if (el) el.placeholder = isPort ? '25\n465\n587\n6881-6889' : 'example.com\n# 注释\n1.2.3.0/24\n1.2.3.4';
+}
+
 function split_v2_open_rule_dialog(slot, data) {
 	_ruleDlgState.editSlot = slot;
 	_ruleDlgState.builtin = (data.builtin == '1');
 	_ruleDlgState.ruleId = parseInt(data.id, 10);
+	_ruleDlgState.kind = (data.kind == 'port') ? 'port' : 'host';
 	var title = (slot == null) ? '新建 Rule' : ('编辑 Rule #' + data.id + (_ruleDlgState.builtin ? ' [内置]' : ''));
 	var dis = _ruleDlgState.builtin ? ' disabled' : '';
 	var statD = (slot != null) ? (db_ss['ss_split_rule_' + slot + '_stat_domains'] || '0') : '0';
 	var statI = (slot != null) ? (db_ss['ss_split_rule_' + slot + '_stat_ips'] || '0') : '0';
+	var statP = (slot != null) ? (db_ss['ss_split_rule_' + slot + '_stat_ports'] || '0') : '0';
 	var html = '<table>';
 	html += '<tr><th>ID</th><td><b>' + split_v2_html_escape(data.id) + '</b><span style="color:#888;font-size:11px;">&nbsp;(自动分配, 不可改)</span></td></tr>';
+	html += '<tr><th>类型</th><td>';
+	if (slot == null) {
+		html += '<select id="rule_dlg_kind" onchange="split_v2_rule_dlg_kind_changed();"><option value="host"' + (_ruleDlgState.kind == 'port' ? '' : ' selected') + '>IP / 域名</option><option value="port"' + (_ruleDlgState.kind == 'port' ? ' selected' : '') + '>端口</option></select>';
+	} else {
+		html += '<b>' + (_ruleDlgState.kind == 'port' ? '端口' : 'IP / 域名') + '</b><span style="color:#888;font-size:11px;">&nbsp;(类型创建后不可改)</span>';
+	}
+	html += '</td></tr>';
 	html += '<tr><th>名称</th><td><input type="text" id="rule_dlg_name" value="' + split_v2_html_escape(data.name) + '" maxlength="40"' + dis + ' /></td></tr>';
 	html += '<tr><th>自动更新 URL</th><td><input type="text" id="rule_dlg_source_url" value="' + split_v2_html_escape(data.source_url) + '" placeholder="留空 = 手编规则" /><div style="color:#888;font-size:11px;">http(s) URL；空 URL 即完全手编。</div></td></tr>';
 	html += '<tr><th>自动更新间隔</th><td><input type="number" id="rule_dlg_update_hours" value="' + split_v2_html_escape(data.update_hours || '0') + '" min="0" max="168" style="width:80px;" /> 小时 <span style="color:#888;font-size:11px;">(0 = 禁用 auto-update)</span></td></tr>';
 	if (slot != null) {
-		html += '<tr><th>当前 stats</th><td><span style="color:#888;">域名 ' + split_v2_html_escape(statD) + ' 条 / IP ' + split_v2_html_escape(statI) + ' 条</span></td></tr>';
+		if (_ruleDlgState.kind == 'port') {
+			html += '<tr><th>当前 stats</th><td><span style="color:#888;">端口 ' + split_v2_html_escape(statP) + ' 个</span></td></tr>';
+		} else {
+			html += '<tr><th>当前 stats</th><td><span style="color:#888;">域名 ' + split_v2_html_escape(statD) + ' 条 / IP ' + split_v2_html_escape(statI) + ' 条</span></td></tr>';
+		}
 	}
-	html += '<tr><th>规则内容<br><span style="color:#888;font-size:11px;font-weight:normal;">一行一条<br>域名/IP/CIDR 混排<br># 起头为注释</span></th>';
+	html += '<tr><th id="rule_dlg_payload_th">规则内容<br><span style="color:#888;font-size:11px;font-weight:normal;">一行一条<br>域名/IP/CIDR 混排<br># 起头为注释</span></th>';
 	html += '<td><textarea id="rule_dlg_payload" rows="10" style="width:95%;font-family:monospace;font-size:12px;" placeholder="example.com&#13;&#10;# 注释&#13;&#10;1.2.3.0/24&#13;&#10;1.2.3.4"></textarea>';
 	if (slot != null) {
 		html += '<div style="color:#888;font-size:11px;padding-top:4px;">留空提交 = <b>不覆盖</b>现有文件（仅更新名称/URL/小时数）；如要清空规则文件请输入单个 "#" 字符。</div>';
@@ -7702,6 +7736,7 @@ function split_v2_open_rule_dialog(slot, data) {
 	html += '</td></tr>';
 	html += '</table>';
 	splitDlg.open(title, html, function() { return split_v2_save_rule_dialog(); });
+	split_v2_rule_dlg_kind_changed();
 	$('#rule_dlg_payload').val(data.payload || '');
 }
 
@@ -7719,12 +7754,24 @@ function split_v2_save_rule_dialog() {
 		try { payloadB64 = btoa(unescape(encodeURIComponent(payload))); }
 		catch (e) { splitDlg.error('payload 编码失败'); return true; }
 	}
+	var kind = $('#rule_dlg_kind').length ? ($('#rule_dlg_kind').val() == 'port' ? 'port' : 'host') : (_ruleDlgState.kind == 'port' ? 'port' : 'host');
+	if (kind == 'port' && payload !== '') {
+		var plines = payload.split(/\r?\n/);
+		for (var pi = 0; pi < plines.length; pi++) {
+			var pln = $.trim(plines[pi]);
+			if (pln === '' || pln.charAt(0) == '#' || pln.charAt(0) == ';') continue;
+			var pm = /^(\d+)(?:-(\d+))?$/.exec(pln);
+			if (!pm) { splitDlg.error('端口格式错误: ' + pln); return true; }
+			var plo = parseInt(pm[1], 10), phi = pm[2] ? parseInt(pm[2], 10) : plo;
+			if (plo < 1 || phi > 65535 || plo > phi) { splitDlg.error('端口超出范围 1-65535: ' + pln); return true; }
+		}
+	}
 	var op = (_ruleDlgState.editSlot == null) ? 'create' : 'update';
 	var ruleId = _ruleDlgState.ruleId;
 	if (!ruleId || ruleId < 1) { splitDlg.error('invalid rule id'); return true; }
 	splitDlg.error('保存中...');
 	$('#split_dlg_ok_btn').prop('disabled', true);
-	split_v2_rule_persist(op, ruleId, name, sourceUrl, updateHours, payloadB64, function(success, errmsg) {
+	split_v2_rule_persist(op, ruleId, name, sourceUrl, updateHours, payloadB64, kind, function(success, errmsg) {
 		$('#split_dlg_ok_btn').prop('disabled', false);
 		if (success) splitDlg.close();
 		else splitDlg.error('保存失败: ' + (errmsg || '未知错误'));
@@ -7746,7 +7793,7 @@ function split_v2_delete_rule(r) {
 		}
 	}
 	if (!confirm(msg)) return;
-	split_v2_rule_persist('delete', id, '', '', 0, '', function(success, errmsg) {
+	split_v2_rule_persist('delete', id, '', '', 0, '', 'host', function(success, errmsg) {
 		if (!success) alert('删除失败: ' + (errmsg || ''));
 	});
 }

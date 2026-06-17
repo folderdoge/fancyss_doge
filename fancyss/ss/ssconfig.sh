@@ -4280,6 +4280,21 @@ ss_split_rule_to_json() {
 	rm -f "${ip_tmp}"
 }
 
+# FORK: 按 rule.id 查该 Rule 的 kind（host/port）。空/未知 → host（兼容存量无 kind 的规则）。
+# 路由生成在 Mode rule 循环里用它区分端口规则与域名/IP 规则。
+__split_rule_kind_by_id() {
+	local target="$1" slot rid k
+	for slot in $(dbus list ss_split_rule_ 2>/dev/null | awk -F'=' '{print $1}' | awk -F'_' '$4 ~ /^[0-9]+$/ {print $4}' | sort -nu); do
+		rid="$(dbus get ss_split_rule_${slot}_id 2>/dev/null)"
+		if [ "${rid}" = "${target}" ]; then
+			k="$(dbus get ss_split_rule_${slot}_kind 2>/dev/null)"
+			[ "${k}" = "port" ] && { echo "port"; return 0; }
+			echo "host"; return 0
+		fi
+	done
+	echo "host"
+}
+
 # 从 action 字符串导出 canonical tag（与 §4.3 算法对齐）
 ss_split_action_to_tag() {
 	local action="$1"
@@ -4617,6 +4632,27 @@ EOF
 			out_direct|out_reject|out_main|out_node_*|out_chain_*) : ;;
 			*) rtag="out_main" ;;
 			esac
+
+			# FORK: 端口规则（kind=port）独立 emit —— port matcher 对 TCP/UDP 都可见，
+			# 单条 rule 即可（不拆 domain/ip、不写 network），不踩 D27/D29 的 UDP AND 陷阱。
+			# 端口文件很小（几十行），直接读进 shell 变量无 ARG_MAX/OOM 风险（不同于 chnlist）。
+			if [ -n "${rid}" ] && [ "$(__split_rule_kind_by_id "${rid}")" = "port" ]; then
+				local pfile="${rules_user_dir}/rule_${rid}.txt"
+				if [ -f "${pfile}" ]; then
+					local ports=$(awk '
+						/^[[:space:]]*#/ { next }
+						/^[[:space:]]*;/ { next }
+						{ gsub(/[[:space:]]/, "") }
+						!$0 { next }
+						$0 ~ /^[0-9]+$/ || $0 ~ /^[0-9]+-[0-9]+$/ { printf "%s%s", sep, $0; sep="," }
+					' "${pfile}")
+					if [ -n "${ports}" ]; then
+						__split_emit_rule "$(jq -n --arg tag "mode_${mid}" --arg p "${ports}" --arg ob "${rtag}" '{type:"field",inboundTag:[$tag],port:$p,outboundTag:$ob}')"
+					fi
+				fi
+				r=$((r + 1))
+				continue
+			fi
 
 			# FORK doge.14-beta.8 启动提速（D30）：内置大表规则改发 geosite/geoip 共享引用。
 			# 行为不变：geosite:cn 由同份 chnlist.gz 编译、geosite:gfw 由 gfwlist.gz、geoip:cn 由 chnroute，

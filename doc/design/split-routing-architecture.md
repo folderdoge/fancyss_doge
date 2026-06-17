@@ -120,8 +120,10 @@
 | `ss_split_rule_<i>_last_update` | int | Unix ts（成功） |
 | `ss_split_rule_<i>_stat_domains` | int | 域名条数缓存 |
 | `ss_split_rule_<i>_stat_ips` | int | IP/CIDR 条数缓存 |
+| `ss_split_rule_<i>_kind` | "host"/"port" | **FORK doge.14.x 新增**：规则类型。`host`=IP/域名混排（原行为），`port`=端口列表（每行一个端口或端口段）。空/缺省=host。端口规则与域名/IP 规则平级，可在 Mode 里被引用并指定任意 action（直连/某节点/屏蔽/链式）→ 实现「指定端口走指定代理/直连」。 |
+| `ss_split_rule_<i>_stat_ports` | int | **FORK doge.14.x 新增**：端口条数缓存（kind=port 用） |
 
-> 注：`entries_path` 不进 dbus（路径可由 id 推出 `/koolshare/ss/rules_user/rule_<id>.txt`）。
+> 注：`entries_path` 不进 dbus（路径可由 id 推出 `/koolshare/ss/rules_user/rule_<id>.txt`）。port 类型规则的内容文件同路径，每行一个端口 `25` 或端口段 `6881-6889`；xray 生成时 emit 单条 `port` matcher（TCP/UDP 通吃，不拆 domain/ip）。
 
 ### 3.2 Mode 相关（前端可读）
 

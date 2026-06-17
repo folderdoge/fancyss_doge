@@ -37,6 +37,7 @@ TMP_NAME_KEY="ss_split_rule_save_name"
 TMP_SRC_KEY="ss_split_rule_save_source_url"
 TMP_HRS_KEY="ss_split_rule_save_update_hours"
 TMP_PAYLOAD_KEY="ss_split_rule_save_payload_b64"
+TMP_KIND_KEY="ss_split_rule_save_kind"
 TMP_RESULT_KEY="ss_split_rule_save_result"
 TMP_ERROR_KEY="ss_split_rule_save_error"
 
@@ -64,6 +65,7 @@ cleanup_tmp() {
 	dbus remove ${TMP_SRC_KEY} >/dev/null 2>&1
 	dbus remove ${TMP_HRS_KEY} >/dev/null 2>&1
 	dbus remove ${TMP_PAYLOAD_KEY} >/dev/null 2>&1
+	dbus remove ${TMP_KIND_KEY} >/dev/null 2>&1
 }
 
 fail() {
@@ -116,7 +118,7 @@ recount_stats_file() {
 	local f="$1"
 	local d=0 i=0 line
 	[ -f "${f}" ] || { echo "0 0"; return; }
-	while IFS= read -r line; do
+	while IFS= read -r line || [ -n "${line}" ]; do
 		line="$(printf '%s' "${line}" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
 		[ -z "${line}" ] && continue
 		case "${line}" in
@@ -134,6 +136,40 @@ recount_stats_file() {
 		d=$((d + 1))
 	done < "${f}"
 	echo "${d} ${i}"
+}
+
+# 端口规则校验：每行须为 1-65535 单端口 或 lo-hi 范围（lo<=hi 且都在 1-65535）。
+# 注释（#/;）和空行跳过。任一行非法即 return 1。
+validate_port_payload() {
+	local f="$1" line lo hi
+	[ -f "${f}" ] || return 0
+	while IFS= read -r line || [ -n "${line}" ]; do
+		line="$(printf '%s' "${line}" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+		[ -z "${line}" ] && continue
+		case "${line}" in \#*|\;*) continue;; esac
+		if echo "${line}" | grep -Eq '^[0-9]+$'; then
+			{ [ "${line}" -ge 1 ] && [ "${line}" -le 65535 ]; } 2>/dev/null || return 1
+		elif echo "${line}" | grep -Eq '^[0-9]+-[0-9]+$'; then
+			lo="${line%-*}"; hi="${line#*-}"
+			{ [ "${lo}" -ge 1 ] && [ "${hi}" -le 65535 ] && [ "${lo}" -le "${hi}" ]; } 2>/dev/null || return 1
+		else
+			return 1
+		fi
+	done < "${f}"
+	return 0
+}
+
+# 端口规则条目计数（注释/空行不计）。输出单个数字。
+count_port_entries() {
+	local f="$1" n=0 line
+	[ -f "${f}" ] || { echo 0; return; }
+	while IFS= read -r line || [ -n "${line}" ]; do
+		line="$(printf '%s' "${line}" | tr -d '\r' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+		[ -z "${line}" ] && continue
+		case "${line}" in \#*|\;*) continue;; esac
+		n=$((n + 1))
+	done < "${f}"
+	echo "${n}"
 }
 
 # ============================================================================
@@ -158,6 +194,12 @@ case "${op}" in
 		source_url="$(dbus get ${TMP_SRC_KEY} 2>/dev/null)"
 		update_hours="$(dbus get ${TMP_HRS_KEY} 2>/dev/null)"
 		payload_b64="$(dbus get ${TMP_PAYLOAD_KEY} 2>/dev/null)"
+		kind="$(dbus get ${TMP_KIND_KEY} 2>/dev/null)"
+		[ -z "${kind}" ] && kind="host"
+		case "${kind}" in
+			host|port) ;;
+			*) fail "invalid kind (must be host or port)" "${REQ_ID}";;
+		esac
 
 		[ -z "${name}" ] && fail "missing name" "${REQ_ID}"
 		# C-CRIT-6 修：拒绝包含 dbus 文本格式破坏字符的 name —— 双引号 / 反引号 / $ / \ / 换行 / 等号。
@@ -190,6 +232,11 @@ case "${op}" in
 				rm -f "${tmp_file}"
 				fail "line limit exceeded: ${lines} > ${MAX_LINES}" "${REQ_ID}"
 			fi
+			# 端口规则：落地前校验端口格式（非法则不覆盖原文件）
+			if [ "${kind}" = "port" ] && ! validate_port_payload "${tmp_file}"; then
+				rm -f "${tmp_file}"
+				fail "invalid port payload (each line must be 1-65535 or lo-hi range)" "${REQ_ID}"
+			fi
 			# 备份既有文件再替换
 			[ -f "${rule_file}" ] && cp -f "${rule_file}" "${rule_file}.bak" 2>/dev/null
 			mv "${tmp_file}" "${rule_file}"
@@ -199,12 +246,20 @@ case "${op}" in
 			: > "${rule_file}"
 		fi
 
-		# 重算 stats
-		set -- $(recount_stats_file "${rule_file}")
-		stat_d="$1"
-		stat_i="$2"
-		[ -z "${stat_d}" ] && stat_d=0
-		[ -z "${stat_i}" ] && stat_i=0
+		# 重算 stats（按规则类型）
+		if [ "${kind}" = "port" ]; then
+			stat_p="$(count_port_entries "${rule_file}")"
+			[ -z "${stat_p}" ] && stat_p=0
+			stat_d=0
+			stat_i=0
+		else
+			set -- $(recount_stats_file "${rule_file}")
+			stat_d="$1"
+			stat_i="$2"
+			[ -z "${stat_d}" ] && stat_d=0
+			[ -z "${stat_i}" ] && stat_i=0
+			stat_p=0
+		fi
 
 		# 找/分配 slot
 		slot="$(find_rule_slot_by_id "${target_id}")"
@@ -227,6 +282,8 @@ case "${op}" in
 		dbus set ss_split_rule_${slot}_update_hours="${update_hours}"
 		dbus set ss_split_rule_${slot}_stat_domains="${stat_d}"
 		dbus set ss_split_rule_${slot}_stat_ips="${stat_i}"
+		dbus set ss_split_rule_${slot}_stat_ports="${stat_p}"
+		dbus set ss_split_rule_${slot}_kind="${kind}"
 		# builtin: 新建默认 0；已存在则保留原值
 		existing_builtin="$(dbus get ss_split_rule_${slot}_builtin 2>/dev/null)"
 		[ -z "${existing_builtin}" ] && dbus set ss_split_rule_${slot}_builtin="0"
@@ -263,14 +320,14 @@ case "${op}" in
 			# C-CRIT-5 修：始终 dbus set（即使值为空字符串）。旧版 if-else 在空字符串分支走 dbus remove，
 			# 会把''用户故意清空 source_url''这种语义从''空字符串''误降级为''key 不存在'' ——
 			# 前端 db_ss 读到 undefined 而非 ''，可能触发不同分支。
-			for f in id name builtin source_url update_hours last_update stat_domains stat_ips; do
+			for f in id name builtin kind source_url update_hours last_update stat_domains stat_ips stat_ports; do
 				val="$(dbus get ss_split_rule_${next}_${f} 2>/dev/null)"
 				dbus set ss_split_rule_${s}_${f}="${val}"
 			done
 			s="${next}"
 		done
 		# 删最后一个槽位的残余
-		for f in id name builtin source_url update_hours last_update stat_domains stat_ips; do
+		for f in id name builtin kind source_url update_hours last_update stat_domains stat_ips stat_ports; do
 			dbus remove ss_split_rule_${count}_${f} >/dev/null 2>&1
 		done
 		new_count=$((count - 1))

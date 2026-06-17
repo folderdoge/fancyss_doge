@@ -75,8 +75,12 @@ doge.12 是 1-2 周量级的架构跃迁，单次 release 全切风险极大。�
 | `ss_split_rule_<i>_last_update` | int | Unix ts |
 | `ss_split_rule_<i>_stat_domains` | int | 域名条数缓存 |
 | `ss_split_rule_<i>_stat_ips` | int | IP/CIDR 条数缓存 |
+| `ss_split_rule_<i>_kind` | "host"/"port" | **FORK doge.14.x 新增**：规则类型。`host`=IP/域名混排（原行为），`port`=端口列表。**空/缺省 = host**（兼容存量无 kind 的规则，前端读空当 host、`__split_rule_kind_by_id` 读空当 host）。内置规则由 install.sh `write_builtin_rule_meta` 种 `host`；用户规则由 `ss_split_rule_save.sh` 按前端选择写入。类型创建后不可改（UI 编辑时只读）。 |
+| `ss_split_rule_<i>_stat_ports` | int | **FORK doge.14.x 新增**：端口条数缓存（`kind=port` 时有效；host 规则恒 0） |
 
-> 规则文件路径不进 dbus，按 id 推：`/koolshare/ss/rules_user/rule_<id>.txt`
+> 规则文件路径不进 dbus，按 id 推：`/koolshare/ss/rules_user/rule_<id>.txt`（port 类型规则同样存这里，每行一个端口 `25` 或端口段 `6881-6889`）
+
+> **端口规则路由生成（FORK doge.14.x）**：`generate_xray_json_split` 的 Mode rule 循环用 `__split_rule_kind_by_id <rid>` 判类型。`kind=port` 时读 `rule_<id>.txt`，awk 过滤出合法端口/段拼成逗号串，emit **单条** `{type:"field",inboundTag:[mode],port:"...",outboundTag:<rtag>}`——端口是 L4 信息 TCP/UDP 都可见，**不拆 domain/ip、不写 network**，故不踩 [§6.3 D27/D29](#) 的 UDP AND 陷阱。Rule helper 临时 key 增加 `ss_split_rule_save_kind`（"host"/"port"，空=host）。
 
 ### 1.3 Mode 数据
 
@@ -666,6 +670,20 @@ migrate_split_routing_v3() {
 - **51.1 实证（armv7l，TUF-AX3000）**：① `xray -test` PoC `geosite:cn`+`geoip:cn` → "Configuration OK"（无 asset path 则 `open /data/geosite.dat: no such file` 失败，印证 #4 的 env 注入是关键）；② xray.json **4,332,707 → 11,534 字节（375×）**；③ 整机 `ssconfig.sh restart` 总耗时 **43s（内联）→ 32s（geo）**，仅 1 个 Mode 用 chnlist 就省 11s（多 Mode 收益更大；纯 xray -test 7.2s→4.2s）；④ **A/B 路由完全一致**（Mode 2 大陆白名单：`myip.ipip.net`→直连同一 CN IP `123.158.55.243`、`cloudflare`→代理同一 UK IP `86.53.160.85`，新旧逐字节相同）；⑤ `fss_split_xray_warn` 空、无回滚。
 - **xray 匹配表 per-rule（非全局共享）**：3 个 Mode 各引用 `geosite:cn` → 仍各建一次匹配表（实测 1 Mode 4.2s / 3 Mode 10.2s）；要做到"模式再多启动不变"（实测合并成一条 `inboundTag:[m1,m2,m3]` → 4.2s 持平）需**跨模式合并 rule**，但合并会改变各 Mode 内规则顺序 → 有改动分流结果的风险，与"行为不变"冲突，**本期不做**，留作未来需单独安全性论证的增强。
 - **更新节奏（无 drift，故不需 Step 2）**：doge.14 下 `ss_rule_update.sh` 下载 chnlist.gz/gfwlist.gz 后只 `ssconfig.sh restart`，**不重 seed `rule_1.txt`**（reseed 仅在文件缺失时触发），且老 ipset 消费者已物理删除 → **即便老内联路径，on-device "更新规则" 也不刷新内置白名单的生效域名**。chnlist.gz 与 geosite.dat 都只随**插件版本**更新且一起更新。故 geo 改动**不改变更新节奏**、无引入 drift。（未来增强方向：让 `ss_rule_update.sh` 也下载 fork 发布的 `geosite.dat`/`geoip.dat` → 反而能让"更新规则"真正对内置 CN/GFW 生效，优于现状；非本期范围。）
+
+#### D31: 端口规则 — Rule 增加 kind（host/port），支持「指定端口走指定代理/直连」（doge.14.x）
+
+2026-06-17 用户需求："某个模式某几个端口不过代理"，并希望能"指定端口走指定代理"。采用方案 B（端口作为独立 Rule 类型，可在 Mode 里指定任意 action，是"直连豁免"的超集）。
+
+- **数据模型**：Rule 增加 `ss_split_rule_<i>_kind`（`host`=IP/域名原行为；`port`=端口列表；**空=host** 兼容存量）+ `ss_split_rule_<i>_stat_ports`。端口内容复用 `rule_<id>.txt`（每行一个端口 `25` 或端口段 `6881-6889`），复用现有 payload base64 / 备份 / 体积行数校验通道。类型创建后不可改（UI 编辑只读）。
+- **路由生成**（[ssconfig.sh](../../fancyss/ss/ssconfig.sh) `generate_xray_json_split`）：新增 `__split_rule_kind_by_id <rid>`（by rid 查 slot 读 kind，空=host；**不能像 D30 geosite 那样直接 `ss_split_rule_<rid>_*`**——那只对内置 slot==id 成立，用户规则 id≥100 slot≠id 会读错）。Mode rule 循环里 `kind=port` 时读端口文件、awk 过滤合法端口/段拼逗号串，emit **单条** `{type:"field",inboundTag:[mode],port:"...",outboundTag:<rtag>}` 后 `continue`（跳过 host 的 geosite/内联路径）。**端口是 L4 信息 TCP/UDP 都可见 → 单条 rule 通吃，不拆 domain/ip、不写 network**，天然不踩 D27/D29 的 UDP AND 陷阱（与 host 规则相反：host 必须拆，port 绝不能拆）。端口走哪由该 Rule 在 Mode 里的 action 决定。
+- **后端校验**（[ss_split_rule_save.sh](../../fancyss/scripts/ss_split_rule_save.sh)）：新增临时 key `ss_split_rule_save_kind`；`validate_port_payload` 校验每行 1-65535 或 lo-hi（lo≤hi，落地前校验非法不覆盖原文件）；`count_port_entries` 算 stat_ports；slot-shift 字段列表加 `kind stat_ports`。
+- **内置规则**（[install.sh](../../fancyss/install.sh) `write_builtin_rule_meta`）：种 `kind=host`（新装机）；存量老用户内置规则无 kind → 消费方读空当 host（零迁移）。
+- **UI**（[Module_shadowsocks.asp](../../fancyss/webs/Module_shadowsocks.asp)）：规则卡片加类型泡【IP 域名】/【端口】（CSS `.split-badge-kind`）；端口规则卡片显示"端口 N 个"；新建弹窗加类型下拉（host/port），编辑时类型只读；内容区 label/placeholder 随类型切（`split_v2_rule_dlg_kind_changed`）；保存前端预校验端口格式；`split_v2_rule_persist` 加 `kind` 参数透传（2 个调用点同步改：save_dialog 传选定 kind / delete_rule 传 `'host'` 占位）。
+- **决策（用户拍板）**：不区分协议（TCP+UDP 一起，不写 network）；匹配目标端口；支持端口范围。
+- **真机验证（2026-06-17，51.1 热替换 3 运行时文件）**：① save.sh 建端口规则 OK、非法端口 `99999` 被拒、stat_ports 正确；② `generate_xray_json_split` 生成**单条** `{port:"25,465,587,6881-6889",outboundTag:...}`（`network` 字段为 null = TCP/UDP 通吃）；③ **实测路由翻转**——同域名 `ifconfig.me`：443（命中端口规则→direct）出口=WAN 直连 `123.x`，80（默认→proxy_node:448）出口=代理 `3.9.x`，证明按端口分流生效且不影响其他端口；④ UI 弹窗"类型"下拉 + 内容区随类型切换 label/placeholder + 规则卡片【端口】/【IP 域名】类型泡 + 创建闭环（kind 透传持久化）均 OK。
+- **真机发现并修复的 bug（while-read 末行）**：`count_port_entries` / `validate_port_payload` / `recount_stats_file` 的 `while read line; do …; done < file` 在**最后一行无结尾换行符**时漏读该行（UI textarea 存的单端口 `8080` 无结尾 `\n` → stat 显 0、且末行单个非法端口能绕过后端校验）。修为 `while IFS= read -r line || [ -n "${line}" ]; do`。**路由不受影响**（ssconfig 用 awk，awk 正确处理无换行末行），仅 stat 显示与后端兜底校验受影响。复测：单端口 `8080` stat=1、单个非法端口无换行被拒。
+- **状态**：源码落地（4 文件 + 文档）+ **51.1 热替换真机验证通过**；**未 build 整包 / 未发版**（等用户授权）。
 
 ### 6.4 实施期约定的回溯修订
 

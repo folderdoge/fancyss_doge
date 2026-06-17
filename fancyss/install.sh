@@ -463,6 +463,7 @@ write_builtin_rule_meta(){
 	dbus set ss_split_rule_${rid}_id="${rid}"
 	dbus set ss_split_rule_${rid}_name="${rname}"
 	dbus set ss_split_rule_${rid}_builtin="1"
+	dbus set ss_split_rule_${rid}_kind="host"
 	dbus set ss_split_rule_${rid}_source_url="${surl}"
 	dbus set ss_split_rule_${rid}_update_hours="${uhours}"
 	dbus set ss_split_rule_${rid}_last_update="${now_ts}"
