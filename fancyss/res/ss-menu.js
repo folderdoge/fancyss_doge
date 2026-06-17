@@ -1150,7 +1150,7 @@ function openssHint(itemNum, flag) {
 		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• <b>source_url</b>：auto-update URL（空=手编）<br />";
 		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• <b>update_hours</b>：自动更新间隔小时（0=禁用）<br />";
 		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• <b>entries</b>：实际规则内容（路径 /koolshare/ss/rules_user/rule_&lt;id&gt;.txt）<br /><br />";
-		statusmenu += "<b><font color='#CC0066'>内置 Rule</font></b>（id 1-99 预留）：当前 8 条：大陆白名单_常用 / GFW列表_常用 / 中国公共DNS / 广告统计屏蔽 / Telegram加速 / 在线状态检测站 / 查IP常用站 / Bing加速。<br /><br />";
+		statusmenu += "<b><font color='#CC0066'>内置 Rule</font></b>（id 1-99 预留）：当前 8 条：大陆白名单_场景 / GFW列表_常用 / 中国公共DNS / 广告统计屏蔽 / Telegram加速 / 在线状态检测站 / 查IP常用站 / Bing加速。<br /><br />";
 		statusmenu += "<b><font color='#CC0066'>auto-update 安全：</font></b>远程更新前会备份 .bak（保留 1 版），可手动「回滚到 .bak」。<br /><br />";
 		statusmenu += "<b><font color='#CC0066'>引用保护</font></b>：被任何 Mode 引用的 Rule 不可删除。<br /><br />";
 		statusmenu += "<font color='#888888'>详见 doc/design/split-routing-architecture.md §2.1</font>";

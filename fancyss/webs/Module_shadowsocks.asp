@@ -6753,6 +6753,7 @@ function render_chain_status() {
 		$pathEl.hide();
 		$break.hide();
 	}
+	render_top_health();
 }
 // 链式状态轮询：拉取最新的 ss_chain_status / ss_chain_path 并重渲染状态行。
 // 解决：ssconfig.sh restart 后 dbus 已更新但前端 db_ss 还是页面打开时的旧值，导致
@@ -6852,16 +6853,16 @@ function ensure_split_card_styles() {
 		+ ".split-chip.src{max-width:260px;overflow:hidden;text-overflow:ellipsis;font-family:Consolas,Menlo,monospace;}"
 		+ ".split-empty{padding:14px 10px;color:#8a99a8;font-size:12px;text-align:center;}";
 	css += "#ss_split_runtime_status{display:block;}";
-	css += "#tablet_11 table.FormTable{background:linear-gradient(180deg,rgba(20,27,38,0.97),rgba(13,18,26,0.96)) !important;border:1px solid rgba(69,93,120,0.28) !important;border-radius:12px !important;box-shadow:0 10px 26px rgba(0,0,0,0.16);border-collapse:separate !important;border-spacing:0;overflow:hidden;}";
-	css += "#tablet_11 table.FormTable>thead>tr>td{border:none !important;}";
-	css += "#tablet_11 table.FormTable>tbody>tr>th{background:rgba(255,255,255,0.02) !important;color:#cdd9e5 !important;border:none !important;border-bottom:1px solid rgba(69,93,120,0.16) !important;border-right:1px solid rgba(69,93,120,0.16) !important;font-weight:600;text-align:left;padding:10px 14px !important;vertical-align:middle;}";
-	css += "#tablet_11 table.FormTable>tbody>tr>td{background:transparent !important;color:#c4d2e0 !important;border:none !important;border-bottom:1px solid rgba(69,93,120,0.16) !important;}";
-	css += "#tablet_11 table.FormTable>tbody>tr:last-child>th,#tablet_11 table.FormTable>tbody>tr:last-child>td{border-bottom:none !important;}";
-	css += "#tablet_11 table.FormTable a,#tablet_11 table.FormTable .hintstyle{color:#9cc4ff !important;}";
-	css += "#tablet_11 .split-banner{background:linear-gradient(180deg,rgba(24,32,44,0.96),rgba(15,21,30,0.94)) !important;color:#c4d2e0 !important;border:1px solid rgba(110,168,254,0.22) !important;border-left:3px solid #6ea8fe !important;border-radius:10px !important;padding:11px 14px !important;line-height:1.65;}";
-	css += "#tablet_11 .split-banner b{color:#9cc4ff;}";
-	css += "#tablet_11 .split-sec-head{background:linear-gradient(90deg,rgba(110,168,254,0.16),rgba(110,168,254,0.03)) !important;color:#eaf2fb !important;font-weight:600 !important;padding:10px 14px !important;border:none !important;border-bottom:1px solid rgba(110,168,254,0.18) !important;letter-spacing:.3px;}";
-	css += "#tablet_11 .split-sec-head a,#tablet_11 .split-sec-head .hintstyle{color:#9cc4ff !important;font-weight:normal;}";
+	css += ".split-skin table.FormTable{background:linear-gradient(180deg,rgba(20,27,38,0.97),rgba(13,18,26,0.96)) !important;border:1px solid rgba(69,93,120,0.28) !important;border-radius:12px !important;box-shadow:0 10px 26px rgba(0,0,0,0.16);border-collapse:separate !important;border-spacing:0;overflow:hidden;}";
+	css += ".split-skin table.FormTable>thead>tr>td{border:none !important;}";
+	css += ".split-skin table.FormTable>tbody>tr>th{background:rgba(255,255,255,0.02) !important;color:#cdd9e5 !important;border:none !important;border-bottom:1px solid rgba(69,93,120,0.16) !important;border-right:1px solid rgba(69,93,120,0.16) !important;font-weight:600;text-align:left;padding:10px 14px !important;vertical-align:middle;}";
+	css += ".split-skin table.FormTable>tbody>tr>td{background:transparent !important;color:#c4d2e0 !important;border:none !important;border-bottom:1px solid rgba(69,93,120,0.16) !important;}";
+	css += ".split-skin table.FormTable>tbody>tr:last-child>th,.split-skin table.FormTable>tbody>tr:last-child>td{border-bottom:none !important;}";
+	css += ".split-skin table.FormTable a,.split-skin table.FormTable .hintstyle{color:#9cc4ff !important;}";
+	css += ".split-skin .split-banner{background:linear-gradient(180deg,rgba(24,32,44,0.96),rgba(15,21,30,0.94)) !important;color:#c4d2e0 !important;border:1px solid rgba(110,168,254,0.22) !important;border-left:3px solid #6ea8fe !important;border-radius:10px !important;padding:11px 14px !important;line-height:1.65;}";
+	css += ".split-skin .split-banner b{color:#9cc4ff;}";
+	css += ".split-skin .split-sec-head{background:linear-gradient(90deg,rgba(110,168,254,0.16),rgba(110,168,254,0.03)) !important;color:#eaf2fb !important;font-weight:600 !important;padding:10px 14px !important;border:none !important;border-bottom:1px solid rgba(110,168,254,0.18) !important;letter-spacing:.3px;}";
+	css += ".split-skin .split-sec-head a,.split-skin .split-sec-head .hintstyle{color:#9cc4ff !important;font-weight:normal;}";
 	css += ".split-stat-row{display:flex;flex-wrap:wrap;gap:8px;align-items:stretch;}";
 	css += ".split-stat-card{display:flex;flex-direction:column;gap:3px;justify-content:center;min-width:92px;padding:8px 13px;border-radius:9px;background:linear-gradient(180deg,rgba(28,37,50,0.95),rgba(17,23,32,0.92));border:1px solid rgba(69,93,120,0.30);}";
 	css += ".split-stat-k{font-size:10px;color:#8a99a8;letter-spacing:.4px;}";
@@ -14506,7 +14507,7 @@ function update_ss() {
 }
 
 function tabSelect(w) {
-	for (var i = 0; i <= 11; i++) {
+	for (var i = 0; i <= 12; i++) {
 		$('.show-btn' + i).removeClass('active');
 		$('#tablet_' + i).hide();
 	}
@@ -14579,8 +14580,14 @@ var tab_actions = {
 	11: function() {
 		$('#apply_button').show();
 		if (typeof refresh_split_v2_panel === 'function') { refresh_split_v2_panel(); }
+		if (typeof refresh_acl_table === 'function') { refresh_acl_table(); }
 		if (typeof start_split_status_polling === 'function') { start_split_status_polling(); }
 		if (typeof change_select_width === 'function') { change_select_width('#ssconf_basic_node'); change_select_width('#ssconf_basic_node_front'); }
+	},
+	12: function() {
+		$('#apply_button').show();
+		if (typeof render_split_mode_list === 'function') { render_split_mode_list(); }
+		if (typeof render_split_rule_list === 'function') { render_split_rule_list(); }
 	}
 };
 
@@ -14828,6 +14835,7 @@ function set_ss_status_waiting(text) {
 	}
 	E("ss_state3").innerHTML = "国内连接 - " + text;
 	update_ss_status_tip("", "", ipv6Mode);
+	render_top_health();
 }
 
 function handle_ss_status_heartbeat(showRefreshPrompt) {
@@ -14865,6 +14873,38 @@ function status_payload_matches_current_mode(res) {
 	return res.indexOf("国外IPv4") == -1 && res.indexOf("国外IPv6") == -1;
 }
 
+function render_top_health() {
+	var enabled = db_ss["ss_basic_enable"] == "1";
+	var $p = $("#ss_state_plugin");
+	if ($p.length) {
+		$p.html(enabled ? "插件状态 - <span style=\"color:#22ab39;\">运行中</span>" : "插件状态 - <span style=\"color:#999;\">未运行</span>");
+	}
+	render_top_status_line("#ss_state_foreign", "出国状态", "ss_state2", enabled);
+	render_top_status_line("#ss_state_domestic", "国内状态", "ss_state3", enabled);
+}
+
+function render_top_status_line(sel, label, srcId, enabled) {
+	var $el = $(sel);
+	if (!$el.length) return;
+	if (!enabled) {
+		$el.html(label + " - <span style=\"color:#999;\">—</span>");
+		return;
+	}
+	var src = E(srcId);
+	var t = (src && src.innerHTML) ? src.innerHTML : "";
+	var ok = t.indexOf("✓") != -1;
+	var waiting = t === "" || t.indexOf("Waiting") != -1 || t.indexOf("等待") != -1;
+	if (ok) {
+		var m = t.match(/(\d+)\s*ms/);
+		var msTxt = m ? (" <span style=\"color:#888;\">" + m[1] + " ms</span>") : "";
+		$el.html(label + " - <span style=\"color:#22ab39;\">正常</span>" + msTxt);
+	} else if (waiting) {
+		$el.html(label + " - <span style=\"color:#999;\">检测中…</span>");
+	} else {
+		$el.html(label + " - <span style=\"color:#FF3B30;\">异常</span>");
+	}
+}
+
 function apply_ss_status(res, with_heartbeat, showRefreshPrompt) {
 	if (typeof res != "string") {
 		if (res === null || typeof res == "undefined") {
@@ -14897,6 +14937,7 @@ function apply_ss_status(res, with_heartbeat, showRefreshPrompt) {
 			}
 			statusFrontHasValidPayload = true;
 		}
+		render_top_health();
 		if (with_heartbeat && arr[expect] == "1") {
 			handle_ss_status_heartbeat(showRefreshPrompt);
 		}
@@ -16789,7 +16830,11 @@ function toggleKeyMask(o, show){
 														<td>
 															<div style="display:table-cell;float: left;margin-left:0px;">
 																<a class="hintstyle" href="javascript:void(0);" onclick="openssHint(0)">
-																	<span id="ss_state2">国外连接 - Waiting</span>
+																	<span id="ss_state_plugin">插件状态 - <span style="color:#999;">检测中…</span></span><br/>
+																				<span id="ss_state_foreign">出国状态 - <span style="color:#999;">检测中…</span></span><br/>
+																				<span id="ss_state_domestic">国内状态 - <span style="color:#999;">检测中…</span></span>
+																				<span id="ss_top_legacy_detail" style="display:none;">
+																				<span id="ss_state2">国外连接 - Waiting</span>
 																	<br/>
 																	<span id="ss_state4" style="display:none;">国外IPv6 - Waiting</span>
 																	<br id="ss_state4_break" style="display:none;"/>
@@ -16799,6 +16844,7 @@ function toggleKeyMask(o, show){
 																	<span id="ss_state_chain">链式代理状态 - <span style='color:#888;'>直连中</span></span>
 																	<br id="ss_state_chain_path_break" style="display:none;"/>
 																	<span id="ss_state_chain_path" style="display:none;color:#80b3ff;font-size:11px;padding-left:12px;"></span>
+																			</span>
 																</a>
 															</div>
 															<div style="display:table-cell;float: left;margin-left:270px;position: absolute;padding: 10.5px 0px;">
@@ -16816,12 +16862,13 @@ function toggleKeyMask(o, show){
 												<table style="margin:10px 0px 0px 0px;border-collapse:collapse" width="100%" height="37px">
 													<tr>
 														<td cellpadding="0" cellspacing="0" style="padding:0" border="1" bordercolor="#222">
-															<input id="show_btn11" class="show-btn11" style="cursor:pointer;background:#FFEBA0;color:#CC0066;" type="button" value="分流" title="智能分流架构" />
+															<input id="show_btn11" class="show-btn11" style="cursor:pointer" type="button" value="分流控制" title="分流控制：节点 + 默认 Mode + 访问控制" />
+													<input id="show_btn12" class="show-btn12" style="cursor:pointer" type="button" value="模式规则" title="模式 (Mode) 与 规则 (Rule) 管理" />
 															<input id="show_btn1" class="show-btn1" style="cursor:pointer" type="button" value="节点管理" />
 															<input id="show_btn3" class="show-btn3" style="cursor:pointer" type="button" value="DNS设定" />
 															<input id="show_btn4" class="show-btn4" style="cursor:pointer" type="button" value="黑白名单" />
 															<input id="show_btn7" class="show-btn7" style="cursor:pointer" type="button" value="更新管理" />
-															<input id="show_btn8" class="show-btn8" style="cursor:pointer" type="button" value="访问控制" />
+															<!-- FORK: 访问控制 tab 已并入「分流控制」 -->
 															<input id="show_btn9" class="show-btn9" style="cursor:pointer" type="button" value="附加功能" />
 															<input id="show_btn10" class="show-btn10" style="cursor:pointer" type="button" value="查看日志" />
 															
@@ -17406,15 +17453,7 @@ function render_dns_upstream_rows() {
 													</script>
 												</table>
 											</div>
-											<div id="tablet_8" style="display: none;">
-												<div id="ss_acl_table"></div>
-												<div id="ACL_note" style="margin:10px 0 0 5px">
-													<div><i>1&nbsp;&nbsp;默认情况下所有设备都走「分流」页设置的默认 Mode（见下方“其它主机”行）。</i></div>
-													<div><i>2&nbsp;&nbsp;在上面给某台设备单独指定一个 Mode，它就按该 Mode 分流；选“不通过代理（直连）”则该设备完全不走代理。</i></div>
-													<div><i>3&nbsp;&nbsp;离线（没开机）的设备也能在地址栏右侧下拉里选到，方便提前配好规则。</i></div>
-													<div><i>4&nbsp;&nbsp;UDP 转发、屏蔽 QUIC、端口范围现在都在每个 Mode 里设置（「分流」页 → 编辑 Mode），不在这里逐设备配。</i></div>
-												</div>
-											</div>
+											<!-- FORK: 访问控制 tab 已并入「分流控制」(tablet_11)，原 tablet_8 删除 -->
 											<div id="tablet_9" style="display: none;">
 												<table id="table_addons" width="100%" border="1" align="center" cellpadding="4" cellspacing="0" bordercolor="#6b8fa3" class="FormTable" >
 													<script type="text/javascript">
@@ -17512,7 +17551,7 @@ function render_dns_upstream_rows() {
 													<textarea cols="63" rows="36" wrap="on" readonly="readonly" id="log_content1" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"></textarea>
 												</div>
 											</div>
-											<div id="tablet_11" style="display: none;">
+											<div id="tablet_11" class="split-skin" style="display: none;">
 												<!-- FORK doge.12: 分流架构入口 -->
 												<table id="table_split_v2_main" width="100%" border="1" align="center" cellpadding="4" cellspacing="0" bordercolor="#6b8fa3" class="FormTable" style="margin-top:4px;">
 													<thead><tr><td class="IPQOSTitle split-sec-head" colspan="2" align="left">分流架构</td></tr></thead><tbody id="split_node_picker_tb"></tbody>
@@ -17524,20 +17563,37 @@ function render_dns_upstream_rows() {
 														<tr><th>默认 Mode</th>
 															<td><select id="ss_split_default_mode_id" style="width:auto"></select>
 															&nbsp;<span style="color:#888;font-size:11px;">用于未在访问控制里特别指定 Mode 的设备</span></td></tr>
-														<tr><th>运行状态</th><td><span id="ss_split_runtime_status" style="color:#888;font-size:12px;">(等待轮询)</span></td></tr>
+														<!-- FORK: 分流运行状态行已移除（内容将由独立「状态」标签页展示，TODO）。render_split_runtime_status/轮询 JS 保留以备复用。 -->
 													</tbody>
 												</table>
-												<script type="text/javascript">try{ $('#split_node_picker_tb').forms([{ title: '落地节点', id:'ssconf_basic_node', type:'select', func:'onchange="ss_node_sel();"', style:'width:auto;min-width:164px;max-width:450px;', options:[], value: "1"},{ title: '前置节点', id:'ssconf_basic_node_front', type:'select', func:'onchange="ss_node_front_sel();"', hint:'200', style:'width:auto;min-width:164px;max-width:450px;', options:[], value: ""}]); }catch(e){ if(window.console&&console.warn) console.warn('split picker forms failed', e); }</script><table id="table_split_modes" width="100%" border="1" align="center" cellpadding="4" cellspacing="0" bordercolor="#6b8fa3" class="FormTable" style="margin-top:8px;">
+												<script type="text/javascript">try{ $('#split_node_picker_tb').forms([{ title: '落地节点', id:'ssconf_basic_node', type:'select', func:'onchange="ss_node_sel();"', style:'width:auto;min-width:164px;max-width:450px;', options:[], value: "1"},{ title: '前置节点', id:'ssconf_basic_node_front', type:'select', func:'onchange="ss_node_front_sel();"', hint:'200', style:'width:auto;min-width:164px;max-width:450px;', options:[], value: ""}]); }catch(e){ if(window.console&&console.warn) console.warn('split picker forms failed', e); }</script>
+											<table width="100%" border="1" align="center" cellpadding="4" cellspacing="0" bordercolor="#6b8fa3" class="FormTable" style="margin-top:8px;">
+												<thead><tr><td class="IPQOSTitle split-sec-head" colspan="2" align="left">访问控制（按设备分配 Mode）</td></tr></thead>
+												<tbody>
+													<tr><td colspan="2" style="padding:8px;">
+														<div id="ss_acl_table"></div>
+														<div id="ACL_note" style="margin:10px 0 0 5px">
+															<div><i>1&nbsp;&nbsp;默认情况下所有设备都走「分流控制」页设置的默认 Mode（见下方“其它主机”行）。</i></div>
+															<div><i>2&nbsp;&nbsp;在上面给某台设备单独指定一个 Mode，它就按该 Mode 分流；选“不通过代理（直连）”则该设备完全不走代理。</i></div>
+															<div><i>3&nbsp;&nbsp;离线（没开机）的设备也能在地址栏右侧下拉里选到，方便提前配好规则。</i></div>
+															<div><i>4&nbsp;&nbsp;UDP 转发、屏蔽 QUIC、端口范围现在都在每个 Mode 里设置（「模式规则」页 → 编辑 Mode），不在这里逐设备配。</i></div>
+														</div>
+													</td></tr>
+												</tbody>
+											</table>
+										</div>
+										<div id="tablet_12" class="split-skin" style="display: none;">
+											<table id="table_split_modes" width="100%" border="1" align="center" cellpadding="4" cellspacing="0" bordercolor="#6b8fa3" class="FormTable" style="margin-top:8px;">
 													<thead><tr><td class="IPQOSTitle split-sec-head" colspan="2" align="left">模式 (Mode) 管理 <a class="hintstyle" style="color:#03a9f4;font-weight:normal;" href="javascript:void(0);" onclick="openssHint(211);"><u>说明</u></a></td></tr></thead>
 													<tbody>
-														<tr><td colspan="2" style="padding:0;"><div id="split_mode_list_wrap" style="min-height:60px;padding:8px;"><span style="color:#888;">(等到主代理重启代理后此处会有数据)</span></div></td></tr>
+														<tr><td colspan="2" style="padding:0;"><div id="split_mode_list_wrap" style="min-height:60px;max-height:440px;overflow-y:auto;padding:8px;"><span style="color:#888;">(等到主代理重启代理后此处会有数据)</span></div></td></tr>
 														<tr><td colspan="2" style="padding:6px;"><div id="split_mode_addslot" class="split-add-slot"></div></td></tr>
 													</tbody>
 												</table>
 												<table id="table_split_rules" width="100%" border="1" align="center" cellpadding="4" cellspacing="0" bordercolor="#6b8fa3" class="FormTable" style="margin-top:8px;">
 													<thead><tr><td class="IPQOSTitle split-sec-head" colspan="2" align="left">规则 (Rule) 管理 <a class="hintstyle" style="color:#03a9f4;font-weight:normal;" href="javascript:void(0);" onclick="openssHint(212);"><u>说明</u></a></td></tr></thead>
 													<tbody>
-														<tr><td colspan="2" style="padding:0;"><div id="split_rule_list_wrap" style="min-height:60px;padding:8px;"><span style="color:#888;">(等到主代理重启代理后此处会有数据)</span></div></td></tr>
+														<tr><td colspan="2" style="padding:0;"><div id="split_rule_list_wrap" style="min-height:60px;max-height:440px;overflow-y:auto;padding:8px;"><span style="color:#888;">(等到主代理重启代理后此处会有数据)</span></div></td></tr>
 														<tr><td colspan="2" style="padding:6px;"><div id="split_rule_addslot" class="split-add-slot"></div></td></tr>
 													</tbody>
 												</table>

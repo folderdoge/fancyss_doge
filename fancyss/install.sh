@@ -607,24 +607,15 @@ migrate_split_routing_v1(){
 	write_builtin_mode_meta 1 "全局代理" "${cur_udp}" 0 "global" "${cur_action}"
 	dbus set ss_split_mode_1_rule_count="0"
 
-	# Mode 2 = 大陆白名单 (dns_mode=split, 按合同 §2.2 顺序 7 条 rules, default_action=cur_action)
-	# 顺序：Rule 3 (chndns) → direct
-	#       Rule 4 (adblock) → reject
-	#       Rule 6 (online_ipcheck) → direct
-	#       Rule 7 (查IP) → direct
-	#       Rule 5 (telegram) → cur_action
-	#       Rule 2 (gfwlist) → cur_action
-	#       Rule 1 (chnlist) → direct
-	echo_date "  内置 Mode 2: 大陆白名单（dns_mode=split, 7 条规则）"
+	# Mode 2 = 大陆白名单 (dns_mode=split, default_action=cur_action)
+	# FORK doge.14-beta.10: 默认精简为单条规则「大陆白名单_场景」(Rule 1 = chnlist 域名 + cn IP，动作 direct)，
+	#   其余走 default_action=proxy_main → 经典大陆白名单（国内直连 / 其余走代理）。
+	#   其它内置 Rule(2~8: GFW/广告/公共DNS/在线检测/查IP/Telegram/Bing) 仍 seed 进规则库但默认不挂载，
+	#   存量用户由 repair_builtin_mainland_single_rule_v1 一次性同步收敛。
+	echo_date "  内置 Mode 2: 大陆白名单（dns_mode=split, 单条规则 大陆白名单_场景）"
 	write_builtin_mode_meta 2 "大陆白名单" "${cur_udp}" 0 "split" "${cur_action}"
-	add_mode_rule 2 1 3 "direct"
-	add_mode_rule 2 2 4 "reject"
-	add_mode_rule 2 3 6 "direct"
-	add_mode_rule 2 4 7 "direct"
-	add_mode_rule 2 5 5 "${cur_action}"
-	add_mode_rule 2 6 2 "${cur_action}"
-	add_mode_rule 2 7 1 "direct"
-	dbus set ss_split_mode_2_rule_count="7"
+	add_mode_rule 2 1 1 "direct"
+	dbus set ss_split_mode_2_rule_count="1"
 
 	dbus set ss_split_mode_count="2"
 
@@ -886,6 +877,44 @@ migrate_split_geo_meta_v1(){
 	if [ "${set_cnt}" -gt 0 ]; then
 		logger -t "fancyss" "doge.14-beta.8 migrate_split_geo_meta_v1: 内置大表规则启用 geosite/geoip 共享引用 (${set_cnt})"
 		echo_date "✅ FORK doge.14-beta.8: 内置大表规则启用共享 geo 资源（启动提速，分流结果不变）"
+	fi
+}
+
+# FORK doge.14-beta.10: 默认「大陆白名单」精简为单条规则「大陆白名单_场景」（国内直连，其余走代理）。
+# 原内置大陆白名单挂 7 条规则（含 GFW/广告/公共DNS/在线检测/查IP/Telegram）；现收敛为单条 Rule 1
+#（chnlist 域名 + cn IP，动作 direct），其余内置 Rule(2~8) 保留在规则库但默认不挂载。
+# migrate_split_routing_v1 有幂等守卫不重跑，存量用户的 7 条挂载靠这条一次性 repair 收敛。
+# 只动 builtin=1 且 name=大陆白名单 的 Mode；幂等 fss_split_mainland_single_v1=1。用户手动改过会被收敛回新默认（已确认）。
+repair_builtin_mainland_single_rule_v1(){
+	[ "$(dbus get fss_split_mainland_single_v1)" = "1" ] && return 0
+	local mode_count m builtin mname changed k
+	mode_count="$(dbus get ss_split_mode_count)"
+	[ -z "${mode_count}" ] && mode_count=0
+	changed=0
+	m=1
+	while [ "${m}" -le "${mode_count}" ]; do
+		builtin="$(dbus get ss_split_mode_${m}_builtin)"
+		mname="$(dbus get ss_split_mode_${m}_name)"
+		if [ "${builtin}" = "1" ] && [ "${mname}" = "大陆白名单" ]; then
+			# dbus remove 精确匹配（CLAUDE.md #15）删不掉裸前缀 _<i>_*，故用 dbus list 前缀枚举逐键删（会连 _rule_count 一并列出删除，下面第二步重置 rule_count=1 覆盖）
+			dbus list ss_split_mode_${m}_rule_ 2>/dev/null | cut -d "=" -f 1 | while read k; do
+				[ -n "${k}" ] && dbus remove "${k}"
+			done
+			dbus set ss_split_mode_${m}_rule_1_rid="1"
+			dbus set ss_split_mode_${m}_rule_1_action="direct"
+			dbus set ss_split_mode_${m}_rule_count="1"
+			changed=$((changed + 1))
+		fi
+		m=$((m + 1))
+	done
+	# Rule 1 内容不变（chnlist + cn IP，含 geosite/geoip），仅显示名 常用 → 场景
+	if [ "$(dbus get ss_split_rule_1_builtin)" = "1" ]; then
+		dbus set ss_split_rule_1_name="大陆白名单_场景"
+	fi
+	dbus set fss_split_mainland_single_v1="1"
+	if [ "${changed}" -gt 0 ]; then
+		logger -t "fancyss" "doge.14-beta.10 repair_builtin_mainland_single_rule_v1: 大陆白名单收敛为单条规则 大陆白名单_场景"
+		echo_date "✅ FORK doge.14-beta.10: 默认「大陆白名单」已精简为单条「大陆白名单_场景」规则（其余内置规则保留在规则库，默认不挂载）"
 	fi
 }
 
@@ -2603,6 +2632,8 @@ install_now(){
 	notify_allowinsecure_removed_v1
 	# FORK doge.14-beta.8: 内置大表规则启用 geosite/geoip 共享引用（启动提速，分流结果不变；幂等）
 	migrate_split_geo_meta_v1
+	# FORK doge.14-beta.10: 默认「大陆白名单」精简为单条规则「大陆白名单_场景」——存量用户一次性收敛（幂等）
+	repair_builtin_mainland_single_rule_v1
 	# FORK doge.12 alpha：分流 Rule 自动更新 cron（每 30 分钟扫一次；详见 doc/design/split-routing-architecture.md §10.3）。
 	# alpha 期内置 Rule 全部 update_hours=0，cron 跑等于 no-op；脚本里有守护跳过。
 	# 用户自定义 Rule + 设置 update_hours>0 + 配置 source_url 才会真正下载。

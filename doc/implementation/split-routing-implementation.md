@@ -229,7 +229,7 @@ DNS tab 的「国内 / 国外（可增删行）」+「全局（单行）」三�
 
 | Rule.id | name | source（首次安装的内容来源） | source_url | update_hours |
 |---|---|---|---|---|
-| 1 | 大陆白名单_常用 | install 期 zcat 现有 `fancyss/ss/rules/chnlist.gz` + 加 `rules_ng2/ip/cn.txt` IP | 留空 alpha；doge.13 起指向 fork raw | 0（alpha 不自动更新） |
+| 1 | 大陆白名单_场景 | install 期 zcat 现有 `fancyss/ss/rules/chnlist.gz` + 加 `rules_ng2/ip/cn.txt` IP | 留空 alpha；doge.13 起指向 fork raw | 0（alpha 不自动更新） |
 | 2 | GFW列表_常用 | install 期 zcat 现有 `fancyss/ss/rules/gfwlist.gz` | 同上 | 0 |
 | 3 | 中国公共DNS | install 期写入硬编码 10 IP（沿用 [ssconfig.sh:3228 `ip_lan_chndns`](../../fancyss/ss/ssconfig.sh)） | 空（永禁用 auto-update） | 0 |
 | 4 | 广告统计屏蔽 | install 期 zcat 现有 `fancyss/ss/rules/adslist.gz`（若存在；否则留空） | 同 Rule 1 | 0 |
@@ -246,7 +246,7 @@ DNS tab 的「国内 / 国外（可增删行）」+「全局（单行）」三�
 | Mode.id | name | dns_mode | apply_blackwhite | udp_proxy | block_quic | rules（按顺序） | default_action |
 |---|---|---|---|---|---|---|---|
 | 1 | 全局代理 | global | 1 | 1（doge.14-beta.6 起，见 §6.3 D28；早期误种 0） | 0 | [] | 取自 `ssconf_basic_node` / `ssconf_basic_node_front` |
-| 2 | 大陆白名单 | split | 1 | 1（同上） | 0 | (Rule 3 → direct, Rule 4 → reject, Rule 6 → direct, Rule 7 → direct, Rule 5 → 主节点动作, Rule 2 → 主节点动作, Rule 1 → direct) | 取自 `ssconf_basic_node` |
+| 2 | 大陆白名单 | split | 1 | 1（同上） | 0 | [Rule 1（大陆白名单_场景）→ direct]（doge.14-beta.10 起精简为单条，见 §6.3 D32；其余内置 Rule 保留在库默认不挂载） | 取自 `ssconf_basic_node` |
 
 > 用户自定义 Mode 从 100 起。
 
@@ -684,6 +684,16 @@ migrate_split_routing_v3() {
 - **真机验证（2026-06-17，51.1 热替换 3 运行时文件）**：① save.sh 建端口规则 OK、非法端口 `99999` 被拒、stat_ports 正确；② `generate_xray_json_split` 生成**单条** `{port:"25,465,587,6881-6889",outboundTag:...}`（`network` 字段为 null = TCP/UDP 通吃）；③ **实测路由翻转**——同域名 `ifconfig.me`：443（命中端口规则→direct）出口=WAN 直连 `123.x`，80（默认→proxy_node:448）出口=代理 `3.9.x`，证明按端口分流生效且不影响其他端口；④ UI 弹窗"类型"下拉 + 内容区随类型切换 label/placeholder + 规则卡片【端口】/【IP 域名】类型泡 + 创建闭环（kind 透传持久化）均 OK。
 - **真机发现并修复的 bug（while-read 末行）**：`count_port_entries` / `validate_port_payload` / `recount_stats_file` 的 `while read line; do …; done < file` 在**最后一行无结尾换行符**时漏读该行（UI textarea 存的单端口 `8080` 无结尾 `\n` → stat 显 0、且末行单个非法端口能绕过后端校验）。修为 `while IFS= read -r line || [ -n "${line}" ]; do`。**路由不受影响**（ssconfig 用 awk，awk 正确处理无换行末行），仅 stat 显示与后端兜底校验受影响。复测：单端口 `8080` stat=1、单个非法端口无换行被拒。
 - **状态**：源码落地（4 文件 + 文档）+ **51.1 热替换真机验证通过**；**未 build 整包 / 未发版**（等用户授权）。
+
+#### D32: 默认「大陆白名单」精简为单条规则「大陆白名单_场景」（doge.14-beta.10）
+
+2026-06-17 用户需求：把内置「大陆白名单」Mode 的默认规则集从 7 条精简为 1 条，命名「大陆白名单_场景」（= 国内直连、其余走代理的经典大陆白名单）。
+
+- **改动**：① [ss_split_rule_seed.sh](../../fancyss/scripts/ss_split_rule_seed.sh) 把内置 Rule 1 显示名 `大陆白名单_常用` → `大陆白名单_场景`（内容不变 = chnlist 域名 + cn IP，仍带 geosite:cn/geoip:cn 共享引用）；② [install.sh](../../fancyss/install.sh) `migrate_split_routing_v1` 把 Mode 2 的 7 条 `add_mode_rule` 收敛为单条 `add_mode_rule 2 1 1 "direct"` + `rule_count=1`（新装路径）；③ 新增幂等迁移 `repair_builtin_mainland_single_rule_v1`（marker `fss_split_mainland_single_v1`）把存量用户的 Mode 2 也收敛为单条 + 改名（在 install_now() 的 migrate_split_geo_meta_v1 之后调用）。
+- **保留（用户决策）**：其余内置 Rule（2~8：GFW列表 / 中国公共DNS / 广告统计屏蔽 / Telegram加速 / 在线状态检测站 / 查IP常用站 / Bing加速）仍 seed 进规则库，只是默认不挂载到 Mode 2，用户可在「模式规则」页按需加回任意 Mode。
+- **dbus remove 坑（CLAUDE.md #15）**：repair 清旧挂载用 `dbus list ss_split_mode_<m>_rule_ | cut | while read k; do dbus remove "$k"; done` 逐键删（裸前缀 `dbus remove` 精确匹配删不掉 `_<i>_*`）；`dbus list` 前缀会连 `_rule_count` 一并列出删除，紧接重置 `rule_count=1` 覆盖。只动 `builtin=1 && name=大陆白名单` 的 Mode（按 name+builtin 匹配，不靠 slot 号，兼容删模式后的 slot 压缩）。
+- **行为**：单条 Rule 1（geosite:cn 域名 + geoip:cn IP，direct）+ default_action=proxy_main → 国内直连 / 其余走代理；domain 与 ip 仍各自独立成条（D27/D29 不回归）。移除的额外规则里 `广告统计屏蔽`(reject) 不再拦广告（改随默认走代理），其余 direct/proxy 多为冗余或细化。
+- **真机验证（2026-06-17，51.1 整包安装 beta.10）**：安装日志 `#2=大陆白名单(1规则)`、`split_xray_warn` 空、xray -test OK；dbus Mode 2 `rule_count=1`/`rule_1_rid=1`/`action=direct`、Rule 1 改名 `大陆白名单_场景`、marker=1、库仍 9 条；xray.json mode_2 路由 = `domain:[geosite:cn]→out_direct` + `ip:[geoip:cn]→out_direct` + 兜底 `→out_main`，无 out_reject（额外规则确已移除）。3 审查 agent 一致 SHIP-READY。
 
 ### 6.4 实施期约定的回溯修订
 

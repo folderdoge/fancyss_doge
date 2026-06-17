@@ -122,9 +122,9 @@ fancyss_split_seed_rule_files_v1(){
 
 	echo_date "🔧 split-seed: 开始 reseed 内置 Rule 1~8 源文件..."
 
-	# ---------- Rule 1: 大陆白名单_常用 = chnlist.gz 域名 + rules_ng2/ip/cn.txt ----------
-	echo_date "  reseed Rule 1: 大陆白名单_常用"
-	_seed_write_rule_header 1 "大陆白名单_常用"
+	# ---------- Rule 1: 大陆白名单_场景 = chnlist.gz 域名 + rules_ng2/ip/cn.txt ----------
+	echo_date "  reseed Rule 1: 大陆白名单_场景"
+	_seed_write_rule_header 1 "大陆白名单_场景"
 	rfile="/koolshare/ss/rules_user/rule_1.txt"
 	if [ -f /koolshare/ss/rules/chnlist.gz ]; then
 		zcat /koolshare/ss/rules/chnlist.gz 2>/dev/null | grep -v '^[[:space:]]*$' | grep -v '^#' >> "${rfile}" || { echo_date "  ⚠️ Rule 1: zcat chnlist.gz 失败"; }
@@ -139,7 +139,7 @@ fancyss_split_seed_rule_files_v1(){
 	stat_line="$(_seed_count_rule_entries "${rfile}")"
 	dn_count="${stat_line% *}"
 	ip_count="${stat_line#* }"
-	_seed_write_rule_meta 1 "大陆白名单_常用" "" 0 "${dn_count}" "${ip_count}"
+	_seed_write_rule_meta 1 "大陆白名单_场景" "" 0 "${dn_count}" "${ip_count}"
 
 	# ---------- Rule 2: GFW列表_常用 = gfwlist.gz ----------
 	echo_date "  reseed Rule 2: GFW列表_常用"
