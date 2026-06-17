@@ -15490,8 +15490,15 @@ function getACLConfigs() {
 function addTr() {
 	var acls = {};
 	var p = "ss_acl";
+	// FORK doge.14-beta.11: 先校验客户端地址，非 IPv4/网段直接拦下并提示，
+	// 否则该行会被后端 is_valid_acl_source 在重启时静默删除（表现："加了但保存后又没了"）。
+	var aclSrc = String($('#' + p + "_ip").val() || "").replace(/^\s+|\s+$/g, "");
+	if (!acl_source_is_valid_ipv4(aclSrc)) {
+		alert("请填写有效的客户端地址：IPv4 地址或网段，例如 192.168.1.100 或 192.168.1.0/24。\n（暂不支持 IPv6 / MAC 地址 / 主机名）");
+		return;
+	}
 	acl_node_max += 1;
-	acls[p + "_ip_" + acl_node_max] = $('#' + p + "_ip").val();
+	acls[p + "_ip_" + acl_node_max] = aclSrc;
 		acls[p + "_name_" + acl_node_max] = $('#' + p + "_name").val();
 		acls[p + "_mode_" + acl_node_max] = $('#' + p + "_mode").val();
 		acls[p + "_split_mode_" + acl_node_max] = $('#' + p + "_mode").val();
@@ -15546,6 +15553,28 @@ function delTr(o) {
 
 function is_acl_cidr_ip(ip) {
 	return String(ip).indexOf("/") !== -1;
+}
+// FORK doge.14-beta.11: 与后端 ss_base.sh::is_valid_acl_source 同口径——只接受 IPv4 / IPv4 网段。
+// 之前 addTr() 不校验，IPv6/MAC/主机名/空值也能"加进表"，但后端重启时 is_valid_acl_source 会静默删除 → "加了但保存后又没了"。
+function acl_source_is_valid_ipv4(src) {
+	src = String(src || "").replace(/^\s+|\s+$/g, "");
+	if (!src) return false;
+	var host = src, prefix = 32;
+	var slash = src.indexOf("/");
+	if (slash !== -1) {
+		host = src.slice(0, slash);
+		var pfx = src.slice(slash + 1);
+		if (!/^[0-9]+$/.test(pfx)) return false;
+		prefix = parseInt(pfx, 10);
+		if (prefix < 0 || prefix > 32) return false;
+	}
+	if (!/^([0-9]{1,3}\.){3}[0-9]{1,3}$/.test(host)) return false;
+	var parts = host.split(".");
+	for (var i = 0; i < parts.length; i++) {
+		var o = parseInt(parts[i], 10);
+		if (o < 0 || o > 255) return false;
+	}
+	return true;
 }
 
 function escape_acl_html(str) {

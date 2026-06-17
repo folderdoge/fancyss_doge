@@ -12,6 +12,10 @@ run_bg(){
 	env -i PATH=${PATH} "$@" >/dev/null 2>&1 &
 }
 XRAY_CONFIG_FILE="/koolshare/ss/xray.json"
+# FORK doge.14-beta.11: xray.json 自 beta.8 起含 geosite:cn/geoip:cn 共享引用，
+# 启动 xray 必须注入 XRAY_LOCATION_ASSET 指向 .dat 目录，否则 "failed to load geosite: CN"。
+# 本脚本是 Web UI「更新 Xray 程序」入口，更新后会重启 xray —— 同样要带 asset 目录。
+SS_XRAY_ASSET_DIR="/koolshare/ss/rules_ng2/dat"
 url_main="https://raw.githubusercontent.com/hq450/fancyss/3.0/binaries/xray"
 
 # arm hnd hnd_v8 qca mtk
@@ -188,7 +192,7 @@ start_xray() {
 		cat >/koolshare/perp/xray/rc.main <<-EOF
 			#!/bin/sh
 			source /koolshare/scripts/base.sh
-			CMD="xray run -c /koolshare/ss/xray.json"
+			CMD="env XRAY_LOCATION_ASSET=${SS_XRAY_ASSET_DIR} xray run -c /koolshare/ss/xray.json"
 			
 			exec 2>&1
 			exec \$CMD
@@ -200,7 +204,7 @@ start_xray() {
 	else
 		echo_date "开启Xray主进程..."
 		cd /koolshare/bin
-		run_bg xray run -c $XRAY_CONFIG_FILE
+		run_bg env XRAY_LOCATION_ASSET="${SS_XRAY_ASSET_DIR}" xray run -c $XRAY_CONFIG_FILE
 	fi
 	local XPID
 	local i=25

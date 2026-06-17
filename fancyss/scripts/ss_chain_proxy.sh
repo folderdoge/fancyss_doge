@@ -290,7 +290,12 @@ fss_chain_apply() {
 
 	# 重新校验配置
 	if [ -x /koolshare/bin/xray ]; then
-		if ! /koolshare/bin/xray run -test -config="${xray_json}" >/tmp/fss_chain_test.log 2>&1; then
+		# FORK doge.14-beta.11: 自检必须注入 XRAY_LOCATION_ASSET（同 ssconfig.sh:4884/4958）。
+		# beta.8 起内置大表规则改发 geosite:cn/geoip:cn 共享引用，xray.json 含 geo 引用；
+		# 本自检（链式注入后重新校验）若不带 asset 目录，xray 找不到 geosite.dat →
+		# "failed to load geosite: CN" → 自检失败 → 误判链式配置坏 → 回滚 → 链式代理永远 fallback。
+		# 见 CLAUDE.md #26 坑①（env -i 会吃掉 export，必须写进同一行）。
+		if ! XRAY_LOCATION_ASSET="${SS_XRAY_ASSET_DIR:-/koolshare/ss/rules_ng2/dat}" /koolshare/bin/xray run -test -config="${xray_json}" >/tmp/fss_chain_test.log 2>&1; then
 			fss_chain_log "链式代理配置 xray 自检失败：$(cat /tmp/fss_chain_test.log 2>/dev/null | tr '\n' ' ' | head -c 500)"
 			# 失败时回滚到无链式版本：移除 dialerProxy + 删除附加 outbound
 			tmp="/tmp/fss_chain_rollback.$$.json"
