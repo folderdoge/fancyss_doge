@@ -7051,26 +7051,48 @@ var splitDlg = {
 		if (this.el) return;
 		var $body = $('body');
 		$body.append('<style id="split_dlg_style">' +
-			'#split_dlg_overlay { display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5); z-index:9999; }' +
-			'#split_dlg_box { position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); background:#fff; border:1px solid #888; border-radius:6px; padding:0; min-width:540px; max-width:760px; max-height:85vh; overflow:auto; box-shadow:0 4px 20px rgba(0,0,0,0.4); }' +
-			'#split_dlg_head { background:#445; color:#fff; padding:8px 12px; font-weight:bold; }' +
-			'#split_dlg_body { padding:12px; color:#000; background:#fff; }' +
+			'#split_dlg_overlay { display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(6,9,13,0.62); z-index:9999; }' +
+			'#split_dlg_box { position:absolute; top:50%; left:50%; transform:translate(-50%,-50%); background:#161e2a; border:1px solid rgba(69,93,120,0.55); border-radius:12px; padding:0; min-width:540px; max-width:760px; max-height:85vh; overflow:auto; box-shadow:0 18px 44px rgba(0,0,0,0.55); }' +
+			'#split_dlg_head { background:linear-gradient(90deg,rgba(110,168,254,0.18),rgba(110,168,254,0.03)); color:#eaf2fb; padding:10px 14px 10px 13px; font-weight:600; border-left:3px solid #6ea8fe; border-bottom:1px solid rgba(110,168,254,0.18); letter-spacing:.3px; }' +
+			'#split_dlg_body { padding:14px 16px; color:#c4d2e0; background:transparent; }' +
 			'#split_dlg_body table { width:100%; }' +
-			'#split_dlg_body th { text-align:left; padding:5px 8px; vertical-align:top; font-weight:normal; color:#333; width:38%; }' +
-			'#split_dlg_body td { padding:5px 8px; color:#000; }' +
-			'#split_dlg_body input[type=text], #split_dlg_body input[type=number], #split_dlg_body textarea { box-sizing:border-box; width:95%; }' +
-			'#split_dlg_body select { max-width:95%; }' +
-			'#split_dlg_foot { padding:8px 12px; text-align:right; border-top:1px solid #ddd; background:#f6f6f6; }' +
-			'#split_dlg_foot button { margin-left:8px; padding:4px 16px; cursor:pointer; }' +
-			'.split_dlg_err { color:#CC0066; font-size:11px; padding-right:8px; }' +
-			'#mode_dlg_rules_list { border:1px solid #ccc; border-radius:4px; max-height:240px; overflow-y:auto; background:#fafafa; }' +
-			'#mode_dlg_rules_list .rules_row { padding:4px 6px; border-bottom:1px solid #eee; }' +
-			'#mode_dlg_rules_list .rules_row:last-child { border-bottom:none; }' +
+			'#split_dlg_body th { text-align:left; padding:8px 10px; vertical-align:top; font-weight:normal; color:#9fb0c0; width:38%; }' +
+			'#split_dlg_body td { padding:8px 10px; color:#dbe6f1; }' +
+			'#split_dlg_body b { color:#eef5fc; }' +
+			'#split_dlg_body input[type=text], #split_dlg_body input[type=number], #split_dlg_body textarea { box-sizing:border-box; width:95%; background:#0f1620; border:1px solid #2c3b4d; border-radius:6px; color:#eef5fc; padding:6px 9px; }' +
+			'#split_dlg_body select { max-width:95%; background:#0f1620; border:1px solid #2c3b4d; border-radius:6px; color:#cfe0f2; padding:5px 8px; }' +
+			'#split_dlg_body input:focus, #split_dlg_body select:focus, #split_dlg_body textarea:focus { outline:none; border-color:#6ea8fe; box-shadow:0 0 0 2px rgba(110,168,254,0.18); }' +
+			'#split_dlg_body .act-pick { display:inline-flex; align-items:center; gap:3px; }' +
+			'#split_dlg_body .act-pick.act-hidden { display:none; }' +
+			'#split_dlg_body .act-pick-lbl { color:#8aa0b8; font-size:11px; white-space:nowrap; }' +
+			'#split_dlg_body .act-pick select { max-width:190px; }' +
+			'#split_dlg_body input[type=button].ss_btn { display:block; width:100%; box-sizing:border-box; text-align:center; background:rgba(110,168,254,0.07); border:1.5px dashed rgba(110,168,254,0.42); border-radius:7px; color:#9cc4ff; padding:9px; font-size:12px; cursor:pointer; }' +
+			'#split_dlg_body input[type=button].ss_btn:hover { background:rgba(110,168,254,0.14); border-color:rgba(110,168,254,0.7); color:#cfe0f2; }' +
+			'#split_dlg_foot { padding:10px 14px; text-align:right; border-top:1px solid rgba(69,93,120,0.4); background:#131a24; }' +
+			'#split_dlg_foot button { margin-left:8px; padding:6px 15px; cursor:pointer; border-radius:6px; border:1px solid #2c3b4d; background:#1b2530; color:#cfe0f2; font-size:13px; }' +
+			'#split_dlg_foot button:hover { background:#22303f; border-color:#3a5170; }' +
+			'.split_dlg_err { color:#ff7a9c; font-size:11px; padding-right:8px; }' +
+			'#mode_dlg_rules_list { border:1px solid #2a3850; border-radius:8px; max-height:300px; overflow-y:auto; background:#11161e; padding:7px; }' +
+			'#mode_dlg_rules_list .rules_empty { color:#8a99a8; padding:10px; font-size:12px; text-align:center; }' +
+			'#mode_dlg_rules_list .rules_row { display:flex; flex-wrap:wrap; align-items:center; gap:7px; background:#18212e; border:1px solid #243244; border-radius:7px; padding:7px 8px; margin-bottom:6px; }' +
+			'#mode_dlg_rules_list .rules_row:last-child { margin-bottom:0; }' +
+			'#mode_dlg_rules_list .rules_row.dragging { opacity:0.45; }' +
+			'#mode_dlg_rules_list .rules_row.drag-before { box-shadow:0 -2px 0 #6ea8fe; }' +
+			'#mode_dlg_rules_list .rules_row.drag-after { box-shadow:0 2px 0 #6ea8fe; }' +
+			'#mode_dlg_rules_list .rules_grip { color:#6b7d90; font-size:16px; line-height:1; cursor:grab; flex-shrink:0; -webkit-user-select:none; user-select:none; }' +
+			'#mode_dlg_rules_list .rules_grip:hover { color:#9cc4ff; }' +
+			'#mode_dlg_rules_list .rules_row.dragging .rules_grip { cursor:grabbing; }' +
+			'#mode_dlg_rules_list .rules_idx { min-width:22px; height:20px; background:rgba(110,168,254,0.16); border:1px solid rgba(110,168,254,0.3); border-radius:6px; color:#9cc4ff; font-size:12px; display:inline-flex; align-items:center; justify-content:center; flex-shrink:0; }' +
+			'#mode_dlg_rules_list .rules_arrow { color:#6b7d90; flex-shrink:0; }' +
+			'#mode_dlg_rules_list .rules_row select { background:#0f1620; border:1px solid #2c3b4d; border-radius:6px; color:#cfe0f2; padding:5px 7px; font-size:12px; }' +
+			'#mode_dlg_rules_list .mode_dlg_rule_rid { flex:1 1 150px; min-width:120px; }' +
+			'#mode_dlg_rules_list .rules_del { color:#ff93b2; text-decoration:none; font-size:16px; line-height:1; padding:0 4px; margin-left:auto; flex-shrink:0; cursor:pointer; }' +
+			'#mode_dlg_rules_list .rules_del:hover { color:#ff5d8a; }' +
 			'</style>');
 		$body.append('<div id="split_dlg_overlay"><div id="split_dlg_box">' +
 			'<div id="split_dlg_head"><span id="split_dlg_title">弹窗</span></div>' +
 			'<div id="split_dlg_body"></div>' +
-			'<div id="split_dlg_foot"><span id="split_dlg_err" class="split_dlg_err"></span><button type="button" onclick="splitDlg.cancel();">取消</button><button type="button" onclick="splitDlg.ok();" id="split_dlg_ok_btn">确定</button><button type="button" onclick="splitDlg.okApply();" id="split_dlg_ok_apply_btn" style="display:none;background:#445;color:#fff;border:1px solid #334;">保存并立即生效</button></div>' +
+			'<div id="split_dlg_foot"><span id="split_dlg_err" class="split_dlg_err"></span><button type="button" onclick="splitDlg.cancel();">取消</button><button type="button" onclick="splitDlg.ok();" id="split_dlg_ok_btn">确定</button><button type="button" onclick="splitDlg.okApply();" id="split_dlg_ok_apply_btn" style="display:none;background:#3b6ed0;color:#fff;border:1px solid #4f8be8;">保存并立即生效</button></div>' +
 			'</div></div>');
 		this.el = $('#split_dlg_overlay');
 		this.el.on('click', function(e) { if (e.target === this) splitDlg.cancel(); });
@@ -7085,7 +7107,7 @@ var splitDlg = {
 		// 每次 open 都重置 applyAfter 状态。
 		this.applyAfter = false;
 		if (opts && opts.showApply) {
-			$('#split_dlg_ok_btn').text(opts.okText || '保存').css({background:'#eee',color:'#333'});
+			$('#split_dlg_ok_btn').text(opts.okText || '保存').css({background:'#1b2530',color:'#cfe0f2'});
 			$('#split_dlg_ok_apply_btn').show().prop('disabled', false);
 		} else {
 			$('#split_dlg_ok_btn').text('确定').css({background:'',color:''});
@@ -7354,19 +7376,19 @@ function split_v2_build_action_html(idPrefix, value, includeReject) {
 	html += '<option value="proxy_node">代理(节点)</option>';
 	html += '<option value="proxy_chain">代理(链式)</option>';
 	html += '</select>';
-	html += ' <select id="' + idPrefix + '_node" style="display:none;max-width:200px;"></select>';
-	html += ' <select id="' + idPrefix + '_front" style="display:none;max-width:200px;"></select>';
+	html += '<span id="' + idPrefix + '_front_wrap" class="act-pick act-hidden"><span class="act-pick-lbl">【前置节点】</span><select id="' + idPrefix + '_front"></select></span>';
+	html += '<span id="' + idPrefix + '_node_wrap" class="act-pick act-hidden"><span class="act-pick-lbl" id="' + idPrefix + '_node_lbl">【代理节点】</span><select id="' + idPrefix + '_node"></select></span>';
 	return html;
 }
 
 function split_v2_action_type_changed(idPrefix) {
 	var t = $('#' + idPrefix + '_type').val();
-	var $n = $('#' + idPrefix + '_node');
-	var $f = $('#' + idPrefix + '_front');
-	// FORK doge.13: proxy_main / direct / reject 都不需要节点选择
-	if (t === 'proxy_node') { $n.show(); $f.hide(); }
-	else if (t === 'proxy_chain') { $n.show(); $f.show(); }
-	else { $n.hide(); $f.hide(); }
+	var isChain = (t === 'proxy_chain');
+	var isNode = (t === 'proxy_node');
+	// FORK doge.14.x: 节点/链式选择前加属性名标签（代理节点 / 前置节点+落地节点），整组随类型显隐
+	$('#' + idPrefix + '_front_wrap').toggleClass('act-hidden', !isChain);
+	$('#' + idPrefix + '_node_wrap').toggleClass('act-hidden', !(isNode || isChain));
+	$('#' + idPrefix + '_node_lbl').text(isChain ? '【落地节点】' : '【代理节点】');
 }
 
 function split_v2_populate_action_selects(idPrefix, value) {
@@ -7504,31 +7526,28 @@ function split_v2_open_mode_dialog(slot, data) {
 
 function split_v2_render_mode_dlg_rules() {
 	var rules = _modeDlgState.rules;
+	var builtin = _modeDlgState.builtin;
 	var html = '';
 	if (rules.length === 0) {
-		html = '<div style="color:#888;padding:8px;">暂无规则——点 "+ 添加规则" 添加</div>';
+		html = '<div class="rules_empty">暂无规则——点 "+ 添加规则" 添加</div>';
 	} else {
 		for (var i = 0; i < rules.length; i++) {
 			var r = rules[i];
 			var idPrefix = 'mode_dlg_rule_action_' + i;
-			html += '<div class="rules_row" data-idx="' + i + '">';
-			html += '<span style="display:inline-block;width:26px;text-align:right;color:#888;">#' + (i + 1) + '</span>&nbsp;';
-			var ridDis = _modeDlgState.builtin ? ' disabled' : '';
-			html += '<select class="mode_dlg_rule_rid" data-idx="' + i + '" style="max-width:200px;"' + ridDis + '>' + split_v2_build_rule_options(r.rid) + '</select>';
-			html += '&nbsp;→&nbsp;' + split_v2_build_action_html(idPrefix, r.action, true);
-			if (!_modeDlgState.builtin) {
-				html += '&nbsp;<a href="javascript:void(0);" onclick="split_v2_mode_dlg_rule_up(' + i + ');" title="上移">↑</a>';
-				html += '&nbsp;<a href="javascript:void(0);" onclick="split_v2_mode_dlg_rule_down(' + i + ');" title="下移">↓</a>';
-				html += '&nbsp;<a href="javascript:void(0);" onclick="split_v2_mode_dlg_rule_remove(' + i + ');" style="color:#CC0066;" title="删除">×</a>';
-			}
+			var dragAttr = builtin ? '' : ' draggable="true" ondragstart="split_v2_mode_dlg_drag_start(event,' + i + ');" ondragover="split_v2_mode_dlg_drag_over(event,' + i + ');" ondrop="split_v2_mode_dlg_drag_drop(event,' + i + ');" ondragend="split_v2_mode_dlg_drag_end(event);" ondragleave="split_v2_mode_dlg_drag_leave(event,' + i + ');"';
+			html += '<div class="rules_row" data-idx="' + i + '"' + dragAttr + '>';
+			if (!builtin) html += '<span class="rules_grip" title="拖动排序">&#x283F;</span>';
+			html += '<span class="rules_idx">' + (i + 1) + '</span>';
+			var ridDis = builtin ? ' disabled' : '';
+			html += '<select class="mode_dlg_rule_rid" data-idx="' + i + '"' + ridDis + '>' + split_v2_build_rule_options(r.rid) + '</select>';
+			html += '<span class="rules_arrow">→</span>' + split_v2_build_action_html(idPrefix, r.action, true);
+			if (!builtin) html += '<a href="javascript:void(0);" class="rules_del" onclick="split_v2_mode_dlg_rule_remove(' + i + ');" title="删除">×</a>';
 			html += '</div>';
 		}
 	}
 	$('#mode_dlg_rules_list').html(html);
 	for (var j = 0; j < rules.length; j++) {
 		split_v2_populate_action_selects('mode_dlg_rule_action_' + j, rules[j].action);
-		// FORK doge.12 alpha.18 Q1-A: 撤销 alpha.17 F-B-7 对 rule action select 的禁用——action 是运行时映射（direct/proxy/reject + 节点），用户应能改。
-		// rid select (上面 ridDis) 仍 disabled，因为改 rule rid 等价于增删条目，破坏种子 rule_list 语义。
 	}
 }
 
@@ -7576,22 +7595,57 @@ function split_v2_mode_dlg_rule_remove(i) {
 	split_v2_render_mode_dlg_rules();
 }
 
-function split_v2_mode_dlg_rule_up(i) {
-	if (i <= 0) return;
+// FORK doge.14.x: 规则列表改 HTML5 原生拖拽排序（替换旧 ↑/↓ 文字箭头）。
+// 复用既有 collect→重排数组→重绘 流程，下拉框选值不丢；内置 Mode 行不可拖（不发 draggable）。
+var _modeDlgDragFrom = -1;
+
+function split_v2_mode_dlg_drag_start(e, idx) {
+	_modeDlgDragFrom = idx;
+	try { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', String(idx)); } catch (err) {}
+	var row = e.currentTarget;
+	setTimeout(function () { $(row).addClass('dragging'); }, 0);
+}
+
+function split_v2_mode_dlg_drag_over(e, idx) {
+	if (_modeDlgDragFrom < 0) return;
+	e.preventDefault();
+	try { e.dataTransfer.dropEffect = 'move'; } catch (err) {}
+	$('#mode_dlg_rules_list .rules_row').removeClass('drag-before drag-after');
+	if (idx === _modeDlgDragFrom) return;
+	var rect = e.currentTarget.getBoundingClientRect();
+	var before = (e.clientY - rect.top) < (rect.height / 2);
+	$(e.currentTarget).addClass(before ? 'drag-before' : 'drag-after');
+}
+
+function split_v2_mode_dlg_drag_leave(e, idx) {
+	$(e.currentTarget).removeClass('drag-before drag-after');
+}
+
+function split_v2_mode_dlg_drag_drop(e, idx) {
+	e.preventDefault();
+	if (typeof e.stopPropagation === 'function') e.stopPropagation();
+	var from = _modeDlgDragFrom;
+	var rect = e.currentTarget.getBoundingClientRect();
+	var before = (e.clientY - rect.top) < (rect.height / 2);
+	$('#mode_dlg_rules_list .rules_row').removeClass('drag-before drag-after dragging');
+	_modeDlgDragFrom = -1;
+	if (from < 0 || from === idx) return;
 	split_v2_collect_mode_dlg_rules();
-	var tmp = _modeDlgState.rules[i - 1];
-	_modeDlgState.rules[i - 1] = _modeDlgState.rules[i];
-	_modeDlgState.rules[i] = tmp;
+	var rules = _modeDlgState.rules;
+	if (from >= rules.length) return;
+	var item = rules.splice(from, 1)[0];
+	var target = before ? idx : (idx + 1);
+	if (target > from) target--;
+	if (target < 0) target = 0;
+	if (target > rules.length) target = rules.length;
+	rules.splice(target, 0, item);
+	_modeDlgState.rules = rules;
 	split_v2_render_mode_dlg_rules();
 }
 
-function split_v2_mode_dlg_rule_down(i) {
-	split_v2_collect_mode_dlg_rules();
-	if (i >= _modeDlgState.rules.length - 1) return;
-	var tmp = _modeDlgState.rules[i + 1];
-	_modeDlgState.rules[i + 1] = _modeDlgState.rules[i];
-	_modeDlgState.rules[i] = tmp;
-	split_v2_render_mode_dlg_rules();
+function split_v2_mode_dlg_drag_end(e) {
+	_modeDlgDragFrom = -1;
+	$('#mode_dlg_rules_list .rules_row').removeClass('drag-before drag-after dragging');
 }
 
 function split_v2_save_mode_dialog() {
