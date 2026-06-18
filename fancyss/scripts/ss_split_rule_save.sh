@@ -38,6 +38,7 @@ TMP_SRC_KEY="ss_split_rule_save_source_url"
 TMP_HRS_KEY="ss_split_rule_save_update_hours"
 TMP_PAYLOAD_KEY="ss_split_rule_save_payload_b64"
 TMP_KIND_KEY="ss_split_rule_save_kind"
+TMP_GROUP_KEY="ss_split_rule_save_group"
 TMP_RESULT_KEY="ss_split_rule_save_result"
 TMP_ERROR_KEY="ss_split_rule_save_error"
 
@@ -66,6 +67,7 @@ cleanup_tmp() {
 	dbus remove ${TMP_HRS_KEY} >/dev/null 2>&1
 	dbus remove ${TMP_PAYLOAD_KEY} >/dev/null 2>&1
 	dbus remove ${TMP_KIND_KEY} >/dev/null 2>&1
+	dbus remove ${TMP_GROUP_KEY} >/dev/null 2>&1
 }
 
 fail() {
@@ -207,6 +209,8 @@ case "${op}" in
 		# 反斜杠会让后续 bash 在 `dbus set key="${name}"` 双引号上下文里把 \" \$ 等转义掉，可能绕过本检查的等价形式。
 		# 前端 split_v2_save_rule_dialog 已先校验拦截，本检查为后端兜底（绕过前端 / curl 直 POST 等场景）。
 		has_dbus_forbidden_chars "${name}" && fail "name contains forbidden chars (\" \` \$ \\ = CR LF)" "${REQ_ID}"
+		group="$(dbus get ${TMP_GROUP_KEY} 2>/dev/null)"
+		has_dbus_forbidden_chars "${group}" && fail "group has forbidden chars" "${REQ_ID}"
 		case "${update_hours}" in
 			''|*[!0-9]*) update_hours=0;;
 		esac
@@ -284,6 +288,7 @@ case "${op}" in
 		dbus set ss_split_rule_${slot}_stat_ips="${stat_i}"
 		dbus set ss_split_rule_${slot}_stat_ports="${stat_p}"
 		dbus set ss_split_rule_${slot}_kind="${kind}"
+		dbus set ss_split_rule_${slot}_group="${group}"
 		# builtin: 新建默认 0；已存在则保留原值
 		existing_builtin="$(dbus get ss_split_rule_${slot}_builtin 2>/dev/null)"
 		[ -z "${existing_builtin}" ] && dbus set ss_split_rule_${slot}_builtin="0"
@@ -320,14 +325,14 @@ case "${op}" in
 			# C-CRIT-5 修：始终 dbus set（即使值为空字符串）。旧版 if-else 在空字符串分支走 dbus remove，
 			# 会把''用户故意清空 source_url''这种语义从''空字符串''误降级为''key 不存在'' ——
 			# 前端 db_ss 读到 undefined 而非 ''，可能触发不同分支。
-			for f in id name builtin kind source_url update_hours last_update stat_domains stat_ips stat_ports; do
+			for f in id name builtin kind group source_url update_hours last_update stat_domains stat_ips stat_ports; do
 				val="$(dbus get ss_split_rule_${next}_${f} 2>/dev/null)"
 				dbus set ss_split_rule_${s}_${f}="${val}"
 			done
 			s="${next}"
 		done
 		# 删最后一个槽位的残余
-		for f in id name builtin kind source_url update_hours last_update stat_domains stat_ips stat_ports; do
+		for f in id name builtin kind group source_url update_hours last_update stat_domains stat_ips stat_ports; do
 			dbus remove ss_split_rule_${count}_${f} >/dev/null 2>&1
 		done
 		new_count=$((count - 1))

@@ -581,12 +581,6 @@ function LoadingSSProgress(seconds) {
 	} else if (action == 21) {
 		document.getElementById("loading_block3").innerHTML = "重启dnsmasq进程 ..."
 		$("#loading_block2").html("<li><font color='#ffcc00'>请勿刷新本页面，重启中 ...</font></li>");
-	} else if (action == 22) {
-		document.getElementById("loading_block3").innerHTML = "保存smartdns配置 ..."
-		$("#loading_block2").html("<li><font color='#ffcc00'>请勿刷新本页面，保存中 ...</font></li>");
-	} else if (action == 23) {
-		document.getElementById("loading_block3").innerHTML = "重置smartdns配置 ..."
-		$("#loading_block2").html("<li><font color='#ffcc00'>请勿刷新本页面，重置中 ...</font></li>");
 	} else if (action == 24) {
 		document.getElementById("loading_block3").innerHTML = "清除dohclient缓存 ..."
 		$("#loading_block2").html("<li><font color='#ffcc00'>请勿刷新本页面，清除中 ...</font></li>");
@@ -814,7 +808,7 @@ function openssHint(itemNum, flag) {
 	} else if (itemNum == 105) {
 		width = "600px";
 		statusmenu = "<b>替换dnsmasq：</b><br /><br />"
-		statusmenu += "开启此处后，将会关闭dnsmasq的dns服务器功能，chinadns-ng、smartdns将监听在53端口，以提供dns服务，这将让DNS请求再减少一层转发。<br />"
+		statusmenu += "开启此处后，将会关闭dnsmasq的dns服务器功能，chinadns-ng将监听在53端口，以提供dns服务，这将让DNS请求再减少一层转发。<br />"
 		statusmenu += "由于华硕/梅林机型的一些服务和dnsmasq深度绑定，部分机型替换后可能会有问题，请谨慎使用此功能，。<br />"
 		_caption = "说明：";
 	} else if (itemNum == 106) {
@@ -1000,39 +994,6 @@ function openssHint(itemNum, flag) {
 		statusmenu += "3. 当udp代理关闭时，开启此处将后将会屏蔽本机发往海外的udp 443端口数据包，效果跟情形1一样，将回落到http2后走tcp代理<br /><br />";
 		statusmenu += "4. 当udp代理关闭时，关闭此处后海外udp 443流量将直连，可能导致chatgpt等http3网站检测到国内ip而不可用。<br /><br />";
 		statusmenu += "总之，除非你特别了解这个功能，否则请默认勾选屏蔽quic流量，以保证http3/quic协议网站的正确访问。";
-		_caption = "说明：";
-	} else if (itemNum == 153) {
-		width = "760px";
-		statusmenu = "<div style='padding-left:16px;padding-right:16px;line-height:1.6'>";
-		statusmenu += "<b>主DNS方案用于决定 fancyss 采用哪套 DNS 分流内核。</b><br /><br />";
-		statusmenu += "<b><font color='#CC0066'>chinadns-ng：</font></b>链路更直接，中国DNS和可信DNS分别控制。<br />";
-		statusmenu += "优点：内存占用较小，通常在 5MB 左右；在指定 ISP DNS 的前提下，虽然不支持 IP 优选，但国内解析体验一般也不会比 smartdns 差很多。<br />";
-		statusmenu += "适用：更适合 ARMv7、小内存机型，或希望以更低资源占用获得稳定 DNS 分流体验的场景。<br /><br />";
-		statusmenu += "<b><font color='#CC0066'>smartdns：</font></b>更擅长多上游并发、缓存、测速和双栈优选，综合体验更偏向“自动择优”。<br />";
-		statusmenu += "优点：在 fancyss 上可以实现国内解析优选 IP，但通常需要为 chn 组指定多个 DNS 上游。<br />";
-		statusmenu += "缺点：内存占用较高，通常在 40MB 左右；不能对经过代理的域名解析做 IP 优选。<br /><br />";
-		statusmenu += "<font color='#00F'>建议：</font>ARMv7、小内存机型优先选 <b>chinadns-ng</b>；ARMv8、大内存机型，且追求更极致国内 DNS 体验时选 <b>smartdns</b>。";
-		statusmenu += "</div>";
-		_caption = "说明：";
-	} else if (itemNum == 154) {
-		width = "760px";
-		statusmenu = "<div style='padding-left:16px;padding-right:16px;line-height:1.6'>";
-		statusmenu += "<b><font color='#CC0066'>1.【国内优先】</font></b><br />";
-		statusmenu += "原理：除 GFW 域名和黑名单域名使用 gfw 组 DNS 解析外，其余域名优先使用 chn 组 DNS 解析。<br />";
-		statusmenu += "适用：希望国内网站 / CDN 命中更稳，推荐 GFW 黑名单模式使用。<br />";
-		statusmenu += "优点：国内 CDN 表现更好。<br />";
-		statusmenu += "缺点：国外 CDN 表现一般。<br /><br />";
-		statusmenu += "<b><font color='#CC0066'>2.【国外优先】</font></b><br />";
-		statusmenu += "原理：除国内域名列表和白名单域名使用 chn 组 DNS 解析外，其余域名优先使用 gfw 组 DNS 解析。<br />";
-		statusmenu += "适用：更看重海外站点的解析质量，推荐大陆白名单模式 / 游戏模式使用。<br />";
-		statusmenu += "优点：国外 CDN 表现更好，且不会有 DNS 泄露。<br />";
-		statusmenu += "缺点：国内 CDN 表现一般。<br /><br />";
-		statusmenu += "<b><font color='#CC0066'>3.【智能判断】</font></b><br />";
-		statusmenu += "原理：GFW 域名和黑名单域名使用 gfw 组 DNS 解析，国内域名列表和白名单域名使用 chn 组 DNS 解析，其余未收录域名自动判断。<br />";
-		statusmenu += "适用：所有模式均可使用。<br />";
-		statusmenu += "优点：国内外 CDN 都能兼顾，整体更均衡。<br />";
-		statusmenu += "缺点：会有轻微 DNS 泄露。";
-		statusmenu += "</div>";
 		_caption = "说明：";
 	} else if (itemNum == 155) {
 		width = "760px";

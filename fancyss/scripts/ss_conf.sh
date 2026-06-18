@@ -126,7 +126,6 @@ backup_tar(){
 	cp /koolshare/bin/obfs-local ${TARGET_FOLDER}/bin/
 	cp /koolshare/bin/rss-local ${TARGET_FOLDER}/bin/
 	cp /koolshare/bin/rss-redir ${TARGET_FOLDER}/bin/
-	cp /koolshare/bin/smartdns ${TARGET_FOLDER}/bin/
 	if [ -x "/koolshare/bin/dns_cache_mgr" ];then
 		cp /koolshare/bin/dns_cache_mgr ${TARGET_FOLDER}/bin/
 	fi
@@ -160,7 +159,6 @@ backup_tar(){
 	if [ "${pkg_type}" != "lite" ];then
 		cp /koolshare/bin/dohclient ${TARGET_FOLDER}/bin/
 		cp /koolshare/bin/dohclient-cache ${TARGET_FOLDER}/bin/
-		#cp /koolshare/bin/smartdns ${TARGET_FOLDER}/bin/
 		cp /koolshare/bin/v2ray ${TARGET_FOLDER}/bin/
 		[ -f "/koolshare/bin/haveged" ] && cp /koolshare/bin/haveged ${TARGET_FOLDER}/bin/
 		cp /koolshare/bin/ipt2socks ${TARGET_FOLDER}/bin/

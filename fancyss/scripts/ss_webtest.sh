@@ -2165,7 +2165,7 @@ wt_ensure_node_direct_dns_ready() {
 	}
 	dns_plan=$(dbus get ss_basic_dns_plan)
 	case "${dns_plan}" in
-	1|2)
+	1)
 		sh /koolshare/ss/ssconfig.sh refresh_node_direct_dns >/dev/null 2>&1
 		;;
 	*)
@@ -2188,7 +2188,7 @@ refresh_node_direct_after_schema2_change() {
 	}
 	dns_plan=$(dbus get ss_basic_dns_plan)
 	case "${dns_plan}" in
-	1|2)
+	1)
 		sh /koolshare/ss/ssconfig.sh refresh_node_direct_dns >/dev/null 2>&1
 		;;
 	*)

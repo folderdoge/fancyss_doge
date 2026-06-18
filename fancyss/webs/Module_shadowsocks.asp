@@ -856,17 +856,6 @@ var subscribeLogCloseTimer = null;
 var subscribeLogUserInteracted = false;
 var SHUNT_STATS_REFRESH_INTERVAL = 6000;
 var ACL_DEFAULT_MODE_FORMAT_KEY = "ss_acl_default_mode_format";
-var SMARTDNS_STORAGE_PREFIX = "j1:";
-var SMARTDNS_GROUP_LIMIT = 16;
-var SMARTDNS_LEGACY_MODE_MAP = {"4": "1", "5": "2", "6": "3"};
-var smartdnsDnsGroups = {
-	chn: {version: 1, items: []},
-	gfw: {version: 1, items: []}
-};
-var smartdnsDnsCatalog = {chn: [], gfw: []};
-var smartdnsDnsCatalogMap = {chn: {}, gfw: {}};
-var smartdnsDnsOptionsReady = false;
-var smartdnsIpv6ServiceEnabled = ('<% nvram_get("ipv6_service"); %>' != "disabled");
 var NODE_BOOL_FIELDS = ["v2ray_use_json", "v2ray_mux_enable", "v2ray_network_security_ai", "v2ray_network_security_alpn_h2", "v2ray_network_security_alpn_http", "xray_use_json", "xray_network_security_ai", "xray_network_security_alpn_h2", "xray_network_security_alpn_http", "xray_show", "trojan_ai", "trojan_tfo", "hy2_ai", "hy2_tfo", "anytls_ai"];
 var NODE_B64_FIELDS = ["password", "v2ray_json", "xray_json"];	/* FORK doge.10: removed naive_pass, tuic_json — see doc/design/protocol-roadmap.md §2 */
 var NODE_RUNTIME_FIELDS = ["latency", "ping"];
@@ -1037,411 +1026,6 @@ function base64_encode_utf8(value) {
 	var encoded = Base64.encode(value);
 	return encoded ? encoded.replace(/\n/g, "") : encoded;
 }
-function normalize_smartdns_mode_value(value) {
-	value = String(value || "");
-	return SMARTDNS_LEGACY_MODE_MAP[value] || value || "3";
-}
-function get_smartdns_dns_storage_key(groupKey) {
-	return groupKey == "gfw" ? "ss_basic_smrt_gfw_dns" : "ss_basic_smrt_chn_dns";
-}
-function clone_smartdns_item(item) {
-	return $.extend({}, item || {});
-}
-function normalize_smartdns_dns_item(item) {
-	if (!item || typeof item != "object") {
-		return null;
-	}
-	var proto = String(item.proto || "").toLowerCase();
-	if ($.inArray(proto, ["udp", "tcp", "dot"]) === -1) {
-		return null;
-	}
-	var normalized = {
-		id: String(item.id || ""),
-		proto: proto,
-		provider: String(item.provider || ""),
-		description: String(item.description || ""),
-		kind: item.kind == "isp" ? "isp" : "preset",
-		isp: item.isp == 1 ? 1 : 0
-	};
-	if (normalized.kind == "isp") {
-		var slot = String(item.slot || "");
-		if ($.inArray(slot, ["1", "2"]) === -1) {
-			return null;
-		}
-		normalized.slot = slot;
-		normalized.id = normalized.id || ("isp_udp_" + slot);
-		normalized.net = String(item.net || "ipv4");
-		return normalized;
-	}
-	if (proto == "dot") {
-		normalized.host = String(item.host || "");
-		normalized.host_ip = String(item.host_ip || "");
-		normalized.port = parseInt(item.port || 853, 10) || 853;
-		normalized.net = String(item.net || (normalized.host_ip.indexOf(":") !== -1 ? "ipv6" : "ipv4"));
-		if (!normalized.host || !normalized.host_ip) {
-			return null;
-		}
-		normalized.id = normalized.id || ("dot_" + normalized.host + "_" + normalized.host_ip + "_" + normalized.port);
-		return normalized;
-	}
-	normalized.addr = String(item.addr || "");
-	normalized.port = parseInt(item.port || 53, 10) || 53;
-	normalized.net = String(item.net || (normalized.addr.indexOf(":") !== -1 ? "ipv6" : "ipv4"));
-	if (!normalized.addr) {
-		return null;
-	}
-	normalized.id = normalized.id || (proto + "_" + normalized.addr + "_" + normalized.port);
-	return normalized;
-}
-function build_smartdns_dns_payload(items) {
-	var seen = {};
-	var payload = [];
-	items = $.isArray(items) ? items : [];
-	for (var i = 0; i < items.length; i++) {
-		var normalized = normalize_smartdns_dns_item(items[i]);
-		if (!normalized || !normalized.id || seen[normalized.id]) {
-			continue;
-		}
-		seen[normalized.id] = true;
-		payload.push(normalized);
-		if (payload.length >= SMARTDNS_GROUP_LIMIT) {
-			break;
-		}
-	}
-	return {version: 1, items: payload};
-}
-function smartdns_get_catalog_item(groupKey, itemId) {
-	return smartdnsDnsCatalogMap[groupKey] ? smartdnsDnsCatalogMap[groupKey][itemId] || null : null;
-}
-function smartdns_register_catalog_item(groupKey, item) {
-	var normalized = normalize_smartdns_dns_item(item);
-	if (!normalized || !normalized.id) {
-		return;
-	}
-	if (!smartdnsDnsCatalogMap[groupKey]) {
-		smartdnsDnsCatalogMap[groupKey] = {};
-	}
-	if (!smartdnsDnsCatalogMap[groupKey][normalized.id]) {
-		smartdnsDnsCatalog[groupKey].push(normalized);
-		smartdnsDnsCatalogMap[groupKey][normalized.id] = normalized;
-	}
-}
-function smartdns_build_catalog_from_data(groupKey, dnsdata) {
-	var providers = Object.keys(dnsdata || {});
-	for (var i = 0; i < providers.length; i++) {
-		var provider = providers[i];
-		var servers = dnsdata[provider] || [];
-		for (var j = 0; j < servers.length; j++) {
-			var server = servers[j] || {};
-			if (!smartdnsIpv6ServiceEnabled && server.net == "ipv6") {
-				continue;
-			}
-			var desc = String(server.description || "");
-			var hasHostIp = String(server.addr || "").indexOf("@") !== -1;
-			if (!hasHostIp && (server.type == 1 || server.type == 3)) {
-				smartdns_register_catalog_item(groupKey, {
-					proto: "udp",
-					provider: provider,
-					description: desc,
-					kind: "preset",
-					addr: server.addr,
-					port: 53,
-					net: server.net
-				});
-			}
-			if (!hasHostIp && (server.type == 2 || server.type == 3)) {
-				smartdns_register_catalog_item(groupKey, {
-					proto: "tcp",
-					provider: provider,
-					description: desc,
-					kind: "preset",
-					addr: server.addr,
-					port: 53,
-					net: server.net
-				});
-			}
-			if (server.type == 4 || hasHostIp) {
-				var dotParts = String(server.addr || "").split("@");
-				if (dotParts.length >= 2) {
-					smartdns_register_catalog_item(groupKey, {
-						proto: "dot",
-						provider: provider,
-						description: desc,
-						kind: "preset",
-						host: dotParts[0],
-						host_ip: dotParts.slice(1).join("@"),
-						port: 853,
-						net: server.net
-					});
-				}
-			}
-		}
-	}
-}
-function smartdns_register_isp_catalog() {
-	var ispList = [
-		{slot: "1", value: (typeof isp_dns_1 != "undefined" ? isp_dns_1 : ""), description: "主用DNS"},
-		{slot: "2", value: (typeof isp_dns_2 != "undefined" ? isp_dns_2 : ""), description: "备用DNS"}
-	];
-	for (var i = 0; i < ispList.length; i++) {
-		var item = ispList[i];
-		if (!item.value) {
-			continue;
-		}
-		smartdns_register_catalog_item("chn", {
-			id: "isp_udp_" + item.slot,
-			proto: "udp",
-			provider: "ISP DNS " + item.slot,
-			description: item.description,
-			kind: "isp",
-			slot: item.slot,
-			isp: 1,
-			net: item.value.indexOf(":") !== -1 ? "ipv6" : "ipv4"
-		});
-	}
-}
-function smartdns_get_default_group_data(groupKey) {
-	var useLegacyIsp = db_ss["ss_basic_add_ispdns"] !== "0";
-	var ids = [];
-	if (groupKey == "chn") {
-		if (useLegacyIsp && smartdns_get_catalog_item("chn", "isp_udp_1")) {
-			ids.push("isp_udp_1");
-		} else {
-			ids.push("udp_117.50.10.10_53");
-		}
-		if (useLegacyIsp && smartdns_get_catalog_item("chn", "isp_udp_2")) {
-			ids.push("isp_udp_2");
-		} else {
-			ids.push("udp_117.50.60.30_53");
-		}
-		ids = ids.concat([
-			"udp_223.5.5.5_53",
-			"udp_119.29.29.29_53",
-			"udp_114.114.114.114_53",
-			"udp_180.184.1.1_53",
-			"udp_1.2.4.8_53",
-			"udp_180.76.76.76_53"
-		]);
-	} else {
-		ids = ["tcp_8.8.8.8_53", "tcp_1.1.1.1_53"];
-	}
-	var items = [];
-	for (var i = 0; i < ids.length; i++) {
-		var item = smartdns_get_catalog_item(groupKey, ids[i]);
-		if (item) {
-			items.push(clone_smartdns_item(item));
-		}
-	}
-	return build_smartdns_dns_payload(items);
-}
-function decode_smartdns_dns_group(groupKey, storedValue) {
-	var payload = null;
-	var encoded = storedValue || db_ss[get_smartdns_dns_storage_key(groupKey)] || "";
-	if (encoded.indexOf(SMARTDNS_STORAGE_PREFIX) === 0) {
-		encoded = encoded.substring(SMARTDNS_STORAGE_PREFIX.length);
-	}
-	if (encoded) {
-		try {
-			payload = JSON.parse(base64_decode_utf8(encoded));
-		} catch (e) {
-			payload = null;
-		}
-	}
-	payload = build_smartdns_dns_payload(payload && payload.items ? payload.items : []);
-	if (!payload.items.length) {
-		payload = smartdns_get_default_group_data(groupKey);
-	}
-	return payload;
-}
-function encode_smartdns_dns_group(groupKey) {
-	var payload = build_smartdns_dns_payload((smartdnsDnsGroups[groupKey] || {}).items || []);
-	return SMARTDNS_STORAGE_PREFIX + base64_encode_utf8(JSON.stringify(payload));
-}
-function smartdns_option_label(item) {
-	var prefix = "[" + item.proto + "] ";
-	if (item.kind == "isp") {
-		var ispAddr = item.slot == "2" ? (typeof isp_dns_2 != "undefined" ? isp_dns_2 : "") : (typeof isp_dns_1 != "undefined" ? isp_dns_1 : "");
-		var ispLabel = ispAddr || item.provider;
-		return prefix + ispLabel + " - " + item.provider + (item.description ? " - " + item.description : "");
-	}
-	if (item.proto == "dot") {
-		var dotText = item.host + "@" + item.host_ip;
-		return prefix + dotText + " - " + item.provider + (item.description ? " - " + item.description : "");
-	}
-	return prefix + item.addr + " - " + item.provider + (item.description ? " - " + item.description : "");
-}
-function smartdns_chip_label(item) {
-	if (item.kind == "isp") {
-		var ispAddr = item.slot == "2" ? (typeof isp_dns_2 != "undefined" ? isp_dns_2 : "") : (typeof isp_dns_1 != "undefined" ? isp_dns_1 : "");
-		return "udp: " + (ispAddr || item.provider);
-	}
-	if (item.proto == "dot") {
-		return "dot: " + item.host + "@" + item.host_ip;
-	}
-	return item.proto + ": " + item.addr;
-}
-function smartdns_chip_tip(item) {
-	var parts = [];
-	if (item.provider) {
-		parts.push(item.provider);
-	}
-	if (item.description) {
-		parts.push(item.description);
-	}
-	if (item.kind == "isp") {
-		var ispAddr = item.slot == "2" ? (typeof isp_dns_2 != "undefined" ? isp_dns_2 : "") : (typeof isp_dns_1 != "undefined" ? isp_dns_1 : "");
-		if (ispAddr) {
-			parts.push(ispAddr);
-		}
-		parts.push("使用当前WAN获取到的运营商DNS");
-	}
-	return parts.join(" · ");
-}
-function render_smartdns_dns_selector(groupKey) {
-	var selector = E("smartdns_" + groupKey + "_selector");
-	if (!selector) {
-		return;
-	}
-	selector.innerHTML = "";
-	var providers = {};
-	var catalog = smartdnsDnsCatalog[groupKey] || [];
-	for (var i = 0; i < catalog.length; i++) {
-		var item = catalog[i];
-		var provider = item.kind == "isp" ? "运营商DNS" : item.provider || "其它DNS";
-		if (!providers[provider]) {
-			providers[provider] = [];
-		}
-		providers[provider].push(item);
-	}
-	var groupNames = Object.keys(providers);
-	for (var j = 0; j < groupNames.length; j++) {
-		var groupName = groupNames[j];
-		var optgroup = document.createElement("optgroup");
-		optgroup.label = groupName;
-		var items = providers[groupName];
-		for (var k = 0; k < items.length; k++) {
-			var option = document.createElement("option");
-			option.value = items[k].id;
-			option.textContent = smartdns_option_label(items[k]);
-			optgroup.appendChild(option);
-		}
-		selector.appendChild(optgroup);
-	}
-}
-function show_text_tip(event, obj) {
-	if (!obj) {
-		return;
-	}
-	var text = obj.getAttribute("data-text-tip") || obj.getAttribute("title") || "";
-	if (!text) {
-		return;
-	}
-	var tip = ensure_acl_source_tip();
-	tip.textContent = text;
-	tip.style.display = "block";
-	move_acl_source_tip(event);
-}
-function smartdns_handle_remove_click(obj, event) {
-	if (event) {
-		event.stopPropagation();
-	}
-	if (!obj) {
-		return;
-	}
-	remove_smartdns_dns_item(obj.getAttribute("data-group"), decodeURIComponent(obj.getAttribute("data-id") || ""));
-}
-function render_smartdns_dns_chips(groupKey) {
-	var container = E("smartdns_" + groupKey + "_chips");
-	if (!container) {
-		return;
-	}
-	var payload = build_smartdns_dns_payload((smartdnsDnsGroups[groupKey] || {}).items || []);
-	smartdnsDnsGroups[groupKey] = payload;
-	if (!payload.items.length) {
-		container.innerHTML = '<span class="smartdns-chip-empty">未选择DNS服务器</span>';
-		return;
-	}
-	var html = "";
-	for (var i = 0; i < payload.items.length; i++) {
-		var item = payload.items[i];
-		var tip = smartdns_chip_tip(item);
-		html += '<span class="smartdns-chip' + (item.isp == 1 ? ' smartdns-chip-isp' : '') + '"';
-		html += ' data-text-tip="' + escape_acl_attr(tip) + '"';
-		html += ' onmouseenter="show_text_tip(event, this)" onmousemove="move_acl_source_tip(event)" onmouseleave="hide_acl_source_tip()">';
-		html += '<span class="smartdns-chip-label">' + escape_acl_html(smartdns_chip_label(item)) + '</span>';
-		html += '<span class="smartdns-chip-remove" data-group="' + groupKey + '" data-id="' + encodeURIComponent(item.id) + '" onclick="smartdns_handle_remove_click(this, event)">×</span>';
-		html += '</span>';
-	}
-	container.innerHTML = html;
-}
-function add_smartdns_dns_item(groupKey) {
-	var selector = E("smartdns_" + groupKey + "_selector");
-	if (!selector || !selector.value) {
-		return;
-	}
-	var item = smartdns_get_catalog_item(groupKey, selector.value);
-	if (!item) {
-		return;
-	}
-	var payload = build_smartdns_dns_payload((smartdnsDnsGroups[groupKey] || {}).items || []);
-	if (payload.items.length >= SMARTDNS_GROUP_LIMIT) {
-		layer.msg("每组最多只能添加 " + SMARTDNS_GROUP_LIMIT + " 个DNS服务器");
-		return;
-	}
-	for (var i = 0; i < payload.items.length; i++) {
-		if (payload.items[i].id == item.id) {
-			layer.msg("该DNS服务器已经添加过了");
-			return;
-		}
-	}
-	payload.items.push(clone_smartdns_item(item));
-	smartdnsDnsGroups[groupKey] = build_smartdns_dns_payload(payload.items);
-	render_smartdns_dns_chips(groupKey);
-}
-function remove_smartdns_dns_item(groupKey, itemId) {
-	var payload = build_smartdns_dns_payload((smartdnsDnsGroups[groupKey] || {}).items || []);
-	if (payload.items.length <= 1) {
-		layer.msg("至少保留一个dns服务器");
-		return;
-	}
-	var items = [];
-	for (var i = 0; i < payload.items.length; i++) {
-		if (payload.items[i].id != itemId) {
-			items.push(payload.items[i]);
-		}
-	}
-	smartdnsDnsGroups[groupKey] = build_smartdns_dns_payload(items);
-	render_smartdns_dns_chips(groupKey);
-}
-function init_smartdns_dns_ui() {
-	if (!E("smartdns_chn_selector") || !E("smartdns_gfw_selector")) {
-		return;
-	}
-	smartdnsDnsCatalog = {chn: [], gfw: []};
-	smartdnsDnsCatalogMap = {chn: {}, gfw: {}};
-	smartdns_register_isp_catalog();
-	smartdns_build_catalog_from_data("chn", china_dnsData);
-	smartdns_build_catalog_from_data("gfw", trust_dnsData);
-	render_smartdns_dns_selector("chn");
-	render_smartdns_dns_selector("gfw");
-	smartdnsDnsGroups.chn = decode_smartdns_dns_group("chn");
-	smartdnsDnsGroups.gfw = decode_smartdns_dns_group("gfw");
-	render_smartdns_dns_chips("chn");
-	render_smartdns_dns_chips("gfw");
-	smartdnsDnsOptionsReady = true;
-}
-function collect_smartdns_dns_groups_for_save(target) {
-	target = target || {};
-	var chnPayload = build_smartdns_dns_payload((smartdnsDnsGroups.chn || {}).items || []);
-	var gfwPayload = build_smartdns_dns_payload((smartdnsDnsGroups.gfw || {}).items || []);
-	if (!chnPayload.items.length || !gfwPayload.items.length) {
-		alert("SmartDNS 的 chn 组和 gfw 组都至少需要保留一个DNS服务器");
-		return false;
-	}
-	target["ss_basic_smrt_chn_dns"] = SMARTDNS_STORAGE_PREFIX + base64_encode_utf8(JSON.stringify(chnPayload));
-	target["ss_basic_smrt_gfw_dns"] = SMARTDNS_STORAGE_PREFIX + base64_encode_utf8(JSON.stringify(gfwPayload));
-	return true;
-}
 function is_node_bool_field(field) {
 	return $.inArray(field, NODE_BOOL_FIELDS) !== -1;
 }
@@ -1539,6 +1123,12 @@ function prune_schema2_node_payload(payload) {
 			delete pruned[boolField];
 		}
 	}
+	// FORK: allowInsecure(*_ai) 已随 Xray 移除并退役，节点不再持久化该字段（导出/导入/界面一律不带）
+	delete pruned["v2ray_network_security_ai"];
+	delete pruned["xray_network_security_ai"];
+	delete pruned["trojan_ai"];
+	delete pruned["hy2_ai"];
+	delete pruned["anytls_ai"];
 	return pruned;
 }
 function get_fss_node_ids() {
@@ -6409,10 +5999,8 @@ function get_dbus_data(cb) {
 			normalize_latency_val();
 			refresh_fss_bundle(function() {
 				function render_page_data() {
-					db_ss["ss_basic_smrt"] = normalize_smartdns_mode_value(db_ss["ss_basic_smrt"]);
 					// basic conf to fill element
 					conf2obj(db_ss); render_dns_upstream_rows();
-					init_smartdns_dns_ui();
 					// generate node info (obj confs) for node table
 					generate_node_info();
 					// generate options for node select
@@ -6852,6 +6440,15 @@ function ensure_split_card_styles() {
 		+ ".split-chip.dns-global{background:rgba(242,153,74,0.13);border-color:rgba(242,153,74,0.32);color:#f4c79a;}"
 		+ ".split-chip.src{max-width:260px;overflow:hidden;text-overflow:ellipsis;font-family:Consolas,Menlo,monospace;}"
 		+ ".split-empty{padding:14px 10px;color:#8a99a8;font-size:12px;text-align:center;}";
+	css += ".split-rule-group{margin:12px 0 0;}";
+	css += ".split-rule-group-head{display:flex;align-items:center;gap:8px;padding:8px 11px;border-radius:9px;cursor:pointer;user-select:none;background:linear-gradient(90deg,rgba(110,168,254,0.12),rgba(110,168,254,0.02));border:1px solid rgba(69,93,120,0.30);transition:all .15s ease;}";
+	css += ".split-rule-group-head:hover{border-color:rgba(110,168,254,0.42);background:linear-gradient(90deg,rgba(110,168,254,0.18),rgba(110,168,254,0.05));}";
+	css += ".split-rule-group-chev{display:inline-flex;justify-content:center;width:14px;color:#9cc4ff;font-size:11px;transition:transform .18s ease;}";
+	css += ".split-rule-group-name{font-size:13px;font-weight:600;color:#eaf2fb;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}";
+	css += ".split-rule-group-count{font-size:11px;color:#8a99a8;margin-left:auto;flex-shrink:0;}";
+	css += ".split-rule-group-body{padding-top:8px;}";
+	css += ".split-rule-group.collapsed .split-rule-group-body{display:none;}";
+	css += ".split-rule-group.collapsed .split-rule-group-chev{transform:rotate(-90deg);}";
 	css += "#ss_split_runtime_status{display:block;}";
 	css += ".split-skin table.FormTable{background:linear-gradient(180deg,rgba(20,27,38,0.97),rgba(13,18,26,0.96)) !important;border:1px solid rgba(69,93,120,0.28) !important;border-radius:12px !important;box-shadow:0 10px 26px rgba(0,0,0,0.16);border-collapse:separate !important;border-spacing:0;overflow:hidden;}";
 	css += ".split-skin table.FormTable>thead>tr>td{border:none !important;}";
@@ -6932,36 +6529,91 @@ function render_split_rule_list() {
 		$wrap.html("<div class='split-empty'>暂无 Rule（首次启用新架构后，install.sh 的 migrate_split_routing_v1 会种子 8 条内置 Rule）</div>");
 		return;
 	}
-	var html = '<div class="split-card-stack">';
+	var html = '';
+	var _ung = [], _gord = [], _gmap = {};
 	for (var r = 1; r <= n; r++) {
-		var id = db_ss['ss_split_rule_' + r + '_id'] || '?';
-		var name = db_ss['ss_split_rule_' + r + '_name'] || '(unnamed)';
-		var builtin = db_ss['ss_split_rule_' + r + '_builtin'] == '1';
-		var statD = db_ss['ss_split_rule_' + r + '_stat_domains'] || '?';
-		var statI = db_ss['ss_split_rule_' + r + '_stat_ips'] || '?';
-		var kind = db_ss['ss_split_rule_' + r + '_kind'] || 'host';
-		var statP = db_ss['ss_split_rule_' + r + '_stat_ports'] || '0';
-		var src = db_ss['ss_split_rule_' + r + '_source_url'] || '';
-		var hrs = db_ss['ss_split_rule_' + r + '_update_hours'] || '0';
-		var srcLabel = src ? (src.length > 40 ? src.substr(0, 37) + '...' : src) : '手编';
-		html += '<div class="split-card">';
-		html += '<div class="split-card-head"><div class="split-card-title"><span class="split-card-id">#' + split_v2_html_escape(id) + '</span><span class="split-card-name">' + split_v2_html_escape(name) + '</span>' + (kind == 'port' ? '<span class="split-badge-kind port">端口</span>' : '<span class="split-badge-kind">IP 域名</span>') + (builtin ? '<span class="split-badge-builtin">内置</span>' : '') + '</div>';
-		html += '<div class="split-card-actions"><a class="split-act" href="javascript:void(0);" onclick="split_v2_edit_rule(' + r + ');">✎ 编辑</a>';
-		if (!builtin) { html += '<a class="split-act split-act-del" href="javascript:void(0);" onclick="split_v2_delete_rule(' + r + ');">✕ 删除</a>'; }
-		html += '</div></div>';
-		html += '<div class="split-chip-row">';
-		if (kind == 'port') {
-			html += '<span class="split-chip">端口 <b>' + split_v2_html_escape(statP) + '</b> 个</span>';
-		} else {
-			html += '<span class="split-chip">域名 <b>' + split_v2_html_escape(statD) + '</b></span>';
-			html += '<span class="split-chip">IP/CIDR <b>' + split_v2_html_escape(statI) + '</b></span>';
-		}
-		html += '<span class="split-chip ' + (hrs == '0' ? 'off' : 'on') + '">' + (hrs == '0' ? '不自动更新' : ('每 ' + split_v2_html_escape(hrs) + 'h 更新')) + '</span>';
-		html += '<span class="split-chip src" title="' + split_v2_html_escape(src) + '">来源 ' + split_v2_html_escape(srcLabel) + '</span>';
-		html += '</div></div>';
+		var _g = $.trim(db_ss['ss_split_rule_' + r + '_group'] || '');
+		if (_g === '') { _ung.push(r); continue; }
+		if (!Object.prototype.hasOwnProperty.call(_gmap, _g)) { _gmap[_g] = []; _gord.push(_g); }
+		_gmap[_g].push(r);
 	}
-	html += '</div>';
+	if (_ung.length) {
+		html += '<div class="split-card-stack">';
+		for (var _ui = 0; _ui < _ung.length; _ui++) { html += split_v2_render_rule_card(_ung[_ui]); }
+		html += '</div>';
+	}
+	for (var _gi = 0; _gi < _gord.length; _gi++) {
+		var _gname = _gord[_gi];
+		var _grs = _gmap[_gname];
+		var _col = split_v2_rule_group_collapsed(_gname);
+		html += '<div class="split-rule-group' + (_col ? ' collapsed' : '') + '" data-grp="' + split_v2_html_escape(_gname) + '">';
+		html += '<div class="split-rule-group-head" onclick="split_v2_toggle_rule_group(this);">';
+		html += '<span class="split-rule-group-chev">▾</span>';
+		html += '<span class="split-rule-group-name">' + split_v2_html_escape(_gname) + '</span>';
+		html += '<span class="split-rule-group-count">' + _grs.length + ' 条</span>';
+		html += '</div>';
+		html += '<div class="split-rule-group-body"><div class="split-card-stack">';
+		for (var _gj = 0; _gj < _grs.length; _gj++) { html += split_v2_render_rule_card(_grs[_gj]); }
+		html += '</div></div></div>';
+	}
 	$wrap.html(html);
+}
+
+function split_v2_render_rule_card(r) {
+	var id = db_ss['ss_split_rule_' + r + '_id'] || '?';
+	var name = db_ss['ss_split_rule_' + r + '_name'] || '(unnamed)';
+	var builtin = db_ss['ss_split_rule_' + r + '_builtin'] == '1';
+	var statD = db_ss['ss_split_rule_' + r + '_stat_domains'] || '?';
+	var statI = db_ss['ss_split_rule_' + r + '_stat_ips'] || '?';
+	var kind = db_ss['ss_split_rule_' + r + '_kind'] || 'host';
+	var statP = db_ss['ss_split_rule_' + r + '_stat_ports'] || '0';
+	var src = db_ss['ss_split_rule_' + r + '_source_url'] || '';
+	var hrs = db_ss['ss_split_rule_' + r + '_update_hours'] || '0';
+	var srcLabel = src ? (src.length > 40 ? src.substr(0, 37) + '...' : src) : '手编';
+	var html = '';
+	html += '<div class="split-card">';
+	html += '<div class="split-card-head"><div class="split-card-title"><span class="split-card-id">#' + split_v2_html_escape(id) + '</span><span class="split-card-name">' + split_v2_html_escape(name) + '</span>' + (kind == 'port' ? '<span class="split-badge-kind port">端口</span>' : '<span class="split-badge-kind">IP 域名</span>') + (builtin ? '<span class="split-badge-builtin">内置</span>' : '') + '</div>';
+	html += '<div class="split-card-actions"><a class="split-act" href="javascript:void(0);" onclick="split_v2_edit_rule(' + r + ');">✎ 编辑</a>';
+	if (!builtin) { html += '<a class="split-act split-act-del" href="javascript:void(0);" onclick="split_v2_delete_rule(' + r + ');">✕ 删除</a>'; }
+	html += '</div></div>';
+	html += '<div class="split-chip-row">';
+	if (kind == 'port') {
+		html += '<span class="split-chip">端口 <b>' + split_v2_html_escape(statP) + '</b> 个</span>';
+	} else {
+		html += '<span class="split-chip">域名 <b>' + split_v2_html_escape(statD) + '</b></span>';
+		html += '<span class="split-chip">IP/CIDR <b>' + split_v2_html_escape(statI) + '</b></span>';
+	}
+	html += '<span class="split-chip ' + (hrs == '0' ? 'off' : 'on') + '">' + (hrs == '0' ? '不自动更新' : ('每 ' + split_v2_html_escape(hrs) + 'h 更新')) + '</span>';
+	html += '<span class="split-chip src" title="' + split_v2_html_escape(src) + '">来源 ' + split_v2_html_escape(srcLabel) + '</span>';
+	html += '</div></div>';
+	return html;
+}
+
+function split_v2_rule_group_collapsed(name) {
+	try {
+		if (!window.localStorage) return false;
+		var raw = localStorage.getItem('fss_split_rule_grp_collapsed');
+		if (!raw) return false;
+		var arr = JSON.parse(raw);
+		return (arr instanceof Array) && arr.indexOf(name) >= 0;
+	} catch (e) { return false; }
+}
+
+function split_v2_toggle_rule_group(headEl) {
+	var $g = $(headEl).closest('.split-rule-group');
+	$g.toggleClass('collapsed');
+	var name = $g.attr('data-grp') || '';
+	var collapsed = $g.hasClass('collapsed');
+	try {
+		if (!window.localStorage) return;
+		var raw = localStorage.getItem('fss_split_rule_grp_collapsed');
+		var arr = raw ? JSON.parse(raw) : [];
+		if (!(arr instanceof Array)) arr = [];
+		var idx = arr.indexOf(name);
+		if (collapsed && idx < 0) arr.push(name);
+		else if (!collapsed && idx >= 0) arr.splice(idx, 1);
+		localStorage.setItem('fss_split_rule_grp_collapsed', JSON.stringify(arr));
+	} catch (e) {}
 }
 // 渲染默认 Mode select (硬规则 #9: 不静默 val(''))
 function render_split_default_mode_select() {
@@ -7188,7 +6840,7 @@ function split_v2_refresh_dbss(cb) {
 }
 
 // Rule 持久化（域名/IP 文件 → ss_split_rule_save.sh）
-function split_v2_rule_persist(op, ruleId, name, sourceUrl, updateHours, payloadB64, kind, cb) {
+function split_v2_rule_persist(op, ruleId, name, sourceUrl, updateHours, payloadB64, kind, group, cb) {
 	var fields = {
 		ss_split_rule_save_op: op,
 		ss_split_rule_save_id: String(ruleId),
@@ -7196,7 +6848,8 @@ function split_v2_rule_persist(op, ruleId, name, sourceUrl, updateHours, payload
 		ss_split_rule_save_source_url: sourceUrl || '',
 		ss_split_rule_save_update_hours: String(updateHours || 0),
 		ss_split_rule_save_payload_b64: payloadB64 || '',
-		ss_split_rule_save_kind: kind || 'host'
+		ss_split_rule_save_kind: kind || 'host',
+		ss_split_rule_save_group: group || ''
 	};
 	var reqId = parseInt(Math.random() * 1e8);
 	$.ajax({
@@ -7726,7 +7379,7 @@ function split_v2_new_rule() {
 	var rid = split_v2_next_rule_id();
 	split_v2_open_rule_dialog(null, {
 		id: rid, name: '新 Rule ' + rid, builtin: '0',
-		source_url: '', update_hours: '0', payload: ''
+		source_url: '', update_hours: '0', payload: '', group: ''
 	});
 }
 
@@ -7739,6 +7392,7 @@ function split_v2_edit_rule(r) {
 		builtin: db_ss['ss_split_rule_' + r + '_builtin'] || '0',
 		source_url: db_ss['ss_split_rule_' + r + '_source_url'] || '',
 		update_hours: db_ss['ss_split_rule_' + r + '_update_hours'] || '0',
+		group: db_ss['ss_split_rule_' + r + '_group'] || '',
 		payload: '' // 留空 = 不覆盖既有文件
 	});
 }
@@ -7774,6 +7428,14 @@ function split_v2_open_rule_dialog(slot, data) {
 	}
 	html += '</td></tr>';
 	html += '<tr><th>名称</th><td><input type="text" id="rule_dlg_name" value="' + split_v2_html_escape(data.name) + '" maxlength="40"' + dis + ' /></td></tr>';
+	var _grpDl = '';
+	var _grpSeen = {};
+	var _grpN = parseInt(db_ss['ss_split_rule_count'] || '0', 10);
+	for (var _gi = 1; _gi <= _grpN; _gi++) {
+		var _gg = $.trim(db_ss['ss_split_rule_' + _gi + '_group'] || '');
+		if (_gg && !Object.prototype.hasOwnProperty.call(_grpSeen, _gg)) { _grpSeen[_gg] = 1; _grpDl += '<option value="' + split_v2_html_escape(_gg) + '"></option>'; }
+	}
+	html += '<tr><th>分组</th><td><input type="text" id="rule_dlg_group" value="' + split_v2_html_escape(data.group || '') + '" maxlength="40" placeholder="留空 = 不分组（显示在最上面）" list="rule_dlg_group_dl" /><datalist id="rule_dlg_group_dl">' + _grpDl + '</datalist><div style="color:#888;font-size:11px;">填相同分组名的规则会归到一起，分组标题可点击收起。</div></td></tr>';
 	html += '<tr><th>自动更新 URL</th><td><input type="text" id="rule_dlg_source_url" value="' + split_v2_html_escape(data.source_url) + '" placeholder="留空 = 手编规则" /><div style="color:#888;font-size:11px;">http(s) URL；空 URL 即完全手编。</div></td></tr>';
 	html += '<tr><th>自动更新间隔</th><td><input type="number" id="rule_dlg_update_hours" value="' + split_v2_html_escape(data.update_hours || '0') + '" min="0" max="168" style="width:80px;" /> 小时 <span style="color:#888;font-size:11px;">(0 = 禁用 auto-update)</span></td></tr>';
 	if (slot != null) {
@@ -7799,6 +7461,8 @@ function split_v2_save_rule_dialog() {
 	var name = $.trim($('#rule_dlg_name').val() || '');
 	if (!name && !_ruleDlgState.builtin) { splitDlg.error('名称不能为空'); return true; }
 	if (split_v2_name_has_forbidden(name)) { splitDlg.error('名称不能包含 " ` $ \\ = 或换行字符'); return true; }
+	var group = $.trim($('#rule_dlg_group').val() || '');
+	if (split_v2_name_has_forbidden(group)) { splitDlg.error('分组名含有不允许的字符（双引号 等号 美元符 反斜杠 反引号 或换行）'); return true; }
 	var sourceUrl = $.trim($('#rule_dlg_source_url').val() || '');
 	var updateHours = parseInt($('#rule_dlg_update_hours').val() || '0', 10);
 	if (isNaN(updateHours) || updateHours < 0) updateHours = 0;
@@ -7826,7 +7490,7 @@ function split_v2_save_rule_dialog() {
 	if (!ruleId || ruleId < 1) { splitDlg.error('invalid rule id'); return true; }
 	splitDlg.error('保存中...');
 	$('#split_dlg_ok_btn').prop('disabled', true);
-	split_v2_rule_persist(op, ruleId, name, sourceUrl, updateHours, payloadB64, kind, function(success, errmsg) {
+	split_v2_rule_persist(op, ruleId, name, sourceUrl, updateHours, payloadB64, kind, group, function(success, errmsg) {
 		$('#split_dlg_ok_btn').prop('disabled', false);
 		if (success) splitDlg.close();
 		else splitDlg.error('保存失败: ' + (errmsg || '未知错误'));
@@ -7848,7 +7512,7 @@ function split_v2_delete_rule(r) {
 		}
 	}
 	if (!confirm(msg)) return;
-	split_v2_rule_persist('delete', id, '', '', 0, '', 'host', function(success, errmsg) {
+	split_v2_rule_persist('delete', id, '', '', 0, '', 'host', '', function(success, errmsg) {
 		if (!success) alert('删除失败: ' + (errmsg || ''));
 	});
 }
@@ -8066,9 +7730,7 @@ function save() {
 	var params_input = [
 	  "ss_basic_mode",
 	  "ss_basic_row",
-	  "ss_basic_dns_plan",
 	  "ss_basic_chng",
-	  "ss_basic_smrt",
 	  "ss_basic_rule_update",
 	  "ss_basic_rule_update_time",
 	  "ssr_subscribe_mode",
@@ -8181,9 +7843,6 @@ function save() {
 	if (E("ss_acl_default_mode")) {
 		dbus["ss_acl_default_mode"] = $('#ss_acl_default_mode').val();
 		dbus[ACL_DEFAULT_MODE_FORMAT_KEY] = "2";
-	}
-	if (!collect_smartdns_dns_groups_for_save(dbus)) {
-		return false;
 	}
 	// data need base64 encode, format b with plain text
 	for (var i = 0; i < params_base64.length; i++) {
@@ -9603,17 +9262,6 @@ function update_visibility() {
 	showhide("ss_basic_lt_cru_time", t1 || t2);
 	showhide("ss_basic_lt_web_time_row", !t1 && !t2);
 
-	if (E("ss_basic_dns_plan").value == "1"){
-		$(".chng").show();
-		$(".smrt").hide();							
-	}else if(E("ss_basic_dns_plan").value == "2"){
-		$(".chng").hide();
-		$(".smrt").show();
-		$(".dohc").hide();
-	}else if(E("ss_basic_dns_plan").value == "3"){
-		$(".chng").hide();
-		$(".smrt").hide();
-	}
 	showhide("ss_dnsmasq_cus", E("ss_basic_dns_serverx").checked == false);
 }
 
@@ -17084,7 +16732,7 @@ function toggleKeyMask(o, show){
 																		{ title: '端口', data:{show:'anytls_on'}, id:'ss_node_table_anytls_port', type:'text', maxlen:'300', style:'width:400px', value: "443"},													//fancyss-full
 																		{ title: '认证密码', data:{show:'anytls_on'}, id:'ss_node_table_anytls_pass', type:'text', maxlen:'300', style:'width:400px'},															//fancyss-full
 																		{ title: 'SNI（域名）', data:{show:'anytls_on'}, id:'ss_node_table_anytls_sni', type:'text', maxlen:'300', style:'width:400px'},															//fancyss-full
-																		{ title: '允许不安全', data:{show:'anytls_on'}, id:'ss_node_table_anytls_ai', type:'checkbox', func:'v', value: "false"},																//fancyss-full
+																		{ title: '允许不安全', data:{show:'fss_ai_removed'}, id:'ss_node_table_anytls_ai', type:'checkbox', func:'v', value: "false"},																//fancyss-full
 																		// hy2
 																		{ title: '服务器', data:{show:'hy2_on'}, id:'ss_node_table_hy2_server', type:'text', class:'hy2_elem', maxlen:'300', style:'width:400px'},
 																		{ title: '端口', data:{show:'hy2_on'}, id:'ss_node_table_hy2_port', type:'text', class:'hy2_elem', maxlen:'300', style:'width:400px', value: "443"},
@@ -17119,12 +16767,8 @@ function toggleKeyMask(o, show){
 											<div id="tablet_3" style="display: none;">
 	<div id="ss_dns_table"></div>
 	<div class="ss-card-wrap">
-		<div class="ss-card">
-			<div class="ss-card-hd"><span class="ss-card-ttl">DNS 解析引擎</span><span class="ss-card-desc">选择解析国内外域名的核心引擎</span></div>
-			<table id="table_dns" width="100%" border="1" align="center" cellpadding="4" cellspacing="0" bordercolor="#6b8fa3" class="FormTable ss-card-tbl"></table>
-		</div>
 		<div class="ss-card chng">
-			<div class="ss-card-hd"><span class="ss-card-ttl">chinadns-ng 上游 DNS</span><span class="ss-card-desc">仅在「DNS 解析引擎」选为 chinadns-ng 时生效</span></div>
+			<div class="ss-card-hd"><span class="ss-card-ttl">chinadns-ng 上游 DNS</span><span class="ss-card-desc">配置国内 / 国外·可信 / 全局模式 三轨上游 DNS（按各 Mode 的 dns_mode 选择走哪轨）</span></div>
 			<table id="table_dns_chinadns" width="100%" border="1" align="center" cellpadding="4" cellspacing="0" bordercolor="#6b8fa3" class="FormTable ss-card-tbl">
 				<tbody>
 					<tr><th width="30%">国内 DNS upstream</th><td><textarea id="ss_split_dns_china_upstream" style="display:none;"></textarea><div id="rows_ss_split_dns_china_upstream" class="dns-up-rows"></div><a class="ss_btn dns-up-add" style="cursor:pointer;" onclick="add_dns_upstream_row('ss_split_dns_china_upstream','',true)">+ 添加</a></td></tr>
@@ -17133,10 +16777,6 @@ function toggleKeyMask(o, show){
 					<tr><td colspan="2" style="font-size:11px;color:#9fb0c6;padding:6px 2px;line-height:1.6;">分流实例：国内域名走「国内 upstream」、国外域名走「国外 / 可信 upstream」（经代理）；全局实例：所有域名走「全局 upstream」（经代理）。每个 Mode 通过 dns_mode 字段选择走哪一轨。</td></tr>
 				</tbody>
 			</table>
-		</div>
-		<div class="ss-card smrt">
-			<div class="ss-card-hd"><span class="ss-card-ttl">smartdns 高级配置</span><span class="ss-card-desc">仅在「DNS 解析引擎」选为 smartdns 时生效</span></div>
-			<table id="table_dns_smartdns" width="100%" border="1" align="center" cellpadding="4" cellspacing="0" bordercolor="#6b8fa3" class="FormTable ss-card-tbl"></table>
 		</div>
 		<div class="ss-card">
 			<div class="ss-card-hd"><span class="ss-card-ttl">DNS 行为与高级</span><span class="ss-card-desc">重定向劫持、实验特性与自定义 dnsmasq 规则</span></div>
@@ -17147,17 +16787,33 @@ function toggleKeyMask(o, show){
 			<table id="table_dns_tools" width="100%" border="1" align="center" cellpadding="4" cellspacing="0" bordercolor="#6b8fa3" class="FormTable ss-card-tbl"></table>
 		</div>
 	</div>
-	<script type="text/javascript">
-/* doge.14: chinadns-ng 上游 DNS 可增删输入行 + 协议下拉（防止手填协议前缀出错）。
-   隐藏 textarea/input(原 id) 仍存"每行一条"真实 upstream 字符串，save()/conf2obj()
-   的 base64 通道一字不改；可见行的「协议下拉 + 地址框」任何增删改实时同步回隐藏框。
-   协议: udp(普通,裸地址) / tcp / tls(DoT) / https(DoH)。未知前缀按 udp 原样保留。 */
-var DNS_PROTOS = [["udp", "普通 (UDP)"], ["tcp", "TCP"], ["tls", "DoT 加密"], ["https", "DoH 加密"]];
+	<style type="text/css">
+.dns-up-rows{display:flex;flex-direction:column;gap:8px;margin:2px 0 8px 0;}
+.dns-up-row{display:flex;align-items:center;gap:8px;}
+.dns-up-proto,.dns-up-inp,.dns-up-pick{height:34px;box-sizing:border-box;font-size:13px;border-radius:8px;border:1px solid rgba(110,168,254,0.28);background-color:#172230;color:#e6eef8;outline:none;transition:border-color .15s ease,box-shadow .15s ease;}
+.dns-up-proto,.dns-up-pick{-webkit-appearance:none;-moz-appearance:none;appearance:none;cursor:pointer;background-image:url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath fill='%239cc4ff' d='M0 0l5 6 5-6z'/%3E%3C/svg%3E");background-repeat:no-repeat;background-position:right 9px center;}
+.dns-up-proto{flex:0 0 auto;width:120px;padding:0 24px 0 10px;}
+.dns-up-inp{flex:1 1 auto;min-width:0;padding:0 10px;font-family:Consolas,Menlo,monospace;}
+.dns-up-inp::placeholder{color:#6b7a8d;}
+.dns-up-pick{flex:0 0 auto;width:68px;padding:0 20px 0 10px;color:#9cc4ff;font-size:12px;}
+.dns-up-proto:hover,.dns-up-pick:hover{border-color:rgba(110,168,254,0.55);background-color:#1b2738;}
+.dns-up-proto:focus,.dns-up-inp:focus,.dns-up-pick:focus{border-color:#6ea8fe;box-shadow:0 0 0 2px rgba(110,168,254,0.18);}
+.dns-up-proto option,.dns-up-pick option,.dns-up-pick optgroup{background-color:#172230;color:#e6eef8;}
+.dns-up-del{flex:0 0 auto;width:30px;height:30px;line-height:28px;text-align:center;border-radius:8px;color:#ff9aab;border:1px solid rgba(255,154,171,0.32);font-size:17px;text-decoration:none;cursor:pointer;}
+.dns-up-del:hover{background:rgba(255,90,120,0.18);color:#ff5a78;border-color:rgba(255,90,120,0.55);}
+.dns-up-add{margin-top:2px !important;}
+</style>
+<script type="text/javascript">
+/* doge.14: chinadns-ng 上游 DNS —— 每行【协议(模式) + 地址(IP)】，地址框右侧带一个小的「预设」下拉，
+   选预设即把协议+地址填好；也可直接手填。隐藏 textarea/input(原 id) 仍存"每行一条"真实 upstream
+   字符串 (udp 裸地址 / tcp:// / tls://域名@IP；chinadns-ng 不支持 DoH)，save()/conf2obj() 的 base64 通道不变。
+   保存(sync)时自动忽略空行与明显非法的地址；若某组最终为空，后端启动 chinadns-ng 时会用内置默认并在日志提醒。
+   预设：国内取 china_dnsData(裸地址=UDP直连)，国外/全局取 trust_dnsData(裸地址前缀 tcp:// 经代理)；DoT 一律 tls://。 */
+var DNS_PROTOS = [["udp", "普通 UDP"], ["tcp", "TCP"], ["tls", "DoT 加密"]];
 var DNS_ADDR_PH = {
-  "udp": "223.5.5.5  或  223.5.5.5#5353",
-  "tcp": "223.5.5.5  或  223.5.5.5#5353",
-  "tls": "dns.alidns.com@223.5.5.5  (域名@IP)",
-  "https": "dns.google/dns-query  (域名/路径)"
+  "udp": "如 223.5.5.5 或 223.5.5.5#5353",
+  "tcp": "如 8.8.8.8 或 8.8.8.8#53",
+  "tls": "如 dns.alidns.com@223.5.5.5 (域名@IP)"
 };
 function dns_split_proto(line) {
   line = String(line == null ? "" : line).replace(/^\s+|\s+$/g, "");
@@ -17171,17 +16827,87 @@ function dns_join_proto(proto, addr) {
   if (proto === "udp") return addr;
   return proto + "://" + addr;
 }
+function dns_addr_is_valid(proto, addr) {
+  addr = String(addr == null ? "" : addr).replace(/^\s+|\s+$/g, "");
+  if (addr === "" || /\s/.test(addr) || /:\/\//.test(addr)) return false;
+  if (proto === "tls") return /[.@]/.test(addr);            // DoT: 域名@IP / 域名 / IP
+  if (proto !== "udp" && proto !== "tcp") return false;     // 其它协议(含 DoH https)chinadns-ng 不支持
+  var host = addr.replace(/#.*$/, "").replace(/:\d+$/, "");            // 去掉 #port 或 :port
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(host)) {                          // IPv4
+    var ok = true, p = host.split(".");
+    for (var i = 0; i < p.length; i++) { if (parseInt(p[i], 10) > 255) ok = false; }
+    return ok;
+  }
+  if (host.indexOf(":") >= 0 && /^[0-9a-fA-F:]+$/.test(host)) return true; // IPv6
+  return false;
+}
 function dns_make_proto_select(proto) {
   var sel = document.createElement("select");
   sel.className = "dns-up-proto";
   for (var i = 0; i < DNS_PROTOS.length; i++) {
     var op = document.createElement("option");
-    op.value = DNS_PROTOS[i][0];
-    op.text = DNS_PROTOS[i][1];
+    op.value = DNS_PROTOS[i][0]; op.text = DNS_PROTOS[i][1];
     if (DNS_PROTOS[i][0] === proto) op.selected = true;
     sel.appendChild(op);
   }
   return sel;
+}
+/* 预设目录：which='cn'(china_dnsData,裸=UDP) | 'trust'(trust_dnsData,裸=>tcp://)，仅取 IPv4，按服务商分组 */
+var DNS_PRESETS_CACHE = {};
+function dns_build_presets(which) {
+  if (DNS_PRESETS_CACHE[which]) return DNS_PRESETS_CACHE[which];
+  var src = (which === "cn") ? (typeof china_dnsData !== "undefined" ? china_dnsData : null)
+                             : (typeof trust_dnsData !== "undefined" ? trust_dnsData : null);
+  var groups = [], seen = {};
+  if (src) {
+    for (var provider in src) {
+      if (!src.hasOwnProperty(provider)) continue;
+      var list = src[provider] || [], items = [];
+      for (var i = 0; i < list.length; i++) {
+        var addr = String((list[i] && list[i].addr) || "").replace(/^\s+|\s+$/g, "");
+        if (!addr) continue;
+        var isDot = (list[i].type == 4) || addr.indexOf("@") >= 0;
+        var ipPart = isDot ? (addr.split("@")[1] || "") : addr;
+        if (!ipPart || ipPart.indexOf(":") >= 0) continue; // 仅 IPv4
+        var value, label, desc = list[i].description ? (" " + list[i].description) : "";
+        if (isDot) { value = "tls://" + addr; label = "DoT " + addr + desc; }
+        else if (which === "trust") { value = "tcp://" + addr; label = "TCP " + addr + desc; }
+        else { value = addr; label = addr + desc; }
+        if (seen[value]) continue; seen[value] = 1;
+        items.push({ label: label, value: value });
+      }
+      if (items.length) groups.push({ group: provider, items: items });
+    }
+  }
+  DNS_PRESETS_CACHE[which] = groups;
+  return groups;
+}
+function dns_pick_which(key) { return (String(key).indexOf("china") >= 0) ? "cn" : "trust"; }
+function dns_make_pick_select(which) {
+  var sel = document.createElement("select");
+  sel.className = "dns-up-pick";
+  sel.title = "从常用 DNS 预设里选一个填入本行";
+  var op0 = document.createElement("option"); op0.value = ""; op0.text = "预设"; sel.appendChild(op0);
+  var groups = dns_build_presets(which);
+  for (var g = 0; g < groups.length; g++) {
+    var og = document.createElement("optgroup"); og.label = groups[g].group;
+    for (var k = 0; k < groups[g].items.length; k++) {
+      var op = document.createElement("option");
+      op.value = groups[g].items[k].value; op.text = groups[g].items[k].label;
+      og.appendChild(op);
+    }
+    sel.appendChild(og);
+  }
+  return sel;
+}
+/* 地址框右侧的预设下拉：选中即填 proto+addr，然后复位为「预设」 */
+function dns_attach_pick(pick, sel, inp, onsync) {
+  pick.onchange = function () {
+    if (!pick.value) return;
+    var p = dns_split_proto(pick.value);
+    sel.value = p.proto; inp.value = p.addr; inp.placeholder = DNS_ADDR_PH[p.proto] || "";
+    pick.value = ""; onsync();
+  };
 }
 function sync_dns_upstream_rows(key) {
   var box = document.getElementById("rows_" + key);
@@ -17193,6 +16919,7 @@ function sync_dns_upstream_rows(key) {
     var sel = rows[i].getElementsByClassName("dns-up-proto")[0];
     var inp = rows[i].getElementsByClassName("dns-up-inp")[0];
     if (!sel || !inp) continue;
+    if (!dns_addr_is_valid(sel.value, inp.value)) continue; // 保存时忽略空/非法
     var combined = dns_join_proto(sel.value, inp.value);
     if (combined !== "") lines.push(combined);
   }
@@ -17206,24 +16933,21 @@ function add_dns_upstream_row(key, val, focus) {
   row.className = "dns-up-row";
   var sel = dns_make_proto_select(parsed.proto);
   var inp = document.createElement("input");
-  inp.type = "text";
-  inp.className = "dns-up-inp";
-  inp.value = parsed.addr;
+  inp.type = "text"; inp.className = "dns-up-inp"; inp.value = parsed.addr;
   inp.placeholder = DNS_ADDR_PH[parsed.proto] || "";
-  inp.oninput = function () { sync_dns_upstream_rows(key); };
-  sel.onchange = function () { inp.placeholder = DNS_ADDR_PH[sel.value] || ""; sync_dns_upstream_rows(key); };
+  var doSync = function () { sync_dns_upstream_rows(key); };
+  inp.oninput = doSync;
+  sel.onchange = function () { inp.placeholder = DNS_ADDR_PH[sel.value] || ""; doSync(); };
+  var pick = dns_make_pick_select(dns_pick_which(key));
+  dns_attach_pick(pick, sel, inp, doSync);
   var rmBtn = document.createElement("a");
-  rmBtn.className = "dns-up-del";
-  rmBtn.title = "删除这条 DNS";
-  rmBtn.innerHTML = "&times;";
+  rmBtn.className = "dns-up-del"; rmBtn.title = "删除这条 DNS"; rmBtn.innerHTML = "&times;";
   rmBtn.onclick = function () {
     box.removeChild(row);
     if (box.getElementsByClassName("dns-up-row").length === 0) { add_dns_upstream_row(key, "", false); }
-    sync_dns_upstream_rows(key);
+    doSync();
   };
-  row.appendChild(sel);
-  row.appendChild(inp);
-  row.appendChild(rmBtn);
+  row.appendChild(sel); row.appendChild(inp); row.appendChild(pick); row.appendChild(rmBtn);
   box.appendChild(row);
   if (focus) inp.focus();
 }
@@ -17237,8 +16961,7 @@ function render_one_dns_upstream(key) {
   for (var i = 0; i < raw.length; i++) {
     var v = raw[i].replace(/\r$/, "").replace(/^\s+|\s+$/g, "");
     if (v === "") continue;
-    add_dns_upstream_row(key, v, false);
-    added++;
+    add_dns_upstream_row(key, v, false); added++;
   }
   if (added === 0) add_dns_upstream_row(key, "", false);
 }
@@ -17249,7 +16972,7 @@ function sync_dns_global_upstream() {
   var sel = box.getElementsByClassName("dns-up-proto")[0];
   var inp = box.getElementsByClassName("dns-up-inp")[0];
   if (!sel || !inp) return;
-  ta.value = dns_join_proto(sel.value, inp.value);
+  ta.value = dns_addr_is_valid(sel.value, inp.value) ? dns_join_proto(sel.value, inp.value) : "";
 }
 function render_dns_global_upstream() {
   var ta = document.getElementById("ss_split_dns_global_upstream");
@@ -17261,14 +16984,13 @@ function render_dns_global_upstream() {
   row.className = "dns-up-row";
   var sel = dns_make_proto_select(parsed.proto);
   var inp = document.createElement("input");
-  inp.type = "text";
-  inp.className = "dns-up-inp";
-  inp.value = parsed.addr;
+  inp.type = "text"; inp.className = "dns-up-inp"; inp.value = parsed.addr;
   inp.placeholder = DNS_ADDR_PH[parsed.proto] || "";
   inp.oninput = function () { sync_dns_global_upstream(); };
   sel.onchange = function () { inp.placeholder = DNS_ADDR_PH[sel.value] || ""; sync_dns_global_upstream(); };
-  row.appendChild(sel);
-  row.appendChild(inp);
+  var pick = dns_make_pick_select("trust");
+  dns_attach_pick(pick, sel, inp, sync_dns_global_upstream);
+  row.appendChild(sel); row.appendChild(inp); row.appendChild(pick);
   box.appendChild(row);
 }
 function render_dns_upstream_rows() {
@@ -17279,10 +17001,6 @@ function render_dns_upstream_rows() {
 </script>
 			<table id="table_dns_legacy" style="display:none;">
 		<script type="text/javascript">
-		option_dnsp = [
-				  ["1", "chinadns-ng"]
-				  ,["2", "smartdns"]
-				  ];
 			option_domain_for_dig = [
 								 ["group", "国内域名"],
 								 ["www.baidu.com", "www.baidu.com"],
@@ -17308,39 +17026,8 @@ function render_dns_upstream_rows() {
 								 ["group", "自定义域名"],
 								 ["99", "自定义域名"]
 								 ];
-			option_smrt = [
-				   ["1", "1：【国内优先】"],
-				   ["2", "2：【国外优先】"],
-				   ["3", "3：【智能判断】"],
-				  ];
-			option_chng = [
-						   ["1", "1：【国内优先】"],
-						   ["2", "2：【国外优先】"],
-						   ["3", "3：【智能判断】"],
-						  ];
 			var ph1 = "需端口号如：8.8.8.8:53";
 			var ph3 = "# 填入自定义的dnsmasq设置，一行一个&#10;# 例如hosts设置：&#10;address=/weibo.com/2.2.2.2&#10;# 防DNS劫持设置：&#10;bogus-nxdomain=220.250.64.18"
-			$('#table_dns').forms([
-				{ title: '选择DNS主方案', hint:'153', class:'new_dns_main', multi: [
-					{ id: 'ss_basic_dns_plan', type:'select', func:'u', options:option_dnsp, style:'width:112px;', value:'1'},
-					{ suffix: '&nbsp;&nbsp;'}
-				]},
-				]);
-			$('#table_dns_smartdns').forms([
-				{ title: 'smartdns 策略', hint:'154', class:'new_dns smrt', multi: [
-					{ id: 'ss_basic_smrt', type:'select', func:'u', options:option_smrt, style:'width:112px;', value:'1'},
-				]},
-				{ title: 'chn 组 DNS', class:'new_dns smrt', multi: [
-					{ suffix: '<select id="smartdns_chn_selector" class="input_option smartdns-dns-select" style="width:320px;"></select>'},
-					{ suffix: '&nbsp;&nbsp;<a type="button" class="ss_btn smartdns-add-btn" style="cursor:pointer" title="添加chn组DNS" onclick="add_smartdns_dns_item(\'chn\')"><span class="smartdns-add-icon" aria-hidden="true"></span></a>'},
-				]},
-				{ title: 'chn 组当前列表', class:'new_dns smrt', suffix: '<div id="smartdns_chn_chips" class="smartdns-chip-wrap"></div>'},
-				{ title: 'gfw 组 DNS', class:'new_dns smrt', multi: [
-					{ suffix: '<select id="smartdns_gfw_selector" class="input_option smartdns-dns-select" style="width:320px;"></select>'},
-					{ suffix: '&nbsp;&nbsp;<a type="button" class="ss_btn smartdns-add-btn" style="cursor:pointer" title="添加gfw组DNS" onclick="add_smartdns_dns_item(\'gfw\')"><span class="smartdns-add-icon" aria-hidden="true"></span></a>'},
-				]},
-				{ title: 'gfw 组当前列表', class:'new_dns smrt', suffix: '<div id="smartdns_gfw_chips" class="smartdns-chip-wrap"></div>'},
-				]);
 			$('#table_dns_behavior').forms([
 				{ title: '屏蔽 BlockList 域名解析', id:'ss_basic_block_resov', type:'checkbox', hint:'104', func:'u', value:false},
 				{ title: '替换 dnsmasq（实验特性）', id:'ss_basic_dns_serverx', type:'checkbox', hint:'105', func:'u', value:false},
@@ -17644,7 +17331,7 @@ function render_dns_upstream_rows() {
 															详见 <a href="javascript:void(0);" onclick="openssHint(210);" style="color:#03a9f4;"><u>说明</u></a>。
 														</td></tr>
 														<tr><th>默认 Mode</th>
-															<td><select id="ss_split_default_mode_id" style="width:auto"></select>
+															<td><select id="ss_split_default_mode_id" class="input_option" style="width:auto"></select>
 															&nbsp;<span style="color:#888;font-size:11px;">用于未在访问控制里特别指定 Mode 的设备</span></td></tr>
 														<!-- FORK: 分流运行状态行已移除（内容将由独立「状态」标签页展示，TODO）。render_split_runtime_status/轮询 JS 保留以备复用。 -->
 													</tbody>

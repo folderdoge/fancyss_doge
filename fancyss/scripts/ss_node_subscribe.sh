@@ -1106,7 +1106,7 @@ sub_refresh_airport_special_conf(){
 		[ "${before_sig}" != "${after_sig}" ] && SUB_AIRPORT_SPECIAL_CHANGED=1
 		return 0
 	}
-	[ -n "${preferred_dns_plan}" ] || preferred_dns_plan="smartdns"
+	[ -n "${preferred_dns_plan}" ] || preferred_dns_plan="chinadns-ng"
 	if ! sub_extract_airport_dns_urls_to_file "${payload_file}" "${extractor}" "${urls_file}" >/dev/null 2>&1;then
 		rm -f "${urls_file}"
 		fss_remove_airport_special_conf "${airport_identity}" >/dev/null 2>&1 || true
@@ -2381,6 +2381,7 @@ sub_prepare_schema2_export_jsonl(){
 		| if has("xray_json") then .xray_json |= normalize_json_config else . end
 		| if has("tuic_json") then .tuic_json |= normalize_json_config else . end
 		| del(._schema, ._rev, ._updated_at, ._created_at, ._migrated_from, .server_ip, .latency, .ping)
+		| del(.v2ray_network_security_ai, .xray_network_security_ai, .trojan_ai, .hy2_ai, .anytls_ai)
 	' "${SCHEMA2_RAW_JSONL}" > "${tmp_export}" || {
 		rm -f "${tmp_export}"
 		return 1
@@ -2565,6 +2566,7 @@ sub_export_local_node_json(){
 			| if has("xray_json") then .xray_json |= normalize_json_config else . end
 			| if has("tuic_json") then .tuic_json |= normalize_json_config else . end
 			| del(._schema, ._rev, ._source, ._updated_at, ._created_at, ._migrated_from, .server_ip, .latency, .ping)
+			| del(.v2ray_network_security_ai, .xray_network_security_ai, .trojan_ai, .hy2_ai, .anytls_ai)
 		'
 	else
 		fss_build_legacy_node_json "${node_id}" | jq -c .
@@ -4025,7 +4027,8 @@ sub_write_nodes_schema2(){
 				.
 			end;
 		def clean:
-			with_entries(select(.value != "" and .value != null))
+			del(.v2ray_network_security_ai, .xray_network_security_ai, .trojan_ai, .hy2_ai, .anytls_ai)
+			| with_entries(select(.value != "" and .value != null))
 				| decode_b64_field("password")
 				| decode_b64_field("naive_pass")
 				| decode_b64_field("v2ray_json")
@@ -4241,7 +4244,8 @@ sub_append_nodes_schema2(){
 				.
 			end;
 		def clean:
-			with_entries(select(.value != "" and .value != null))
+			del(.v2ray_network_security_ai, .xray_network_security_ai, .trojan_ai, .hy2_ai, .anytls_ai)
+			| with_entries(select(.value != "" and .value != null))
 			| decode_b64_field("password")
 			| decode_b64_field("naive_pass")
 			| decode_b64_field("v2ray_json")
@@ -4304,7 +4308,8 @@ sub_append_nodes_schema2(){
 				.
 			end;
 		def clean:
-			with_entries(select(.value != "" and .value != null))
+			del(.v2ray_network_security_ai, .xray_network_security_ai, .trojan_ai, .hy2_ai, .anytls_ai)
+			| with_entries(select(.value != "" and .value != null))
 			| decode_b64_field("password")
 			| decode_b64_field("naive_pass")
 			| decode_b64_field("v2ray_json")

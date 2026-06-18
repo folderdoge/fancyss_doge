@@ -447,6 +447,37 @@ notify_allowinsecure_removed_v1() {
 	dbus set fss_allowinsecure_notified_v1=1
 }
 
+# FORK: allowInsecure（跳过证书验证 / *_ai）字段已随 Xray 26.x 移除并退役——config-gen / 分流出站 /
+# 链式 / 测速均不再读取（见 ss_node_common.sh fss_prune_node_json 等处已 del 掉该字段）。本函数把存量
+# schema2 节点 blob 里残留的 5 个 *_ai 字段一次性删除，并清掉遗留的 schema1 平铺键 ssconf_basic_*_ai_<seq>。
+# 幂等 marker fss_node_ai_purged_v1；必须在 notify_allowinsecure_removed_v1 之后调用（先扫描提示再删字段）。
+# 注意 dbus remove 是精确匹配，按前缀清理须 list+loop（CLAUDE.md 硬规则 #15）。
+purge_node_allowinsecure_v1() {
+	[ "$(dbus get fss_node_ai_purged_v1)" = "1" ] && return 0
+	local node_id node_json updated_json changed=0 p k
+	if [ "$(fss_detect_storage_schema 2>/dev/null)" = "2" ]; then
+		for node_id in $(fss_list_node_ids); do
+			[ -n "${node_id}" ] || continue
+			node_json="$(fss_v2_get_node_json_by_id "${node_id}" 2>/dev/null)" || continue
+			[ -n "${node_json}" ] || continue
+			updated_json="$(printf '%s' "${node_json}" | jq -c --argjson updated_at "$(fss_now_ts_ms)" 'if (has("v2ray_network_security_ai") or has("xray_network_security_ai") or has("trojan_ai") or has("hy2_ai") or has("anytls_ai")) then del(.v2ray_network_security_ai, .xray_network_security_ai, .trojan_ai, .hy2_ai, .anytls_ai) | ._rev = (((._rev // 0) | tonumber? // 0) + 1) | ._updated_at = $updated_at else . end' 2>/dev/null)" || continue
+			[ -n "${updated_json}" ] || continue
+			[ "${updated_json}" = "${node_json}" ] && continue
+			dbus set fss_node_${node_id}="$(fss_b64_encode "${updated_json}")"
+			changed=$((changed + 1))
+		done
+	fi
+	for p in ssconf_basic_v2ray_network_security_ai_ ssconf_basic_xray_network_security_ai_ ssconf_basic_trojan_ai_ ssconf_basic_hy2_ai_ ssconf_basic_anytls_ai_; do
+		dbus list "${p}" 2>/dev/null | cut -d= -f1 | while read -r k; do [ -n "$k" ] && dbus remove "$k"; done
+	done
+	if [ "${changed}" -gt 0 ]; then
+		fss_touch_node_catalog_ts >/dev/null 2>&1 || true
+		fss_touch_node_config_ts >/dev/null 2>&1 || true
+		echo_date "已清理 ${changed} 个节点的 allowInsecure（跳过证书验证）残留字段。"
+	fi
+	dbus set fss_node_ai_purged_v1=1
+}
+
 # ============================================================================
 # FORK doge.12 alpha: 分流架构（Rule + Mode + per-User + 双轨 DNS）一次性迁移。
 # 详见 doc/design/split-routing-architecture.md §14 + doc/implementation/split-routing-implementation.md。
@@ -916,6 +947,23 @@ repair_builtin_mainland_single_rule_v1(){
 		logger -t "fancyss" "doge.14-beta.10 repair_builtin_mainland_single_rule_v1: 大陆白名单收敛为单条规则 大陆白名单_场景"
 		echo_date "✅ FORK doge.14-beta.10: 默认「大陆白名单」已精简为单条「大陆白名单_场景」规则（其余内置规则保留在规则库，默认不挂载）"
 	fi
+}
+
+# FORK doge.14: smartdns 物理移除 —— 一次性把 DNS 引擎锁定为 chinadns-ng 并清理 smartdns 遗留 dbus key。
+# 幂等标志 fss_smartdns_removed_v1。chinadns-ng 是分流双轨 DNS 的唯一引擎。
+purge_smartdns_remnants(){
+	[ "$(dbus get fss_smartdns_removed_v1)" = "1" ] && return 0
+	# 1) DNS 引擎强制 chinadns-ng（smartdns 已删除）
+	dbus set ss_basic_dns_plan="1"
+	# 2) 清理 smartdns 专用 dbus key（dbus remove 精确匹配，按前缀枚举逐键删，CLAUDE.md #15）
+	dbus list ss_basic_smrt 2>/dev/null | cut -d "=" -f 1 | while read k; do
+		[ -n "${k}" ] && dbus remove "${k}"
+	done
+	dbus remove ss_basic_add_ispdns 2>/dev/null
+	dbus remove ss_basic_smartdns_rule 2>/dev/null
+	dbus set fss_smartdns_removed_v1="1"
+	logger -t "fancyss" "doge.14 purge_smartdns_remnants: smartdns 已物理移除，DNS 引擎锁定 chinadns-ng"
+	echo_date "✅ FORK doge.14: smartdns 已移除，DNS 引擎已统一为 chinadns-ng（清理了 smartdns 遗留配置）"
 }
 
 # FORK doge.13 beta.3: 清理 ss_split_dns_*_upstream 已被多层 base64 污染的值。
@@ -2630,10 +2678,13 @@ install_now(){
 	repair_builtin_udp_proxy_v1
 	# FORK doge.14: Xray 移除 allowInsecure —— 对升级前开着 cert-skip 的节点一次性提示（幂等）
 	notify_allowinsecure_removed_v1
+	# FORK: allowInsecure 字段已退役——一次性清理存量节点的 *_ai 残留 + 遗留旧键（幂等，须在 notify 之后）
+	purge_node_allowinsecure_v1
 	# FORK doge.14-beta.8: 内置大表规则启用 geosite/geoip 共享引用（启动提速，分流结果不变；幂等）
 	migrate_split_geo_meta_v1
 	# FORK doge.14-beta.10: 默认「大陆白名单」精简为单条规则「大陆白名单_场景」——存量用户一次性收敛（幂等）
 	repair_builtin_mainland_single_rule_v1
+	purge_smartdns_remnants
 	# FORK doge.12 alpha：分流 Rule 自动更新 cron（每 30 分钟扫一次；详见 doc/design/split-routing-architecture.md §10.3）。
 	# alpha 期内置 Rule 全部 update_hours=0，cron 跑等于 no-op；脚本里有守护跳过。
 	# 用户自定义 Rule + 设置 update_hours>0 + 配置 source_url 才会真正下载。

@@ -2,6 +2,8 @@
 
 > ⚠️ **部分过时（2026-06-15 / `3.5.28-doge.14-beta.3`）**：表中的备用节点键 `ss_failover_s4_3` / `fss_node_failover_backup` 随**故障转移功能整体物理删除**已不存在（由 `install.sh::purge_failover_remnants()` 清除），相关行仅作历史保留。
 
+> ⚠️ **`*_ai`（allowInsecure / 跳过证书验证）字段已退役（doge.14.x，2026-06-19）**：Xray 26.x 已移除 allowInsecure，config-gen / 分流出站 / 链式 / 测速均不再读取。节点数据现在一律不带 `v2ray_network_security_ai` / `xray_network_security_ai` / `trojan_ai` / `hy2_ai` / `anytls_ai`——界面保存不写、导入（订阅 + 恢复备份）剔除、导出（新版 JSON + 旧版 SH）不带、更新时由 `install.sh::purge_node_allowinsecure_v1`（幂等 marker `fss_node_ai_purged_v1`）一次性清掉存量。下表相关行仅作历史/兼容说明保留，请勿再引入。
+
 本文是 `doc/reference/dbus_key_mapping_reference.md` 的节点专用精简版，只保留：
 
 - 当前节点/备用节点/顺序相关键
@@ -119,7 +121,7 @@ fss_node_102=<base64(json)>
 | `ssconf_basic_v2ray_network_host_<seq>` | `v2ray_network_host` | Host |
 | `ssconf_basic_v2ray_network_security_<seq>` | `v2ray_network_security` | TLS 等安全层类型 |
 | `ssconf_basic_v2ray_network_security_sni_<seq>` | `v2ray_network_security_sni` | SNI |
-| `ssconf_basic_v2ray_network_security_ai_<seq>` | `v2ray_network_security_ai` | allowInsecure |
+| `ssconf_basic_v2ray_network_security_ai_<seq>` | `v2ray_network_security_ai` | allowInsecure（已退役） |
 | `ssconf_basic_v2ray_network_security_alpn_h2_<seq>` | `v2ray_network_security_alpn_h2` | ALPN h2 |
 | `ssconf_basic_v2ray_network_security_alpn_http_<seq>` | `v2ray_network_security_alpn_http` | ALPN http/1.1 |
 | `ssconf_basic_v2ray_mux_enable_<seq>` | `v2ray_mux_enable` | Mux 开关 |
@@ -147,7 +149,7 @@ fss_node_102=<base64(json)>
 | `ssconf_basic_xray_network_host_<seq>` | `xray_network_host` | Host |
 | `ssconf_basic_xray_network_security_<seq>` | `xray_network_security` | TLS / REALITY 等安全层类型 |
 | `ssconf_basic_xray_network_security_sni_<seq>` | `xray_network_security_sni` | SNI |
-| `ssconf_basic_xray_network_security_ai_<seq>` | `xray_network_security_ai` | allowInsecure |
+| `ssconf_basic_xray_network_security_ai_<seq>` | `xray_network_security_ai` | allowInsecure（已退役） |
 | `ssconf_basic_xray_network_security_alpn_h2_<seq>` | `xray_network_security_alpn_h2` | ALPN h2 |
 | `ssconf_basic_xray_network_security_alpn_http_<seq>` | `xray_network_security_alpn_http` | ALPN http/1.1 |
 | `ssconf_basic_xray_pcs_<seq>` | `xray_pcs` | pinnedPeerCertSha256 |
@@ -166,7 +168,7 @@ fss_node_102=<base64(json)>
 | --- | --- | --- |
 | `ssconf_basic_trojan_uuid_<seq>` | `trojan_uuid` | Trojan 密码/身份字段 |
 | `ssconf_basic_trojan_sni_<seq>` | `trojan_sni` | SNI |
-| `ssconf_basic_trojan_ai_<seq>` | `trojan_ai` | allowInsecure |
+| `ssconf_basic_trojan_ai_<seq>` | `trojan_ai` | allowInsecure（已退役） |
 | `ssconf_basic_trojan_tfo_<seq>` | `trojan_tfo` | TFO 开关 |
 | `ssconf_basic_trojan_pcs_<seq>` | `trojan_pcs` | pinnedPeerCertSha256 |
 | `ssconf_basic_trojan_vcn_<seq>` | `trojan_vcn` | verifyPeerCertByName |
@@ -205,7 +207,7 @@ fss_node_102=<base64(json)>
 | `ssconf_basic_hy2_sni_<seq>` | `hy2_sni` | SNI |
 | `ssconf_basic_hy2_pcs_<seq>` | `hy2_pcs` | pinnedPeerCertSha256 |
 | `ssconf_basic_hy2_vcn_<seq>` | `hy2_vcn` | verifyPeerCertByName |
-| `ssconf_basic_hy2_ai_<seq>` | `hy2_ai` | allowInsecure |
+| `ssconf_basic_hy2_ai_<seq>` | `hy2_ai` | allowInsecure（已退役） |
 
 ### 4.8 AnyTLS
 
@@ -215,7 +217,7 @@ fss_node_102=<base64(json)>
 | `ssconf_basic_anytls_port_<seq>` | `anytls_port` | 端口 |
 | `ssconf_basic_anytls_pass_<seq>` | `anytls_pass` | 认证密码 |
 | `ssconf_basic_anytls_sni_<seq>` | `anytls_sni` | TLS SNI |
-| `ssconf_basic_anytls_ai_<seq>` | `anytls_ai` | allowInsecure |
+| `ssconf_basic_anytls_ai_<seq>` | `anytls_ai` | allowInsecure（已退役） |
 | `ssconf_basic_hy2_tfo_<seq>` | `hy2_tfo` | TFO 开关 |
 | `ssconf_basic_hy2_cg_<seq>` | `hy2_cg` | 拥塞控制类型 |
 

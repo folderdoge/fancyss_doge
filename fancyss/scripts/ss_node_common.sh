@@ -1422,6 +1422,7 @@ fss_prune_node_json() {
 		# this catches restored backups / legacy migrations that still carry these protocols.
 		| select($type != "1" and $type != "6" and $type != "7")
 		| with_entries(select((.key | startswith("_")) or keep_common(.key) or keep_type($type; .key)))
+		| del(.v2ray_network_security_ai, .xray_network_security_ai, .trojan_ai, .hy2_ai, .anytls_ai)
 	'
 }
 
@@ -2257,6 +2258,7 @@ fss_legacy_node_dump_to_v2_tsv() {
 				"_migrated_from": $entry.key
 			} + $sub_meta
 			| prune
+			| del(.v2ray_network_security_ai, .xray_network_security_ai, .trojan_ai, .hy2_ai, .anytls_ai)
 		) as $node
 		| [$entry.key, ($node | @base64)] | @tsv
 		'
@@ -2493,7 +2495,8 @@ fss_node_v2_to_legacy_script_lines() {
 		def is_b64: . == "password" or . == "naive_pass" or . == "v2ray_json" or . == "xray_json" or . == "tuic_json";
 		def need_compact_json: . == "v2ray_json" or . == "xray_json" or . == "tuic_json";
 		def compact_json_string: try (fromjson | tojson) catch .;
-		to_entries[]
+		del(.v2ray_network_security_ai, .xray_network_security_ai, .trojan_ai, .hy2_ai, .anytls_ai)
+		| to_entries[]
 		| select(.key | startswith("_") | not)
 		| select(.key | is_runtime | not)
 		| .key as $k
@@ -4450,6 +4453,7 @@ fss_restore_native_backup_v2() {
 				| ._created_at = (((._created_at // $ts) | tonumber? // $ts) | if . < 1000000000000 then (. * 1000) else . end)
 				| restore_source
 				| prune
+				| del(.v2ray_network_security_ai, .xray_network_security_ai, .trojan_ai, .hy2_ai, .anytls_ai)
 				| [$id, (tojson | @base64)] | @tsv
 			' "${json_file}" > "${nodes_tsv}" || {
 			rm -rf "${tmp_dir}"

@@ -552,13 +552,6 @@ sync_dns_ipv6_policy() {
 		return 0
 	fi
 
-	if [ "${ss_basic_dns_plan}" == "2" ];then
-		if ipv6_proxy_enabled; then
-			echo_date "ℹ️检测到当前使用smartdns且已开启IPv6代理，SmartDNS将保留代理域名的AAAA解析。"
-		else
-			echo_date "ℹ️检测到当前使用smartdns且未开启IPv6代理，SmartDNS将按当前代理模式动态抑制需要代理域名的AAAA解析。"
-		fi
-	fi
 }
 
 check_chn_public_ip(){
@@ -912,7 +905,7 @@ prepare_system() {
 	
 	echo "${ss_basic_name}" | base64_encode | sed 's/$/\n/' >/tmp/upload/fancyss_node_name.txt
 	echo "${curr_node_hash}" >>/tmp/upload/fancyss_node_name.txt
-	echo "${ss_basic_smrt}" >>/tmp/upload/fancyss_node_name.txt
+	echo "-" >>/tmp/upload/fancyss_node_name.txt
 	echo "${curr_node_index}" >>/tmp/upload/fancyss_node_name.txt
 }
 
@@ -1178,7 +1171,7 @@ refresh_node_direct_dns() {
 	refresh_node_direct_domain_file || return 1
 	[ "${ss_basic_enable}" = "1" ] || return 0
 	case "${ss_basic_dns_plan}" in
-	1|2)
+	1)
 		;;
 	*)
 		return 0
@@ -1323,11 +1316,6 @@ kill_process() {
 		kill -9 ${CHNG_PID} >/dev/null 2>&1
 	fi
 
-	local smartdns_process=$(pidof smartdns)
-	if [ -n "$smartdns_process" ]; then
-		echo_date "关闭smartdns进程..."
-		killall smartdns >/dev/null 2>&1
-	fi
 
 	# only close haveged form fancyss, not haveged from system
 	local haveged_pid=$(ps |grep "/koolshare/bin/haveged"|grep -v grep|awk '{print $1}')
@@ -1564,541 +1552,32 @@ dbus_eset(){
 }
 
 start_dns_x(){
-	# alpha.17 P2-1: DNS 服务启动 banner——明确告诉用户当前走的是哪条 DNS 方案
+	# doge.14: smartdns 已物理移除，chinadns-ng 为唯一 DNS 引擎（分流双轨）
 	echo_date "------------------------- 启动 DNS 服务 -----------------------------"
-	echo_date "DNS 方案: plan=${ss_basic_dns_plan:-1}（1=chinadns-ng / 2=smartdns） serverx=${ss_basic_dns_serverx:-0}"
+	echo_date "DNS 引擎: chinadns-ng（分流双轨） serverx=${ss_basic_dns_serverx:-0}"
 	fss_require_base_dns >/dev/null 2>&1 || true
 	set_default "ss_basic_dns_plan" "1"
 	set_default "ss_basic_dns_serverx" "0"
 	local runtime_mode="$(get_runtime_proxy_mode)"
-	local dns_plan_runtime="${ss_basic_dns_plan}"
-	local special_smartdns_label=""
-	local special_dns_hint=""
-	if [ "${AIRPORT_DNS_CURRENT_MATCHED}" = "1" ] && [ "${AIRPORT_DNS_PREFERRED_PLAN}" = "smartdns" ];then
-		if [ "${ss_basic_dns_plan}" = "2" ]; then
-			special_dns_hint="ℹ️检测到机场【${AIRPORT_DNS_AIRPORT_LABEL:-${AIRPORT_DNS_AIRPORT_IDENTITY}}】需要专属节点DNS，当前使用smartdns方案。"
-		else
-			special_dns_hint="ℹ️检测到机场【${AIRPORT_DNS_AIRPORT_LABEL:-${AIRPORT_DNS_AIRPORT_IDENTITY}}】需要专属节点DNS，本次临时切换为smartdns方案。"
+	# DNS分流模式和iptables分流需要匹配，不然效果不好，这里需要检测用户当前代理模式和当前DNS模式
+	if [ "${runtime_mode}" == "1" ];then
+		if [ "${ss_basic_chng}" == "2" ];then
+			echo_date "⚠️警告：当前代理模式GFW黑名单与当前DNS模式：[国外优先]不匹配！"
+			echo_date "🔁建议使用：[国内优先/智能判断]，本次自动将当前DNS模式改为：[国内优先]！"
+			ss_basic_chng="1"
+			dbus set ss_basic_chng="1"
 		fi
-		dns_plan_runtime="2"
-	else
-		special_smartdns_label="$(fss_airport_special_active_labels_by_plan "smartdns" 2>/dev/null)"
-		if [ -n "${special_smartdns_label}" ];then
-			if [ "${ss_basic_dns_plan}" = "2" ]; then
-				special_dns_hint="ℹ️检测到机场【${special_smartdns_label}】需要使用smartdns，当前已使用smartdns方案。"
-			else
-				special_dns_hint="ℹ️检测到机场【${special_smartdns_label}】需要使用smartdns，为保证使用节点和测速正常，将强制使用smartdns。"
-			fi
-			dns_plan_runtime="2"
+	elif [ "${runtime_mode}" == "2" -o "${runtime_mode}" == "3" ];then
+		if [ "${ss_basic_chng}" == "1" ];then
+			echo_date "⚠️警告：当前代理模式与当前DNS模式：[国内优先]不匹配！"
+			echo_date "🔁建议使用：[国外优先/智能判断]，本次自动将当前DNS模式改为：[国外优先]！"
+			ss_basic_chng="2"
+			dbus set ss_basic_chng="2"
 		fi
 	fi
-	[ -n "${special_dns_hint}" ] && echo_date "${special_dns_hint}"
-	if ! proxy_core_supports_udp;then
-		if [ "${dns_plan_runtime}" = "2" ];then
-			if [ -n "$(smartdns_iter_gfw_udp_relays 2>/dev/null | sed -n '1p')" ];then
-				echo_date "⚠️检测到 $(proxy_core_udp_unsupported_name) 不支持 UDP 代理，smartdns gfw 组中的 UDP DNS 将不会写入运行配置。"
-			fi
-		fi
-	fi
-	if [ "${dns_plan_runtime}" == "1" ];then
-		# DNS分流模式和iptables分流需要匹配，不然效果不好，这里需要检测用户当前代理模式和当前DNS模式
-		if [ "${runtime_mode}" == "1" ];then
-			if [ "${ss_basic_chng}" == "2" ];then
-				echo_date "⚠️警告：当前代理模式GFW黑名单与当前DNS模式：[国外优先]不匹配！"
-				echo_date "🔁建议使用：[国内优先/智能判断]，本次自动将当前DNS模式改为：[国内优先]！"
-				ss_basic_chng="1"
-				dbus set ss_basic_chng="1"
-			fi
-		elif [ "${runtime_mode}" == "2" -o "${runtime_mode}" == "3" ];then
-			if [ "${ss_basic_chng}" == "1" ];then
-				echo_date "⚠️警告：当前代理模式与当前DNS模式：[国内优先]不匹配！"
-				echo_date "🔁建议使用：[国外优先/智能判断]，本次自动将当前DNS模式改为：[国外优先]！"
-				ss_basic_chng="2"
-				dbus set ss_basic_chng="2"
-			fi
-		fi
-
-		# doge.14: 分流架构唯一路径
-		start_chinadns_ng_split
-	elif [ "${dns_plan_runtime}" == "2" ];then
-		# DNS分流模式和iptables分流需要匹配，不然效果不好，这里需要检测用户当前代理模式和当前DNS模式
-		if [ "${runtime_mode}" == "1" ];then
-			if [ "${ss_basic_smrt}" == "2" ];then
-				echo_date "⚠️警告：当前代理模式GFW黑名单与当前DNS模式：[国外优先]不匹配！"
-				echo_date "🔁建议使用：[国内优先/智能判断]，本次自动将当前DNS模式改为：[国内优先]！"
-				ss_basic_smrt="1"
-				dbus set ss_basic_smrt="1"
-			fi
-		elif [ "${runtime_mode}" == "2" -o "${runtime_mode}" == "3" ];then
-			if [ "${ss_basic_smrt}" == "1" ];then
-				echo_date "⚠️警告：当前代理模式与当前DNS模式：[国内优先]不匹配！"
-				echo_date "🔁建议使用：[国外优先/智能判断]，本次自动将当前DNS模式改为：[国外优先]！"
-				ss_basic_smrt="2"
-				dbus set ss_basic_smrt="2"
-			fi
-		fi
-	
-		echo_date "start smartdns"
-		start_smartdns ${ss_basic_smrt}
-	fi
-	# alpha.17 P2-1: DNS 服务启动尾部 banner
+	# doge.14: 分流架构唯一路径
+	start_chinadns_ng_split
 	echo_date "DNS 服务启动完毕。"
-}
-
-smartdns_format_addr() {
-	local addr="$1"
-	local port="$2"
-	if [ -z "${port}" ] || [ "${port}" = "53" ];then
-		echo "${addr}"
-		return
-	fi
-	case "${addr}" in
-	*:* )
-		echo "[${addr}]:${port}"
-		;;
-	*)
-		echo "${addr}:${port}"
-		;;
-	esac
-}
-
-smartdns_server_flags() {
-	local mode="$1"
-	local scope="$2"
-	case "${mode}_${scope}" in
-	1_chn_group)
-		echo "-group chn -blacklist-ip"
-		;;
-	1_gfw_group)
-		echo "-group gfw -exclude-default-group"
-		;;
-	2_chn_group)
-		echo "-group chn -blacklist-ip -exclude-default-group"
-		;;
-	2_gfw_group)
-		echo "-group gfw"
-		;;
-	3_chn_group)
-		echo "-group chn -blacklist-ip -exclude-default-group"
-		;;
-	3_gfw_group)
-		echo "-group gfw -blacklist-ip -exclude-default-group"
-		;;
-	3_chn_default)
-		echo "-whitelist-ip -blacklist-ip"
-		;;
-	3_gfw_default)
-		echo "-blacklist-ip"
-		;;
-	esac
-}
-
-smartdns_append_server_line() {
-	local outfile="$1"
-	local proto="$2"
-	local addr="$3"
-	local port="$4"
-	local host="$5"
-	local host_ip="$6"
-	local flags="$7"
-	local use_proxy="$8"
-	local line=""
-	local extras="${flags}"
-	if [ "${use_proxy}" = "1" ];then
-		extras="${extras} -proxy fancy_proxy"
-	fi
-	case "${proto}" in
-	udp)
-		line="server $(smartdns_format_addr "${addr}" "${port}")"
-		;;
-	tcp)
-		line="server-tcp $(smartdns_format_addr "${addr}" "${port}")"
-		;;
-	dot)
-		line="server-tls ${host}"
-		;;
-	*)
-		return 0
-		;;
-	esac
-	[ -n "${extras}" ] && line="${line} ${extras}"
-	if [ "${proto}" = "dot" ];then
-		line="${line} -host-ip ${host_ip}"
-		if [ -n "${port}" ] && [ "${port}" != "853" ];then
-			line="${line} -port ${port}"
-		fi
-	fi
-	echo "${line}" >> "${outfile}"
-}
-
-smartdns_append_group_servers() {
-	local outfile="$1"
-	local mode="$2"
-	local group="$3"
-	local scope="$4"
-	local relay_idx=0
-	local append_count=0
-	local skip_udp_count=0
-	local flags="$(smartdns_server_flags "${mode}" "${scope}")"
-	local use_proxy="0"
-	local sep="$(printf '\037')"
-	[ "${group}" = "gfw" ] && use_proxy="1"
-	while IFS="${sep}" read -r id proto provider description kind slot addr port host host_ip isp net
-	do
-		if [ "${group}" = "gfw" ] && ! proxy_core_supports_udp && [ "${proto}" = "udp" ];then
-			skip_udp_count=$((skip_udp_count + 1))
-			continue
-		fi
-		local target_addr="${addr}"
-		local target_port="${port}"
-		local target_proxy="${use_proxy}"
-		if [ "${group}" = "gfw" ] && [ "${proto}" = "udp" ];then
-			relay_idx=$((relay_idx + 1))
-			target_addr="127.0.0.1"
-			target_port=$((SMARTDNS_RELAY_PORT_BASE + relay_idx - 1))
-			target_proxy="0"
-		fi
-		smartdns_append_server_line "${outfile}" "${proto}" "${target_addr}" "${target_port}" "${host}" "${host_ip}" "${flags}" "${target_proxy}"
-		append_count=$((append_count + 1))
-	done <<-EOF
-$(smartdns_group_items_tsv "${group}")
-EOF
-	if [ "${group}" = "gfw" ] && ! proxy_core_supports_udp;then
-		if [ "${skip_udp_count}" -gt 0 ];then
-			echo_date "⚠️smartdns ${scope}：已跳过 ${skip_udp_count} 个 gfw 组 UDP DNS。"
-		fi
-		if [ "${append_count}" -eq 0 ];then
-			smartdns_append_server_line "${outfile}" "tcp" "8.8.8.8" "53" "" "" "${flags}" "${use_proxy}"
-			echo_date "⚠️smartdns ${scope}：gfw 组没有可用 TCP/DoT DNS，已使用 tcp://8.8.8.8 兜底。"
-		fi
-	fi
-}
-
-smartdns_append_node_direct_servers() {
-	local outfile="$1"
-	local sep="$(printf '\037')"
-	while IFS="${sep}" read -r id proto provider description kind slot addr port host host_ip isp net
-	do
-		smartdns_append_server_line "${outfile}" "${proto}" "${addr}" "${port}" "${host}" "${host_ip}" "-group node_direct -exclude-default-group" "0"
-	done <<-EOF
-$(smartdns_group_items_tsv chn)
-EOF
-}
-
-smartdns_airport_group_name() {
-	local airport_identity="$1"
-	[ -n "${airport_identity}" ] || return 1
-	printf 'airport_%s\n' "${airport_identity}"
-}
-
-smartdns_airport_dns_group_name() {
-	local airport_identity="$1"
-	[ -n "${airport_identity}" ] || return 1
-	printf 'airport_dns_%s\n' "${airport_identity}"
-}
-
-smartdns_append_airport_node_servers_by_identity() {
-	local outfile="$1"
-	local airport_identity="$2"
-	local sep="$(printf '\037')"
-	local proto raw addr port host host_ip
-	local group_name=""
-	[ -n "${airport_identity}" ] || return 0
-	group_name="$(smartdns_airport_group_name "${airport_identity}" 2>/dev/null)" || return 0
-	fss_airport_runtime_iter_dns_items_tsv_by_identity "${airport_identity}" 2>/dev/null | while IFS="${sep}" read -r proto raw addr port host host_ip
-	do
-		[ -n "${proto}" ] || continue
-		case "${proto}" in
-		udp)
-			[ -n "${addr}" ] || continue
-			[ -n "${port}" ] || port="53"
-			echo "server $(smartdns_format_addr "${addr}" "${port}") -group ${group_name} -exclude-default-group" >> "${outfile}"
-			;;
-		tcp)
-			[ -n "${addr}" ] || continue
-			[ -n "${port}" ] || port="53"
-			echo "server-tcp $(smartdns_format_addr "${addr}" "${port}") -group ${group_name} -exclude-default-group" >> "${outfile}"
-			;;
-		tls)
-			[ -n "${raw}" ] || continue
-			echo "server-tls ${raw#tls://} -group ${group_name} -exclude-default-group" >> "${outfile}"
-			;;
-		https)
-			[ -n "${raw}" ] || continue
-			echo "server-https ${raw} -group ${group_name} -exclude-default-group" >> "${outfile}"
-			;;
-		quic)
-			[ -n "${raw}" ] || continue
-			echo "server-quic ${raw} -group ${group_name} -exclude-default-group" >> "${outfile}"
-			;;
-		esac
-	done
-}
-
-smartdns_append_ipv6_policy() {
-	local outfile="$1"
-	local mode="$2"
-	local has_node_direct="0"
-	local airport_identity=""
-	local airport_dns_group=""
-	local airport_dns_file=""
-	[ -s /tmp/ss_node_domains.txt ] && has_node_direct="1"
-	smartdns_append_airport_dns_ipv6_lines() {
-		while IFS="$(printf '\037')" read -r airport_identity _airport_label _airport_plan
-		do
-			[ -n "${airport_identity}" ] || continue
-			airport_dns_group="$(smartdns_airport_dns_group_name "${airport_identity}" 2>/dev/null)" || continue
-			airport_dns_file="$(fss_airport_special_runtime_dns_file "${airport_identity}" 2>/dev/null)" || continue
-			[ -s "${airport_dns_file}" ] && echo "address /domain-set:${airport_dns_group}/-6" >> "${outfile}"
-		done <<-EOF
-$(fss_airport_special_iter_active_tsv 2>/dev/null)
-		EOF
-	}
-	if [ "${ss_basic_proxy_ipv6}" = "1" ];then
-		cat >> "${outfile}" <<-'EOF'
-force-AAAA-SOA no
-EOF
-		if [ "${has_node_direct}" = "1" ];then
-			echo "address /domain-set:node_direct/-6" >> "${outfile}"
-		fi
-		smartdns_append_airport_dns_ipv6_lines
-		return
-	fi
-	case "${mode}" in
-	1)
-		cat >> "${outfile}" <<-'EOF'
-force-AAAA-SOA no
-address /domain-set:gfwlist/#6
-address /domain-set:black_list/#6
-address /domain-set:rotlist/#6
-EOF
-		if [ "${has_node_direct}" = "1" ];then
-			echo "address /domain-set:node_direct/-6" >> "${outfile}"
-		fi
-		smartdns_append_airport_dns_ipv6_lines
-		;;
-	2|3)
-		cat >> "${outfile}" <<-'EOF'
-force-AAAA-SOA yes
-address /domain-set:chnlist/-6
-address /domain-set:white_list/-6
-EOF
-		if [ "${has_node_direct}" = "1" ];then
-			echo "address /domain-set:node_direct/-6" >> "${outfile}"
-		fi
-		smartdns_append_airport_dns_ipv6_lines
-		;;
-	5)
-		cat >> "${outfile}" <<-'EOF'
-force-AAAA-SOA yes
-address /domain-set:white_list/-6
-EOF
-		if [ "${has_node_direct}" = "1" ];then
-			echo "address /domain-set:node_direct/-6" >> "${outfile}"
-		fi
-		smartdns_append_airport_dns_ipv6_lines
-		;;
-	*)
-		cat >> "${outfile}" <<-'EOF'
-force-AAAA-SOA no
-EOF
-		if [ "${has_node_direct}" = "1" ];then
-			echo "address /domain-set:node_direct/-6" >> "${outfile}"
-		fi
-		smartdns_append_airport_dns_ipv6_lines
-		;;
-	esac
-}
-
-smartdns_generate_runtime_conf() {
-	local outfile="$1"
-	local mode="$2"
-	local listen_port="7913"
-	local airport_identity=""
-	local airport_label=""
-	local airport_plan=""
-	local airport_group=""
-	local airport_dns_group=""
-	local airport_domain_file=""
-	local airport_dns_file=""
-	[ "${ss_basic_dns_serverx}" = "1" ] && listen_port="53"
-	: > "${outfile}"
-	[ "${mode}" = "3" ] && generate_smartdns_whitelist_file /tmp/whitelist_ip.txt
-	cat > "${outfile}" <<-EOF
-# Auto-generated by fancyss.
-bind [::]:${listen_port}
-
-domain-set -name chnlist -file /tmp/chnlist.txt
-domain-set -name gfwlist -file /tmp/gfwlist.txt
-domain-set -name rotlist -file /koolshare/ss/rules/rotlist.txt
-domain-set -name white_list -file /tmp/white_list.txt
-domain-set -name black_list -file /tmp/black_list.txt
-EOF
-	while IFS="$(printf '\037')" read -r airport_identity airport_label airport_plan
-	do
-		[ -n "${airport_identity}" ] || continue
-		airport_group="$(smartdns_airport_group_name "${airport_identity}" 2>/dev/null)" || continue
-		airport_dns_group="$(smartdns_airport_dns_group_name "${airport_identity}" 2>/dev/null)" || continue
-		airport_domain_file="$(fss_airport_special_runtime_domain_file "${airport_identity}" 2>/dev/null)" || continue
-		airport_dns_file="$(fss_airport_special_runtime_dns_file "${airport_identity}" 2>/dev/null)" || continue
-		[ -s "${airport_dns_file}" ] && echo "domain-set -name ${airport_dns_group} -file ${airport_dns_file}" >> "${outfile}"
-		[ -s "${airport_domain_file}" ] && echo "domain-set -name ${airport_group} -file ${airport_domain_file}" >> "${outfile}"
-	done <<-EOF
-$(fss_airport_special_iter_active_tsv 2>/dev/null)
-	EOF
-	[ -s /tmp/ss_node_domains.txt ] && echo "domain-set -name node_direct -file /tmp/ss_node_domains.txt" >> "${outfile}"
-	[ "${ss_basic_block_resov}" = "1" ] && echo "domain-set -name block_list -file /tmp/block_list.txt" >> "${outfile}"
-
-	[ "${mode}" = "3" ] && echo "conf-file /tmp/whitelist_ip.txt" >> "${outfile}"
-	echo "" >> "${outfile}"
-	[ "${ss_basic_block_resov}" = "1" ] && echo "address /domain-set:block_list/#" >> "${outfile}"
-	while IFS="$(printf '\037')" read -r airport_identity airport_label airport_plan
-	do
-		[ -n "${airport_identity}" ] || continue
-		airport_group="$(smartdns_airport_group_name "${airport_identity}" 2>/dev/null)" || continue
-		airport_dns_group="$(smartdns_airport_dns_group_name "${airport_identity}" 2>/dev/null)" || continue
-		airport_domain_file="$(fss_airport_special_runtime_domain_file "${airport_identity}" 2>/dev/null)" || continue
-		airport_dns_file="$(fss_airport_special_runtime_dns_file "${airport_identity}" 2>/dev/null)" || continue
-		[ -s "${airport_dns_file}" ] && echo "domain-rules /domain-set:${airport_dns_group}/ -p #4:chnlist,#6:chnlist6 -c ping,tcp:80,tcp:443 -r first-ping -d yes -n chn" >> "${outfile}"
-		[ -s "${airport_domain_file}" ] && echo "domain-rules /domain-set:${airport_group}/ -c none -n ${airport_group}" >> "${outfile}"
-	done <<-EOF
-$(fss_airport_special_iter_active_tsv 2>/dev/null)
-	EOF
-	[ -s /tmp/ss_node_domains.txt ] && echo "domain-rules /domain-set:node_direct/ -p #4:chnlist,#6:chnlist6 -c ping,tcp:80,tcp:443 -r first-ping -d yes -n chn" >> "${outfile}"
-	cat >> "${outfile}" <<-'EOF'
-
-domain-rules /domain-set:chnlist/ -p #4:chnlist,#6:chnlist6 -c ping,tcp:80,tcp:443 -r first-ping -d yes -n chn
-domain-rules /domain-set:white_list/ -p #4:white_list,#6:white_list6 -c ping,tcp:80,tcp:443 -r first-ping -d yes -n chn
-EOF
-	cat >> "${outfile}" <<-'EOF'
-domain-rules /domain-set:gfwlist/ -p #4:gfwlist,#6:gfwlist6 -c none -n gfw
-domain-rules /domain-set:black_list/ -p #4:black_list,#6:black_list6 -c none -n gfw
-domain-rules /domain-set:rotlist/ -p #4:router,#6:router6 -c none -n gfw
-EOF
-	case "${mode}" in
-	1)
-		cat >> "${outfile}" <<-'EOF'
-speed-check-mode ping,tcp:80,tcp:443
-response-mode first-ping
-dualstack-ip-selection yes
-dualstack-ip-selection-threshold 10
-EOF
-		;;
-	2)
-		cat >> "${outfile}" <<-'EOF'
-speed-check-mode none
-EOF
-		;;
-	3)
-		cat >> "${outfile}" <<-'EOF'
-speed-check-mode ping,tcp:80,tcp:443
-response-mode fastest-ip
-dualstack-ip-selection yes
-dualstack-ip-selection-threshold 10
-EOF
-		;;
-	esac
-	cat >> "${outfile}" <<-EOF
-cache-persist yes
-cache-file /tmp/smartdns_${mode}.cache
-prefetch-domain yes
-EOF
-	if [ "${mode}" = "3" ];then
-		echo "serve-expired no" >> "${outfile}"
-	else
-		echo "serve-expired yes" >> "${outfile}"
-	fi
-	cat >> "${outfile}" <<-'EOF'
-serve-expired-ttl 259200
-serve-expired-reply-ttl 3
-cache-checkpoint-time 86400
-EOF
-	smartdns_append_ipv6_policy "${outfile}" "${mode}"
-	cat >> "${outfile}" <<-'EOF'
-force-qtype-SOA 65
-log-level info
-log-file /tmp/smartdns_log.txt
-log-size 2M
-log-num 1
-audit-enable yes
-audit-file /tmp/smartdns_audit.txt
-audit-size 2M
-audit-num 1
-ca-file /etc/ssl/certs/ca-certificates.crt
-blacklist-ip 10.0.0.0/8
-proxy-server socks5://127.0.0.1:23456 -name fancy_proxy
-EOF
-	while IFS="$(printf '\037')" read -r airport_identity airport_label airport_plan
-	do
-		[ -n "${airport_identity}" ] || continue
-		airport_domain_file="$(fss_airport_special_runtime_domain_file "${airport_identity}" 2>/dev/null)" || continue
-		[ -s "${airport_domain_file}" ] || continue
-		echo "" >> "${outfile}"
-		echo "# airport special upstreams: ${airport_label:-${airport_identity}}" >> "${outfile}"
-		smartdns_append_airport_node_servers_by_identity "${outfile}" "${airport_identity}"
-	done <<-EOF
-$(fss_airport_special_iter_active_tsv 2>/dev/null)
-	EOF
-	echo "" >> "${outfile}"
-	echo "# chn group upstreams" >> "${outfile}"
-	smartdns_append_group_servers "${outfile}" "${mode}" "chn" "chn_group"
-	echo "" >> "${outfile}"
-	echo "# gfw group upstreams" >> "${outfile}"
-	smartdns_append_group_servers "${outfile}" "${mode}" "gfw" "gfw_group"
-	if [ "${mode}" = "3" ];then
-		echo "" >> "${outfile}"
-		echo "# default group upstreams" >> "${outfile}"
-		smartdns_append_group_servers "${outfile}" "${mode}" "chn" "chn_default"
-		smartdns_append_group_servers "${outfile}" "${mode}" "gfw" "gfw_default"
-	fi
-}
-
-start_smartdns(){
-	local idx=$1
-	local smartdns_conf=/tmp/smartdns_fancyss.conf
-
-	rm -rf /tmp/smartdns_log.txt
-	rm -rf /tmp/smartdns_audit.txt
-
-	if [ "${_node_change_status}" == "1" ];then
-		if [ -f "/tmp/smartdns_${last_node_indx}.cache" ];then
-			echo_date "smartdns缓存：检测到上次节点【${last_node_name}】上次使用的缓存，备份以备下次切换回使用。"
-			mv /tmp/smartdns_${last_node_indx}.cache /tmp/smartdns_${last_node_indx}_${last_node_hash}.cache
-		fi
-		if [ -f "/tmp/smartdns_${idx}_${curr_node_hash}.cache" ];then
-			echo_date "smartdns缓存：检测到节点【${ss_basic_name}】上次使用的缓存，加载到/tmp/smartdns_${idx}.cache..."
-			mv /tmp/smartdns_${idx}_${curr_node_hash}.cache /tmp/smartdns_${idx}.cache
-		else
-			echo_date "smartdns缓存：没有检测到节点【${ss_basic_name}】上次使用的缓存"
-		fi
-	elif [ "${_node_change_status}" == "0" ];then
-		if [ -f "/tmp/smartdns_${last_node_indx}.cache" ];then
-			echo_date "smartdns缓存：检测到节点未切换，保留smartdns缓存文件..."
-		else
-			echo_date "smartdns缓存：检测到节点未切换，新建smartdns缓存文件..."
-		fi
-	elif [ "${_node_change_status}" == "2" ];then
-		if [ -f "/tmp/smartdns_${idx}_${curr_node_hash}.cache" ];then
-			echo_date "smartdns缓存：检测到节点【${ss_basic_name}】上次使用的缓存，加载到/tmp/smartdns_${idx}.cache...."
-			mv /tmp/smartdns_${idx}_${curr_node_hash}.cache /tmp/smartdns_${idx}.cache
-		else
-			echo_date "smartdns缓存：没有检测到节点【${ss_basic_name}】上次使用的缓存!"
-		fi
-	fi
-
-	echo_date "生成smartdns运行时配置：${smartdns_conf}"
-	smartdns_generate_runtime_conf "${smartdns_conf}" "${idx}"
-
-	echo_date "启动smartdns，使用smartdns配置文件：${smartdns_conf}"
-	run_bg smartdns -c ${smartdns_conf}
-	detect_running_status3 "smartdns" "53|7913" "0"
-
-	local caches=$(head /tmp/smartdns_log.txt 2>/dev/null | grep "load cache file" | awk '{print $(NF-1)}')
-	if [ -n "${caches}" ];then
-		echo_date "smartdns启动成功，成功加载缓存：${caches}条"
-	else
-		echo_date "smartdns启动成功!"
-	fi
 }
 
 # ============================================================================
@@ -2152,6 +1631,25 @@ __join_split_dns_lines() {
 	echo "${out}"
 }
 
+# doge.14: 过滤出 chinadns-ng 能识别的上游——只保留 udp(裸地址) / tcp:// / tls://，
+# 丢弃 https://(DoH) 等不支持协议，避免用户配错 DNS 时无效上游导致 chinadns-ng 启动失败。
+__filter_valid_split_dns_lines() {
+	local lines="$1"
+	local line=""
+	IFS='
+'
+	for line in ${lines}; do
+		case "${line}" in
+			udp://*|tcp://*|tls://*) printf '%s\n' "${line}" ;;
+			*://*) : ;;
+			'#'*) : ;;
+			'') : ;;
+			*) printf '%s\n' "${line}" ;;
+		esac
+	done
+	unset IFS
+}
+
 generate_chinadns_split_conf() {
 	local conf="/tmp/chinadns_ng_split.conf"
 	local CDNS_LINE=""
@@ -2162,13 +1660,24 @@ generate_chinadns_split_conf() {
 	local _new_oversea_b64=$(dbus get ss_split_dns_overseas_upstream 2>/dev/null)
 	local _new_china_lines=$(__get_split_dns_lines "${_new_china_b64}")
 	local _new_oversea_lines=$(__get_split_dns_lines "${_new_oversea_b64}")
+	# 过滤掉 chinadns-ng 不支持的上游协议（DoH https:// 等会让 chinadns-ng 启动失败）
+	local _china_ok=$(__filter_valid_split_dns_lines "${_new_china_lines}")
+	local _oversea_ok=$(__filter_valid_split_dns_lines "${_new_oversea_lines}")
+	[ -n "${_new_china_lines}" ] && [ "${_china_ok}" != "${_new_china_lines}" ] && echo_date "⚠️国内 DNS 含 chinadns-ng 不支持的上游（仅支持 普通UDP/TCP/DoT，不支持 DoH），已自动忽略无效项。"
+	[ -n "${_new_oversea_lines}" ] && [ "${_oversea_ok}" != "${_new_oversea_lines}" ] && echo_date "⚠️国外/可信 DNS 含 chinadns-ng 不支持的上游（仅支持 TCP/DoT），已自动忽略无效项。"
 
-	[ -n "${_new_china_lines}" ] && CDNS_LINE=$(__join_split_dns_lines "${_new_china_lines}")
-	[ -n "${_new_oversea_lines}" ] && FDNS_LINE=$(__join_split_dns_lines "${_new_oversea_lines}")
+	[ -n "${_china_ok}" ] && CDNS_LINE=$(__join_split_dns_lines "${_china_ok}")
+	[ -n "${_oversea_ok}" ] && FDNS_LINE=$(__join_split_dns_lines "${_oversea_ok}")
 
-	# 兜底：上游空时填补
-	[ -z "${CDNS_LINE}" ] && CDNS_LINE="223.5.5.5"
-	[ -z "${FDNS_LINE}" ] && FDNS_LINE="tcp://8.8.8.8"
+	# 兜底：某组上游为空时用内置默认组合，并在启动日志提醒（不写回 dbus，仅本次运行生效）
+	if [ -z "${CDNS_LINE}" ]; then
+		CDNS_LINE="223.5.5.5,114.114.114.114"
+		echo_date "⚠️国内 DNS 没有可用上游，已临时使用默认组合：223.5.5.5 + 114.114.114.114（请到「DNS 设定」检查国内 DNS upstream）"
+	fi
+	if [ -z "${FDNS_LINE}" ]; then
+		FDNS_LINE="tcp://8.8.8.8,tcp://1.1.1.1"
+		echo_date "⚠️国外/可信 DNS 没有可用上游，已临时使用默认组合：tcp://8.8.8.8 + tcp://1.1.1.1（经代理需 TCP/DoT，故用 TCP；请到「DNS 设定」检查）"
+	fi
 
 	rm -f "${conf}" >/dev/null 2>&1
 	cat > "${conf}" <<-EOF
@@ -2270,8 +1779,13 @@ generate_chinadns_global_conf() {
 	# 用 head -1 即可——全局模式不像分流那样有多上游平衡）。
 	local _new_global_b64=$(dbus get ss_split_dns_global_upstream 2>/dev/null)
 	local _new_global_lines=$(__get_split_dns_lines "${_new_global_b64}")
-	[ -n "${_new_global_lines}" ] && FDNS_LINE=$(echo "${_new_global_lines}" | head -1 | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
-	[ -z "${FDNS_LINE}" ] && FDNS_LINE="tcp://1.1.1.1"
+	local _global_ok=$(__filter_valid_split_dns_lines "${_new_global_lines}")
+	[ -n "${_new_global_lines}" ] && [ "${_global_ok}" != "${_new_global_lines}" ] && echo_date "⚠️全局模式 DNS 含 chinadns-ng 不支持的上游（仅支持 TCP/DoT），已自动忽略无效项。"
+	[ -n "${_global_ok}" ] && FDNS_LINE=$(echo "${_global_ok}" | head -1 | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+	if [ -z "${FDNS_LINE}" ]; then
+		FDNS_LINE="tcp://1.1.1.1"
+		echo_date "⚠️全局模式 DNS 没有可用上游，已临时使用默认：tcp://1.1.1.1（经代理需 TCP/DoT，故用 TCP；请到「DNS 设定」检查全局模式 DNS）"
+	fi
 
 	rm -f "${conf}" >/dev/null 2>&1
 	cat > "${conf}" <<-EOF
@@ -2557,10 +2071,8 @@ get_dns_para(){
 }
 
 iter_dns_udp_relay_targets(){
-	local sep="$(printf '\037')"
-	if [ "${ss_basic_dns_plan}" = "2" ] && proxy_core_supports_udp;then
-		smartdns_iter_gfw_udp_relays
-	fi
+	# doge.14: smartdns 已移除，无 UDP DNS 中继目标
+	return 0
 }
 
 has_dns_udp_relay_targets(){
@@ -6256,11 +5768,6 @@ stop_dns_process() {
 		kill -9 ${CHNG_PID} >/dev/null 2>&1
 	fi
 
-	local smartdns_process=$(pidof smartdns)
-	if [ -n "$smartdns_process" ]; then
-		echo_date "关闭smartdns进程..."
-		killall smartdns >/dev/null 2>&1
-	fi
 
 }
 

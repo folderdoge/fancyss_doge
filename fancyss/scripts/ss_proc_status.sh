@@ -410,11 +410,7 @@ GET_CURRENT_NODE_NAME(){
 }
 
 GET_DNS_PLAN_NAME(){
-	if [ "${ss_basic_dns_plan}" == "1" ];then
-		echo "chinadns-ng"
-	else
-		echo "smartdns"
-	fi
+	echo "chinadns-ng"
 }
 
 GET_SWITCH_NAME(){
@@ -761,7 +757,6 @@ if false; then
 	fi
 
 	# DNS program
-	if [ "${ss_basic_dns_plan}" == "1" ];then
 		# chinadns-ng
 		local CHNG_PID=$(pidof chinadns-ng)
 		local CHNG_RSS=$(GET_VM_RSS_MULTI ${CHNG_PID})
@@ -771,17 +766,6 @@ if false; then
 		else
 			echo "chinadns-ng	未运行🔴		DNS分流"
 		fi
-	else
-		# smartdns
-		local SMRT_PID=$(pidof smartdns)
-		local SMRT_RSS=$(GET_VM_RSS_MULTI ${SMRT_PID})
-		local SMRT_UPTIME=$(GET_PROC_UPTIME_MULTI ${SMRT_PID})
-		if [ -n "${SMRT_PID}" ];then
-			echo "smartdns	运行中🟢		DNS分流		${SMRT_PID}		${SMRT_RSS}		${SMRT_UPTIME}"
-		else
-			echo "smartdns	未运行🔴		DNS分流"
-		fi
-	fi
 		
 	if [ "${ss_basic_dns_serverx}" != "1" ];then
 		local DMQ_PID=$(pidof dnsmasq)
@@ -878,9 +862,6 @@ ECHO_VERSION(){
 	# printf '%-16s %-16s %s\n' "ssr-local" "$(run rss-local -h|sed '/^$/d'|head -n1|awk '{print $2}')" "https://github.com/shadowsocksrr/shadowsocksr-libev"
 	if [ -x "/koolshare/bin/chinadns-ng" ];then
 		printf '%-16s %-16s %s\n' "chinadns-ng" "$(run chinadns-ng -V | awk '{print $2}')" "https://github.com/zfl9/chinadns-ng"
-	fi
-	if [ -x "/koolshare/bin/smartdns" ];then
-		printf '%-16s %-16s %s\n' "smartdns" "$(run smartdns -v|awk '{print $2}')" "https://github.com/pymumu/smartdns"
 	fi
 	print_bin_version_line "node-tool" "$(get_zig_tool_version /koolshare/bin/node-tool)" "fancyss Zig / 节点运行产物构建"
 	print_bin_version_line "sub-tool" "$(get_zig_tool_version /koolshare/bin/sub-tool)" "fancyss Zig / 订阅解析器"
