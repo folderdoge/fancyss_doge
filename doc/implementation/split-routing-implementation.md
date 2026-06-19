@@ -695,6 +695,18 @@ migrate_split_routing_v3() {
 - **行为**：单条 Rule 1（geosite:cn 域名 + geoip:cn IP，direct）+ default_action=proxy_main → 国内直连 / 其余走代理；domain 与 ip 仍各自独立成条（D27/D29 不回归）。移除的额外规则里 `广告统计屏蔽`(reject) 不再拦广告（改随默认走代理），其余 direct/proxy 多为冗余或细化。
 - **真机验证（2026-06-17，51.1 整包安装 beta.10）**：安装日志 `#2=大陆白名单(1规则)`、`split_xray_warn` 空、xray -test OK；dbus Mode 2 `rule_count=1`/`rule_1_rid=1`/`action=direct`、Rule 1 改名 `大陆白名单_场景`、marker=1、库仍 9 条；xray.json mode_2 路由 = `domain:[geosite:cn]→out_direct` + `ip:[geoip:cn]→out_direct` + 兜底 `→out_main`，无 out_reject（额外规则确已移除）。3 审查 agent 一致 SHIP-READY。
 
+#### D33: 对外服务/端口转发「连入」被代理（RDP/NAS/游戏服务器从外网连入失效）——回归修复（doge.14-beta.14）
+
+2026-06-19 客户报告：开启代理后，外网经端口转发连入局域网设备的连接失效（RDP 连不上）；doge.13-beta.2 无此问题。
+
+- **根因**：分流路径（doge.14 唯一路径）TCP/UDP 都靠 mangle `SHADOWSOCKS` 链逐包 TPROXY，链尾 catch-all（`-A SHADOWSOCKS -p tcp/udp -j TPROXY`）只看协议+目标、**无连接方向感知**。`SHADOWSOCKS` 挂在 `-A PREROUTING -i br0`，故局域网内被端口转发对外提供服务的设备**回复外网客户端**时（src=LAN server，dst=外网 client）方向也是「LAN→外网」、目标非保留段（不在 `ignlist_minimal`）→ 落到 catch-all → 被 TPROXY 抓进 xray → 回程发不出去 → 连入端三次握手 SYN-ACK 收不到 → 超时。老 fancyss 路径 TCP 走 nat `REDIRECT`，NAT 天生只对 conntrack **NEW + ORIGINAL** 方向改写、不碰回程（ESTABLISHED reply 由 conntrack 直接放行），故 doge.13 及更早无此问题；doge.14 物理删除老路径、TPROXY 成唯一路径后暴露 = **回归**。
+- **TCP 与 UDP 同源**：UDP 在 udp_proxy=1（doge.14-beta.6 起内置 Mode 默认开，见 D28）时同样有 catch-all UDP TPROXY，回程同样被抓 → 入站 UDP 服务（WireGuard / 联机游戏服务器等）一样失效。
+- **修复**（[ssconfig.sh](../../fancyss/ss/ssconfig.sh) `load_iptables_split`，DNS RETURN 之后、socket-DIVERT 之前）：`append_if_not_exists mangle -A SHADOWSOCKS -m conntrack --ctdir REPLY -j RETURN`。凡 conntrack **REPLY 方向**的包（= 连接由对端先发起、本机只是回程）一律 RETURN、不进 TPROXY。**不限 -p**：一条规则同治 TCP/UDP。正常上网 = LAN 设备主动发起 = ORIGINAL 方向，不被命中，仍正常 TPROXY 走代理；放在所有 TPROXY / block_quic DROP 之前（顺序敏感）。
+- **为何这条够用**：br0 PREROUTING 上「该走代理」的流量恒为 LAN 主动发起（ORIGINAL）；任何在 br0 上出现的 REPLY 方向包都意味着连接由 WAN 侧发起（端口转发 / 对外服务），绝不应代理。LAN→LAN（dst 私网）本就被 `ignlist_minimal` RETURN，与本条无关。
+- **IPv6 不受影响**：`_start_ipv6_iptables` 的 IPv6 TCP 仍走 nat `REDIRECT`（不碰回程）；IPv6 入站 UDP 是另一条少见旧路径，未纳入本次修复（如需可同法加固）。
+- **真机验证（2026-06-19，51.1 = TUF-AX3000 armv7l）**：因 `ignlist_minimal` 含 `192.168.0.0/16`、实验室客户端都是内网会被豁免掩盖 bug，故在路由器侧用 SNAT 把测试客户端来源改写成 TEST-NET-3 `203.0.113.50`（非保留段）忠实模拟公网连入。结果：**TCP** 修复前 connect 超时 6s / 加守卫后秒回 banner / 部署源码 + 整机 restart 后 3/3 成功；**UDP** 三段开关（有守卫成功 → 删守卫失败 → 复原成功）逐一坐实。**回归**：LAN 客户端访问海外站仍走代理节点（ipinfo.io 出口 GB `3.9.92.164`）、Google generate_204=204、百度 200 直连。
+- **CLAUDE.md 硬规则 #28**。
+
 ### 6.4 实施期约定的回溯修订
 
 **alpha 阶段（doge.12.alpha-1 → alpha.18）**：
