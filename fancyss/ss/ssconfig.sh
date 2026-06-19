@@ -6080,6 +6080,16 @@ load_iptables_split() {
 		append_if_not_exists mangle -A SHADOWSOCKS -p udp --dport 53 -j RETURN
 		append_if_not_exists mangle -A SHADOWSOCKS -p tcp --dport 53 -j RETURN
 	fi
+	# FORK doge.14-beta.14 FIX（端口转发/对外服务"连入"被代理 → RDP/NAS/游戏服务器连入失效）：
+	# 外部主动连入、本机只是回程回复的包（conntrack REPLY 方向）一律 RETURN，绝不进 TPROXY。
+	# 根因：split 路径 TCP/UDP 都走 mangle 逐包 TPROXY，结尾 catch-all 规则只看协议+目标、无
+	# 连接方向感知 → 局域网里被端口转发对外提供服务的设备（RDP 3389 等）回复外部客户端时方向
+	# 也是 LAN→外网，被无差别抓进 xray → 回程发不出去 → 连入端超时/断开。老 fancyss 路径 TCP
+	# 走 NAT REDIRECT，NAT 天生只对 NEW+ORIGINAL 方向动手、不碰回程，故 doge.13 及更早无此问题；
+	# doge.14 物理删除老路径后暴露 = 回归。不限 -p：TCP/UDP 同治（UDP 同样有 bug，udp_proxy=1
+	# 时 catch-all UDP TPROXY 一样抓回程）。正常上网 = LAN 设备主动发起 = ORIGINAL 方向，不被本
+	# 条命中，仍正常走 TPROXY 代理；只放行 REPLY 方向。必须排在所有 TPROXY / block_quic DROP 之前。
+	append_if_not_exists mangle -A SHADOWSOCKS -m conntrack --ctdir REPLY -j RETURN
 	append_if_not_exists mangle -A SHADOWSOCKS -p tcp -m socket -j SHADOWSOCKS_DIVERT
 	# doge.14-beta.7 FIX（WebRTC STUN 701 / UDP 游戏进不去根因）：UDP 不装 socket-match DIVERT。
 	# 实测（51.1 测试机 xray 26.3.27 debug log 实证）：装这条后 xray 的 UDP listener 只收到每条
