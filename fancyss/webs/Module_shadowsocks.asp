@@ -7143,7 +7143,7 @@ function split_v2_edit_mode(m) {
 		builtin: db_ss['ss_split_mode_' + m + '_builtin'] || '0',
 		udp_proxy: db_ss['ss_split_mode_' + m + '_udp_proxy'] || '0',
 		block_quic: db_ss['ss_split_mode_' + m + '_block_quic'] || '0',
-		apply_blackwhite: db_ss['ss_split_mode_' + m + '_apply_blackwhite'] || '0',
+		apply_blackwhite: db_ss['ss_split_mode_' + m + '_apply_blackwhite'] || '1',
 		dns_mode: db_ss['ss_split_mode_' + m + '_dns_mode'] || 'split',
 		default_action: db_ss['ss_split_mode_' + m + '_default_action'] || 'direct',
 		rules: rules

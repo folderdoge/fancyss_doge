@@ -707,6 +707,20 @@ migrate_split_routing_v3() {
 - **真机验证（2026-06-19，51.1 = TUF-AX3000 armv7l）**：因 `ignlist_minimal` 含 `192.168.0.0/16`、实验室客户端都是内网会被豁免掩盖 bug，故在路由器侧用 SNAT 把测试客户端来源改写成 TEST-NET-3 `203.0.113.50`（非保留段）忠实模拟公网连入。结果：**TCP** 修复前 connect 超时 6s / 加守卫后秒回 banner / 部署源码 + 整机 restart 后 3/3 成功；**UDP** 三段开关（有守卫成功 → 删守卫失败 → 复原成功）逐一坐实。**回归**：LAN 客户端访问海外站仍走代理节点（ipinfo.io 出口 GB `3.9.92.164`）、Google generate_204=204、百度 200 直连。
 - **CLAUDE.md 硬规则 #28**。
 
+#### D34: 黑白名单 IP/CIDR + 梅林软件中心开关失效（迁 xray emit）+ 全局变量二次解码乱码（doge.14.x 修复）
+
+2026-06-19 客户报告「直连梅林软件中心生态域名」开关失效（开/关无区别）。全仓库根因排查的波及面与修复：
+
+- **域名白/黑名单**：`generate_xray_json_split` §4.4 #2 早已 emit（doge.12 alpha 起），受 `apply_blackwhite` 控制、排在 Mode 自身规则前（最先触发）。**本就正常**，不动（曾一度误判为"整页失效"，真机只实锤了 ipset 那条死路，未先读 generate 全路径 → 教训：报告波及面前先读全部消费路径）。
+- **IP 白/黑名单**（`ss_wan_white_ip`/`ss_wan_black_ip`）：从未在 generate 里 emit，只靠 `add_white_black` 的 `ipset add white_list/black_list`；doge.14 `creat_ipset_split` 只建 `ignlist_minimal`、不建 white_list/black_list ipset → 运行时 ipset 不存在 → **IP 黑白名单完全失效**。
+- **梅林开关**（`ss_basic_direct_asusgo`，doge.9）：4 域名只硬编码写 `/tmp/white_list.txt`；doge.14 该文件全仓库**只写不读**（chinadns split conf 只读 chnlist.gz/gfwlist.gz，无 white group）→ **开关失效**。
+- **修复**（`generate_xray_json_split` §4.4 #2）：黑白名单段从「仅域名」扩成 4 条独立 emit——白名单域名（**含梅林开关注入的 4 域名**）→ out_direct / 白名单 IP → out_direct / 黑名单域名 → default_action / 黑名单 IP → default_action。domain 与 ip **各自独立成 rule**（D27/D29）。`apply_blackwhite` 判断改 `${apply_bw:-1}`（空默认开，与 asp 兜底 `|| '1'` 对齐）。
+- **D34 坑：IP 段不能用全局 `${ss_wan_white_ip}`/`${ss_wan_black_ip}`**。`add_white_black`（apply_ss 里在 generate 之前调用）**就地把这俩全局变量解码成明文**（ssconfig.sh:2437/2404，无 `local`）。IP 段若再 `fss_b64_decode` → 对明文二次解码 → 乱码 IP（`invalid IP: …`）→ xray -test 失败 → 分流回退基线（`fss_split_xray_warn=xray_test_failed`，LAN 分流全废）。域名段无此问题（white_domain 用 `local`、black_domain 只 pipe，全局未污染）。**修法**：IP 段从 dbus 重读原始 base64（`local _wip_b64=$(dbus get ss_wan_white_ip)`）再解码，使 generate 自包含、不依赖另一函数副作用。
+- **梅林开关 UI/语义**：留在「黑白名单」页最上面（不搬家），作为白名单**内置预设项**——跟着 `apply_blackwhite` 走（默认所有 Mode 开 → 默认全模式全设备生效）。hint 202 文案 + asp 编辑弹窗 `apply_blackwhite` 兜底 `|| '1'` 同步更新。
+- **真机验证（2026-06-19，51.1）**：restart 后 warn 空（test 通过不回退）、xray.json 10368B（回退基线仅 1115B）、3 Mode 各含 koolcenter + 白名单 IP 66.92.50.164 + 黑名单 IP 160.79.104.1。**开关 on/off 对比坐实**：`=0` → koolcenter 出现 0 次；`=1` → 3 次。
+- **残留**：`add_white_black` 写 `/tmp/white_list.txt` + `ipset add white_list/black_list` 整段 doge.14 已是死代码（无消费者），本次未清（梅林已迁 xray，留着冗余无害），另开任务清理。
+- **CLAUDE.md 硬规则 #29**。
+
 ### 6.4 实施期约定的回溯修订
 
 **alpha 阶段（doge.12.alpha-1 → alpha.18）**：

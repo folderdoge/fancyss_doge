@@ -1034,7 +1034,7 @@ function openssHint(itemNum, flag) {
 		_caption = "前置节点 (链式代理)";
 	} else if (itemNum == 202) {
 		width = "560px";
-		statusmenu = "<b>开启后，以下域名会被强制加入白名单（不走代理），与当前主模式（GFW / 智能 / 全局 / 回国等）无关：</b><br /><br />";
+		statusmenu = "<b>开启后，以下域名会作为白名单内置项强制直连（不走代理），对所有勾选了「受全局黑白名单影响」的分流模式生效（默认全部勾选）：</b><br /><br />";
 		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• <font color='#669900'>koolcenter.com</font> &nbsp;&nbsp;（梅林软件中心主域）<br />";
 		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• <font color='#669900'>ddnsto.com</font> &nbsp;&nbsp;（花生壳 DDNS / Rogsoft 镜像分发）<br />";
 		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• <font color='#669900'>koolddns.com</font> &nbsp;&nbsp;（同 ddnsto，备用）<br />";
@@ -1042,7 +1042,7 @@ function openssHint(itemNum, flag) {
 		statusmenu += "<b><font color='#CC0066'>用途：</font></b>解决 AsusGo / 梅林软件中心 / 若快插件中心等内网工具在链式代理或低速代理下访问 30 秒超时卡死的问题。<br /><br />";
 		statusmenu += "<b><font color='#CC0066'>何时关闭：</font></b>你身处海外希望这些域名也走代理时；或希望完全由下方文本框自定义白名单时。<br /><br />";
 		statusmenu += "<b>关闭后</b>这 4 个域名仍可通过下方「域名白名单」手动添加。<br /><br />";
-		statusmenu += "<font color='#888888'>技术细节：本开关控制 fancyss 在 /tmp/white_list.txt 的硬编码追加（ssconfig.sh:3310）。已验证 4 个域名都不在 chnlist / gfwlist，white_list 规则真正生效。详见 fork 文档 asusgo-whitelist-toggle.md。</font>";
+		statusmenu += "<font color='#888888'>技术细节：开启后这 4 个域名作为白名单域名注入 xray 分流路由（generate_xray_json_split §4.4 #2），按域名精确匹配走直连出口，排在各分流模式自身规则之前优先命中。受 Mode 的「受全局黑白名单影响」开关控制。</font>";
 		_caption = "直连「梅林软件中心」生态域名";
 	} else if (itemNum == 203) {
 		width = "560px";

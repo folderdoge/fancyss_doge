@@ -4108,10 +4108,17 @@ EOF
 		}')"
 
 		# §4.4 #2: 黑白名单（仅 apply_blackwhite=1）
-		if [ "${apply_bw}" = "1" ]; then
-			# 2a. 白名单 → out_direct
-			if [ -n "${ss_wan_white_domain}" ]; then
-				local wdoms=$(fss_b64_decode "${ss_wan_white_domain}" 2>/dev/null | awk '/^[[:space:]]*#/{next}{gsub(/[[:space:]]+/,""); if($0)print "domain:"$0}' | jq -R . | jq -s .)
+		#   白名单(域名/IP)->直连；黑名单(域名/IP)->该 Mode 默认动作(代理)。白名单优先(排在前)。
+		#   白名单域名含 fork「梅林软件中心生态」开关 ss_basic_direct_asusgo 注入的内置域名。
+		#   domain 与 ip 各自独立成 rule（D27/D29：同 rule 内 domain+ip 是 AND，UDP 无嗅探域名会整条漏）。
+		if [ "${apply_bw:-1}" = "1" ]; then
+			# 2a. 白名单域名 -> out_direct（含梅林生态内置域名）
+			local _white_src=$(fss_b64_decode "${ss_wan_white_domain}" 2>/dev/null)
+			if [ "${ss_basic_direct_asusgo:-1}" = "1" ]; then
+				_white_src=$(printf '%s\nkoolcenter.com\nddnsto.com\nkoolddns.com\nngrok.wang\n' "${_white_src}")
+			fi
+			if [ -n "${_white_src}" ]; then
+				local wdoms=$(printf '%s\n' "${_white_src}" | awk '/^[[:space:]]*#/{next}{gsub(/[[:space:]]+/,""); if($0)print "domain:"$0}' | jq -R . | jq -s .)
 				[ -z "${wdoms}" ] && wdoms="[]"
 				if [ "${wdoms}" != "[]" ]; then
 					__split_emit_rule "$(jq -n --arg tag "mode_${mid}" --argjson d "${wdoms}" '{
@@ -4119,13 +4126,38 @@ EOF
 					}')"
 				fi
 			fi
-			# 2b. 黑名单 → default_action tag
+			# 2b. 白名单 IP/CIDR -> out_direct（独立 ip rule）
+			# add_white_black（generate 前调用）已把全局 ss_wan_white_ip 就地解码成明文，
+			# 故从 dbus 重读原始 base64 再解码，避免对明文二次 decode 出乱码（D34）。
+			local _wip_b64=$(dbus get ss_wan_white_ip 2>/dev/null)
+			if [ -n "${_wip_b64}" ]; then
+				local wips=$(fss_b64_decode "${_wip_b64}" 2>/dev/null | awk '/^[[:space:]]*#/{next}{gsub(/[[:space:]]+/,""); if($0)print $0}' | jq -R . | jq -s .)
+				[ -z "${wips}" ] && wips="[]"
+				if [ "${wips}" != "[]" ]; then
+					__split_emit_rule "$(jq -n --arg tag "mode_${mid}" --argjson d "${wips}" '{
+						type: "field", inboundTag: [$tag], ip: $d, outboundTag: "out_direct"
+					}')"
+				fi
+			fi
+			# 2c. 黑名单域名 -> default_action tag（dtag=out_direct 时跳过，避免黑名单反成直连）
 			if [ -n "${ss_wan_black_domain}" ] && [ "${dtag}" != "out_direct" ]; then
 				local bdoms=$(fss_b64_decode "${ss_wan_black_domain}" 2>/dev/null | awk '/^[[:space:]]*#/{next}{gsub(/[[:space:]]+/,""); if($0)print "domain:"$0}' | jq -R . | jq -s .)
 				[ -z "${bdoms}" ] && bdoms="[]"
 				if [ "${bdoms}" != "[]" ]; then
 					__split_emit_rule "$(jq -n --arg tag "mode_${mid}" --argjson d "${bdoms}" --arg ob "${dtag}" '{
 						type: "field", inboundTag: [$tag], domain: $d, outboundTag: $ob
+					}')"
+				fi
+			fi
+			# 2d. 黑名单 IP/CIDR -> default_action tag（独立 ip rule）
+			# 同 2b：ss_wan_black_ip 已被 add_white_black 就地解码成明文，从 dbus 重读原始 base64。
+			local _bip_b64=$(dbus get ss_wan_black_ip 2>/dev/null)
+			if [ -n "${_bip_b64}" ] && [ "${dtag}" != "out_direct" ]; then
+				local bips=$(fss_b64_decode "${_bip_b64}" 2>/dev/null | awk '/^[[:space:]]*#/{next}{gsub(/[[:space:]]+/,""); if($0)print $0}' | jq -R . | jq -s .)
+				[ -z "${bips}" ] && bips="[]"
+				if [ "${bips}" != "[]" ]; then
+					__split_emit_rule "$(jq -n --arg tag "mode_${mid}" --argjson d "${bips}" --arg ob "${dtag}" '{
+						type: "field", inboundTag: [$tag], ip: $d, outboundTag: $ob
 					}')"
 				fi
 			fi
