@@ -721,6 +721,17 @@ migrate_split_routing_v3() {
 - **残留**：`add_white_black` 写 `/tmp/white_list.txt` + `ipset add white_list/black_list` 整段 doge.14 已是死代码（无消费者），本次未清（梅林已迁 xray，留着冗余无害），另开任务清理。
 - **CLAUDE.md 硬规则 #29**。
 
+#### D35: DNS 泄露——检测站探测域名 `whoami.akamai.net` 在 chnlist → split 走 china-dns 暴露国内解析器（doge.14-beta.16 修复）
+
+2026-06-20 客户报告：全局模式设备做 DNS 泄露测试仍「部分泄露，大多是检测 IP 的网站」。多轮真机排查（用户给测试路由器套国内 IP 复现）。
+
+- **根因**：检测 IP/DNS 泄露网站常用 `whoami.akamai.net`（akamai resolver-reveal 端点，A 记录 = 递归解析器的出口 IP）来「问」你的 DNS 是谁。该域名在 `chnlist.gz`（akamai/apple CDN 族 93 条）→ 大陆白名单(split)实例 65353 打 `tag=chn` → 走 `china-dns`(223.5.5.5/114) **直连**解析 → 检测站的权威 NS 看到一个国内解析器 = 用户看到的「泄露」。**只漏 akamai 这类探测**（cloudflare/google/dnscrypt/bash.ws 的探测域名都不在 chnlist → `tag=gfw` 走代理 → 不漏）= 用户说的「部分」。
+- **全局实例(65354)本就干净**（三证）：① verbose 日志逐条 `tag:gfw → forward to trust group → tcp://1.1.1.1`，连 `baidu.com`/`qq.com` 都走代理；② 实测 `whoami.akamai.net` 经 65354 → `172.69.x`(Cloudflare 海外)；③ 配置无 `china-dns`、无 chnlist、`default-tag gfw`。所以会漏的「全局设备」其 DNS 实际走到了 split 实例（见下「架构事实」）。
+- **修复**：`generate_chinadns_split_conf` 把 split conf 的 `gfwlist-file` 从单路径 `gfwlist.gz` 改为 `gfwlist.gz,/tmp/fss_dns_leak_probe.txt`，并 `printf '%s\n' 'whoami.akamai.net' 'akahelp.net' > /tmp/fss_dns_leak_probe.txt`。**本版 chinadns-ng(2026.01.29) 默认 gfwlist-first**（`-M/--chnlist-first` 未设）→ gfwlist 命中即 `tag=gfw` **覆盖 chnlist** → 强制走 `trust-dns`(经 socks5→xray→节点) → 检测站只看到海外解析器。`whoami.akamai.net` 精确匹配（不动 `akamai.net` 其它 CDN 子域）、`akahelp.net` suffix 匹配（akamai 另一诊断域族，纯诊断无内容）。**真实国内 CDN（baidu/apple 命中 chnlist）仍 `tag=chn` 走 china-dns，速度零影响。** ⚠️注意与旧版相反：CLAUDE #11「chnlist>gfwlist」是旧单实例/旧路径，本版 split 实例 **gfwlist-first**。
+- **架构事实（排查副产物）——「按设备分 DNS」与 DNS 重定向的绑定**：主 dnsmasq(端口 53)上游**写死** `server=127.0.0.1#65353`(split)。per-device DNS 路由靠 **DNS 重定向**（hijack：nat PREROUTING DNAT `-i br0 --dport 53`，此阶段源 MAC/IP 可见 → 按设备选 65353/65354）实现。三种组合：① 重定向**开** → DNAT 把设备查询送到其模式对应实例（全局设备→65354 干净）；② 重定向**关** + 设备 DNS=路由器 IP → 查询落到 dnsmasq（路由器自身 IP 在 `ignlist_minimal` 192.168/16 放行、不进 TPROXY）→ dnsmasq 转 65353(split) → **per-device 失效、全局设备也吃 split DNS → 漏 akamai**；③ 设备 DNS=外部解析器(8.8.8.8) → 目标外部 IP 经全局路由 TPROXY 整体代理 → 海外解析器、不漏（不需重定向、可与自定义 dnsmasq 共存）。**修复点统一在 65353，故重定向开/关两条路（per-device DNAT→65354 与 dnsmasq→65353）都覆盖**（dnsmasq 也转 65353）。结论：「按设备 DNS 分流必须开 DNS 重定向」；重定向关时只能靠设备自己指外部 DNS 来得到海外解析。
+- **真机验证（2026-06-20，51.1，套国内 IP / 英国节点 3.9.92.164）**：`whoami.akamai.net` 经 split 路径 `123.156.198.67`(联通) → 修后 `172.69.79.104`(Cloudflare)；经 dnsmasq(53) 同样 Cloudflare；`baidu.com` 两路仍国内 IP；`google.com` 两路都海外。
+- **CLAUDE.md 硬规则 #30**。
+
 ### 6.4 实施期约定的回溯修订
 
 **alpha 阶段（doge.12.alpha-1 → alpha.18）**：
