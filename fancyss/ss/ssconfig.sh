@@ -1698,8 +1698,10 @@ generate_chinadns_split_conf() {
 		trust-dns ${FDNS_LINE}
 
 		# 默认 chnlist 白名单 (默认 tag=gfw，命中 chnlist 改 tag=chn 走国内)
+		# gfwlist 多路径：内置 gfwlist.gz + DNS泄露探测域名例外表（gfwlist-first 默认优先于
+		# chnlist，故例外表里的诊断域名即便在 chnlist 也强制 tag=gfw 走可信上游，详见下方生成处）。
 		chnlist-file /koolshare/ss/rules/chnlist.gz
-		gfwlist-file /koolshare/ss/rules/gfwlist.gz
+		gfwlist-file /koolshare/ss/rules/gfwlist.gz,/tmp/fss_dns_leak_probe.txt
 		default-tag gfw
 
 		# LAN 域名 → dnsmasq fallback
@@ -1721,6 +1723,15 @@ generate_chinadns_split_conf() {
 		local ld=$(nvram get lan_domain 2>/dev/null)
 		[ -n "${ld}" ] && echo "${ld}"
 	} > /tmp/fss_split_lan_dnl.txt
+
+	# FORK doge.14.x: DNS 泄露探测域名例外表。部分"检测IP/DNS泄露"网站用 akamai 的
+	# whoami.akamai.net 这类纯诊断域名来"问"解析器是谁；该域名在 chnlist 里 → split 实例
+	# 默认走 china-dns 解析 → 检测网站显示国内解析器 = 用户看到的"泄露"。把这些纯诊断域名
+	# 放进 gfwlist（gfwlist-first 默认优先于 chnlist）→ 强制走可信上游（经代理）解析 →
+	# 不再暴露国内解析器。只影响诊断探测；真实国内 CDN（baidu/apple 等仍命中 chnlist 走
+	# china-dns）零影响（51.1 实测：whoami.akamai.net→Cloudflare、baidu→国内 IP）。
+	# akamai 的诊断域名族：whoami.akamai.net + *.akahelp.net（后者 suffix 匹配，纯诊断无内容）。
+	printf '%s\n' 'whoami.akamai.net' 'akahelp.net' > /tmp/fss_dns_leak_probe.txt
 
 	# 节点服务器域名直连解析（避免 trust-dns 鸡生蛋：trust-dns 走 xray socks5，
 	# 而 xray 起来需要先解析节点域名 → 死锁。沿用老 chinadns_ng.conf 的 group node 模式）
@@ -1813,6 +1824,15 @@ generate_chinadns_global_conf() {
 		group-upstream 127.0.0.1#${SS_SPLIT_DNS_LAN_PORT}
 
 	EOF
+
+	# FORK doge.14.x: 全局实例同样应用 IPv6 过滤（与分流实例对称，修复"全局模式设备 DNS 泄露"）。
+	# 全局模式下所有域名都是 gfw tag，drop_proxy=1 时 no-ipv6 tag:gfw 剥掉所有 AAAA →
+	# 全局模式设备只拿 IPv4 地址 → 走代理+劫持的 IPv4 DNS，不会拿到 IPv6 地址后绕过代理直连/查 IPv6 DNS。
+	# 历史 bug：分流实例 generate_chinadns_split_conf 有这段、全局实例漏了 → 默认大陆白名单(split)正常、
+	# 唯独全局模式设备泄露 IPv6（split conf 的 no-ipv6 只保护 split 实例 65353）。
+	if [ "${ss_basic_chng_ipv6_drop_proxy:-1}" = "1" ]; then
+		echo "no-ipv6 tag:gfw" >> "${conf}"
+	fi
 
 	cat >> "${conf}" <<-EOF
 		filter-qtype 64,65

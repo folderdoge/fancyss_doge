@@ -1,6 +1,6 @@
 #!/bin/sh
 
-# fancyss fork doge.12 — 内置 Rule (id 1~8) 源文件 seed helper
+# fancyss fork doge.12 — 内置 Rule (id 1~2) 源文件 seed helper
 #
 # 用途：把内置 Rule 的 rule_${rid}.txt 文件（chnlist / gfwlist / 公共DNS / adblock /
 # Telegram / 在线检测 / 查IP / Bing）重建到 /koolshare/ss/rules_user/ 下，并把
@@ -112,7 +112,7 @@ _seed_write_rule_meta(){
 }
 
 # ============================================================================
-# 主函数：重建内置 Rule 1~8 的源文件 + 同步 dbus 元数据
+# 主函数：重建内置 Rule 1~2 的源文件 + 同步 dbus 元数据
 # ============================================================================
 fancyss_split_seed_rule_files_v1(){
 	local rfile stat_line dn_count ip_count
@@ -120,7 +120,7 @@ fancyss_split_seed_rule_files_v1(){
 	mkdir -p /koolshare/ss/rules_user 2>/dev/null
 	chmod 755 /koolshare/ss/rules_user 2>/dev/null
 
-	echo_date "🔧 split-seed: 开始 reseed 内置 Rule 1~8 源文件..."
+	echo_date "🔧 split-seed: 开始 reseed 内置 Rule 1~2 源文件..."
 
 	# ---------- Rule 1: 大陆白名单_场景 = chnlist.gz 域名 + rules_ng2/ip/cn.txt ----------
 	echo_date "  reseed Rule 1: 大陆白名单_场景"
@@ -155,92 +155,7 @@ fancyss_split_seed_rule_files_v1(){
 	ip_count="${stat_line#* }"
 	_seed_write_rule_meta 2 "GFW列表_常用" "" 0 "${dn_count}" "${ip_count}"
 
-	# ---------- Rule 3: 中国公共DNS = 硬编码 10 IP（沿用 ssconfig.sh ip_lan_chndns） ----------
-	echo_date "  reseed Rule 3: 中国公共DNS"
-	_seed_write_rule_header 3 "中国公共DNS"
-	rfile="/koolshare/ss/rules_user/rule_3.txt"
-	{
-		echo "223.5.5.5"
-		echo "223.6.6.6"
-		echo "114.114.114.114"
-		echo "114.114.115.115"
-		echo "1.2.4.8"
-		echo "210.2.4.8"
-		echo "117.50.11.11"
-		echo "117.50.22.22"
-		echo "180.76.76.76"
-		echo "119.29.29.29"
-	} >> "${rfile}"
-	_seed_write_rule_meta 3 "中国公共DNS" "" 0 0 10
-
-	# ---------- Rule 4: 广告统计屏蔽 = adslist.gz（若存在） ----------
-	echo_date "  reseed Rule 4: 广告统计屏蔽"
-	_seed_write_rule_header 4 "广告统计屏蔽"
-	rfile="/koolshare/ss/rules_user/rule_4.txt"
-	if [ -f /koolshare/ss/rules/adslist.gz ]; then
-		zcat /koolshare/ss/rules/adslist.gz 2>/dev/null | grep -v '^[[:space:]]*$' | grep -v '^#' >> "${rfile}" || { echo_date "  ⚠️ Rule 4: zcat adslist.gz 失败"; }
-	else
-		echo_date "  ℹ️ Rule 4: adslist.gz 不存在，保留空规则文件"
-	fi
-	stat_line="$(_seed_count_rule_entries "${rfile}")"
-	dn_count="${stat_line% *}"
-	ip_count="${stat_line#* }"
-	_seed_write_rule_meta 4 "广告统计屏蔽" "" 0 "${dn_count}" "${ip_count}"
-
-	# ---------- Rule 5: Telegram 加速 = rules_ng2/site/telegram.txt + ip/telegram.txt ----------
-	echo_date "  reseed Rule 5: Telegram 加速"
-	_seed_write_rule_header 5 "Telegram 加速"
-	rfile="/koolshare/ss/rules_user/rule_5.txt"
-	if [ -f /koolshare/ss/rules_ng2/site/telegram.txt ]; then
-		cat /koolshare/ss/rules_ng2/site/telegram.txt 2>/dev/null | grep -v '^[[:space:]]*$' | grep -v '^#' >> "${rfile}" || { echo_date "  ⚠️ Rule 5: cat site/telegram.txt 失败"; }
-	fi
-	if [ -f /koolshare/ss/rules_ng2/ip/telegram.txt ]; then
-		cat /koolshare/ss/rules_ng2/ip/telegram.txt 2>/dev/null | grep -v '^[[:space:]]*$' | grep -v '^#' >> "${rfile}" || { echo_date "  ⚠️ Rule 5: cat ip/telegram.txt 失败"; }
-	fi
-	stat_line="$(_seed_count_rule_entries "${rfile}")"
-	dn_count="${stat_line% *}"
-	ip_count="${stat_line#* }"
-	_seed_write_rule_meta 5 "Telegram 加速" "" 0 "${dn_count}" "${ip_count}"
-
-	# ---------- Rule 6: 在线状态检测站 = 硬编码 5 项 ----------
-	echo_date "  reseed Rule 6: 在线状态检测站"
-	_seed_write_rule_header 6 "在线状态检测站"
-	rfile="/koolshare/ss/rules_user/rule_6.txt"
-	{
-		echo "worldtimeapi.org"
-		echo "ip.ddnsto.com"
-		echo "ip.clang.cn"
-		echo "whatismyip.akamai.com"
-		echo "api.myip.com"
-	} >> "${rfile}"
-	_seed_write_rule_meta 6 "在线状态检测站" "" 0 5 0
-
-	# ---------- Rule 7: 查IP常用站 = 9 项 ----------
-	# 沿用 rotlist.txt 中实际属于"查 IP"语义的条目（其余 github/google 等不属于查 IP 语义，未纳入）
-	echo_date "  reseed Rule 7: 查IP常用站"
-	_seed_write_rule_header 7 "查IP常用站"
-	rfile="/koolshare/ss/rules_user/rule_7.txt"
-	{
-		echo "api.skk.moe"
-		echo "icanhazip.com"
-		echo "ifconfig.me"
-		echo "ip-api.com"
-		echo "ip.sb"
-		echo "ip.skk.moe"
-		echo "ipecho.net"
-		echo "ipinfo.io"
-		echo "us.ip111.cn"
-	} >> "${rfile}"
-	_seed_write_rule_meta 7 "查IP常用站" "" 0 9 0
-
-	# ---------- Rule 8: Bing 加速 = 单行 bing.com ----------
-	echo_date "  reseed Rule 8: Bing 加速"
-	_seed_write_rule_header 8 "Bing 加速"
-	rfile="/koolshare/ss/rules_user/rule_8.txt"
-	echo "bing.com" >> "${rfile}"
-	_seed_write_rule_meta 8 "Bing 加速" "" 0 1 0
-
-	echo_date "✅ split-seed: 内置 Rule 1~8 源文件 reseed 完成"
+	echo_date "✅ split-seed: 内置 Rule 1~2 源文件 reseed 完成"
 	return 0
 }
 

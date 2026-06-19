@@ -6538,9 +6538,17 @@ function render_split_rule_list() {
 		_gmap[_g].push(r);
 	}
 	if (_ung.length) {
-		html += '<div class="split-card-stack">';
-		for (var _ui = 0; _ui < _ung.length; _ui++) { html += split_v2_render_rule_card(_ung[_ui]); }
+		var _ukey = '__fss_ungrouped__';
+		var _ucol = split_v2_rule_group_collapsed(_ukey);
+		html += '<div class="split-rule-group' + (_ucol ? ' collapsed' : '') + '" data-grp="' + split_v2_html_escape(_ukey) + '">';
+		html += '<div class="split-rule-group-head" onclick="split_v2_toggle_rule_group(this);">';
+		html += '<span class="split-rule-group-chev">▾</span>';
+		html += '<span class="split-rule-group-name">未分组</span>';
+		html += '<span class="split-rule-group-count">' + _ung.length + ' 条</span>';
 		html += '</div>';
+		html += '<div class="split-rule-group-body"><div class="split-card-stack">';
+		for (var _ui = 0; _ui < _ung.length; _ui++) { html += split_v2_render_rule_card(_ung[_ui]); }
+		html += '</div></div></div>';
 	}
 	for (var _gi = 0; _gi < _gord.length; _gi++) {
 		var _gname = _gord[_gi];
@@ -7786,6 +7794,8 @@ function save() {
 	  "ss_basic_chnroute_update",
 	  "ss_basic_chnlist_update",
 	  "ss_basic_dns_hijack",
+	  "ss_basic_chng_ipv6_drop_proxy",
+	  "ss_basic_chng_ipv6_drop_direc",
 	  "ss_basic_mcore",
 	  "ss_basic_shunt_hot_reload",
 	  "ss_basic_block_resov",
@@ -17032,6 +17042,8 @@ function render_dns_upstream_rows() {
 				{ title: '屏蔽 BlockList 域名解析', id:'ss_basic_block_resov', type:'checkbox', hint:'104', func:'u', value:false},
 				{ title: '替换 dnsmasq（实验特性）', id:'ss_basic_dns_serverx', type:'checkbox', hint:'105', func:'u', value:false},
 				{ title: 'DNS 重定向', id:'ss_basic_dns_hijack', type:'checkbox', hint:'106', value:true},
+				{ title: '屏蔽代理域名的 IPv6 解析', id:'ss_basic_chng_ipv6_drop_proxy', type:'checkbox', hint:'221', value:true},
+				{ title: '屏蔽直连域名的 IPv6 解析', id:'ss_basic_chng_ipv6_drop_direc', type:'checkbox', hint:'222', value:false},
 				{ title: '自定义 dnsmasq', rid: 'ss_dnsmasq_cus', id:'ss_dnsmasq', type:'textarea', hint:'34', rows:'12', ph:ph3},
 				]);
 			$('#table_dns_tools').forms([

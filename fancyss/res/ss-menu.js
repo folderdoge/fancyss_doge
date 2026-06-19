@@ -1177,6 +1177,20 @@ function openssHint(itemNum, flag) {
 		statusmenu += "<b><font color='#CC0066'>当前实现：</font></b>访问控制 UI 暂未改造，先通过 dbus_set 命令手动配 <code>ss_acl_split_mode_&lt;acl_node&gt;</code>。<br /><br />";
 		statusmenu += "<font color='#888888'>TODO(doge.14)：访问控制 UI 改造。</font>";
 		_caption = "per-MAC ACL";
+	} else if (itemNum == 221) {
+		width = "560px";
+		statusmenu = "<b>屏蔽代理域名的 IPv6 解析（AAAA）</b><br /><br />";
+		statusmenu += "开启后，需要走代理的域名（gfwlist、以及「全局模式」下的所有域名）只返回 IPv4 地址，<b>不返回 IPv6（AAAA）</b>。<br /><br />";
+		statusmenu += "<b><font color='#669900'>为什么需要：</font></b>未开启 IPv6 透明代理时，若 DNS 返回 IPv6 地址，设备会用 IPv6 <b>直连</b>目标（绕过代理）→ 暴露真实 IP、并可能造成 DNS 泄露。屏蔽后强制走 IPv4（经代理）。<br /><br />";
+		statusmenu += "<b><font color='#CC0066'>建议：</font></b>未开启 IPv6 代理时<b>保持开启</b>（默认开）。此项同时作用于分流实例与全局实例。";
+		_caption = "屏蔽代理域名 IPv6";
+	} else if (itemNum == 222) {
+		width = "560px";
+		statusmenu = "<b>屏蔽直连域名的 IPv6 解析（AAAA）</b><br /><br />";
+		statusmenu += "开启后，直连的域名（chnlist、国内）只返回 IPv4 地址，不返回 IPv6（AAAA）。<br /><br />";
+		statusmenu += "<b><font color='#669900'>用途：</font></b>某些场景不希望国内域名解析到 IPv6。一般无需开启。<br /><br />";
+		statusmenu += "<b><font color='#CC0066'>默认：</font></b>关闭。";
+		_caption = "屏蔽直连域名 IPv6";
 	}
 	return overlib(statusmenu, OFFSETX, 30, OFFSETY, 10, RIGHT, STICKY, WIDTH, 'width', CAPTION, _caption, CLOSETITLE, '');
 

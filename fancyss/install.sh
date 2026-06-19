@@ -574,7 +574,7 @@ migrate_split_routing_v1(){
 		# Rule 4/5 等小文件被吃掉时无法自动恢复。改为枚举 1~8。
 		# 详见 doc/implementation/split-routing-implementation.md §6 D7 同形漏修补丁
 		__need_reseed=0
-		for __r in 1 2 3 4 5 6 7 8; do
+		for __r in 1 2; do
 			[ ! -s "/koolshare/ss/rules_user/rule_${__r}.txt" ] && __need_reseed=1
 		done
 		unset __r
@@ -612,7 +612,7 @@ migrate_split_routing_v1(){
 		echo_date "❌ split-seed: helper 缺失，无法 seed 内置 Rule"
 	fi
 
-	dbus set ss_split_rule_count="8"
+	dbus set ss_split_rule_count="2"
 
 	# ---------- Step 1.5: 用 proxy_main sentinel（D12+D15 doge.13 兑现）----------
 	# 内置 Mode 的 default_action 与 telegram/gfwlist rule action 一律写 sentinel，
@@ -947,6 +947,113 @@ repair_builtin_mainland_single_rule_v1(){
 		logger -t "fancyss" "doge.14-beta.10 repair_builtin_mainland_single_rule_v1: 大陆白名单收敛为单条规则 大陆白名单_场景"
 		echo_date "✅ FORK doge.14-beta.10: 默认「大陆白名单」已精简为单条「大陆白名单_场景」规则（其余内置规则保留在规则库，默认不挂载）"
 	fi
+}
+
+# FORK doge.14.x: 内置规则库精简——只保留可更新的 Rule 1(大陆白名单_场景=chnlist+cn IP) 与
+# Rule 2(GFW列表_常用=gfwlist)，物理移除其余 6 条写死内置规则(id 3~8: 中国公共DNS/广告统计屏蔽/
+# Telegram/在线状态检测/查IP/Bing)。新装由 seed helper 只种 1~2 + migrate_v1 count=2；存量用户
+# 靠本一次性 repair 收敛(幂等 fss_split_purge_rules_3to8_v1=1)。
+# 规则按 ID 被 Mode 引用、按 slot 被消费方枚举(CLAUDE.md #13)；保留规则 ID 不变(只压缩 slot)，
+# 故 Mode 对保留规则的引用自动仍有效，只需清掉对被删 id(3~8)的悬空引用。
+# dbus list <prefix>_ 尾部下划线能区分 slot 1 与 10/11(CLAUDE.md #15 prefix 语义)，枚举安全。
+purge_builtin_rules_3to8_v1(){
+	[ "$(dbus get fss_split_purge_rules_3to8_v1)" = "1" ] && return 0
+	local rule_count s id builtin new_slot removed line key val suffix
+	rule_count="$(dbus get ss_split_rule_count)"
+	[ -z "${rule_count}" ] && rule_count=0
+	if [ "${rule_count}" -lt 1 ]; then
+		dbus set fss_split_purge_rules_3to8_v1="1"
+		return 0
+	fi
+
+	local tmp="/tmp/fss_rule_purge_$$.txt"
+	: > "${tmp}"
+	new_slot=0
+	removed=0
+	s=1
+	while [ "${s}" -le "${rule_count}" ]; do
+		id="$(dbus get ss_split_rule_${s}_id)"
+		builtin="$(dbus get ss_split_rule_${s}_builtin)"
+		if [ "${builtin}" = "1" ] && [ "${id}" -ge 3 ] 2>/dev/null && [ "${id}" -le 8 ] 2>/dev/null; then
+			rm -f "/koolshare/ss/rules_user/rule_${id}.txt" 2>/dev/null
+			rm -f "/koolshare/ss/rules_user/rule_${id}.txt.bak" 2>/dev/null
+			removed=$((removed + 1))
+		else
+			new_slot=$((new_slot + 1))
+			dbus list ss_split_rule_${s}_ 2>/dev/null | while read -r line; do
+				key="${line%%=*}"
+				val="${line#*=}"
+				suffix="${key#ss_split_rule_${s}_}"
+				echo "ss_split_rule_${new_slot}_${suffix}=${val}" >> "${tmp}"
+			done
+		fi
+		s=$((s + 1))
+	done
+
+	if [ "${removed}" -eq 0 ]; then
+		rm -f "${tmp}" 2>/dev/null
+		dbus set fss_split_purge_rules_3to8_v1="1"
+		return 0
+	fi
+
+	# 删除所有旧 rule slot 键(保留 ss_split_rule_count，由下面重置)
+	dbus list ss_split_rule_ 2>/dev/null | cut -d "=" -f 1 | while read -r key; do
+		case "${key}" in
+			ss_split_rule_count) ;;
+			*) dbus remove "${key}" ;;
+		esac
+	done
+
+	# 回放压缩后的连续 slot(用首个 = 切分，兼容值里含 = 的 URL)
+	while read -r line; do
+		key="${line%%=*}"
+		val="${line#*=}"
+		[ -n "${key}" ] && dbus set "${key}"="${val}"
+	done < "${tmp}"
+	rm -f "${tmp}" 2>/dev/null
+	dbus set ss_split_rule_count="${new_slot}"
+
+	# 清理 Mode 对被删 id(3~8) 的悬空引用(按 id 引用；保留规则 id 不变故只清 3~8)
+	local mode_count m rc r rid action nseq mtmp removed_in_mode
+	mode_count="$(dbus get ss_split_mode_count)"
+	[ -z "${mode_count}" ] && mode_count=0
+	m=1
+	while [ "${m}" -le "${mode_count}" ]; do
+		rc="$(dbus get ss_split_mode_${m}_rule_count)"
+		[ -z "${rc}" ] && rc=0
+		mtmp="/tmp/fss_mode_purge_${m}_$$.txt"
+		: > "${mtmp}"
+		removed_in_mode=0
+		r=1
+		while [ "${r}" -le "${rc}" ]; do
+			rid="$(dbus get ss_split_mode_${m}_rule_${r}_rid)"
+			action="$(dbus get ss_split_mode_${m}_rule_${r}_action)"
+			if [ -n "${rid}" ] && [ "${rid}" -ge 3 ] 2>/dev/null && [ "${rid}" -le 8 ] 2>/dev/null; then
+				removed_in_mode=$((removed_in_mode + 1))
+			else
+				echo "${rid} ${action}" >> "${mtmp}"
+			fi
+			r=$((r + 1))
+		done
+		if [ "${removed_in_mode}" -gt 0 ]; then
+			dbus list ss_split_mode_${m}_rule_ 2>/dev/null | cut -d "=" -f 1 | while read -r key; do
+				[ -n "${key}" ] && dbus remove "${key}"
+			done
+			nseq=0
+			while read -r rid action; do
+				nseq=$((nseq + 1))
+				dbus set ss_split_mode_${m}_rule_${nseq}_rid="${rid}"
+				dbus set ss_split_mode_${m}_rule_${nseq}_action="${action}"
+			done < "${mtmp}"
+			dbus set ss_split_mode_${m}_rule_count="${nseq}"
+		fi
+		rm -f "${mtmp}" 2>/dev/null
+		m=$((m + 1))
+	done
+
+	dbus set fss_split_purge_rules_3to8_v1="1"
+	logger -t "fancyss" "doge.14.x purge_builtin_rules_3to8_v1: 移除 ${removed} 条写死内置规则(id3~8)，规则库精简为 ${new_slot} 条"
+	echo_date "✅ FORK: 内置规则库已精简——移除 ${removed} 条写死规则(中国公共DNS/广告/Telegram/在线检测/查IP/Bing)，仅保留可更新的 大陆白名单 + GFW列表"
 }
 
 # FORK doge.14: smartdns 物理移除 —— 一次性把 DNS 引擎锁定为 chinadns-ng 并清理 smartdns 遗留 dbus key。
@@ -2684,6 +2791,8 @@ install_now(){
 	migrate_split_geo_meta_v1
 	# FORK doge.14-beta.10: 默认「大陆白名单」精简为单条规则「大陆白名单_场景」——存量用户一次性收敛（幂等）
 	repair_builtin_mainland_single_rule_v1
+	# FORK doge.14.x: 内置规则库精简——移除写死内置 Rule 3~8，只留可更新的 大陆白名单 + GFW 列表(存量用户一次性，幂等)
+	purge_builtin_rules_3to8_v1
 	purge_smartdns_remnants
 	# FORK doge.12 alpha：分流 Rule 自动更新 cron（每 30 分钟扫一次；详见 doc/design/split-routing-architecture.md §10.3）。
 	# alpha 期内置 Rule 全部 update_hours=0，cron 跑等于 no-op；脚本里有守护跳过。
