@@ -7174,7 +7174,7 @@ function split_v2_open_mode_dialog(slot, data) {
 	html += '<tr><th>UDP 代理</th><td><label><input type="checkbox" id="mode_dlg_udp_proxy"' + (data.udp_proxy == '1' ? ' checked' : '') + disRun + '/> 启用 UDP 代理</label></td></tr>';
 	html += '<tr><th>屏蔽 QUIC</th><td><label><input type="checkbox" id="mode_dlg_block_quic"' + (data.block_quic == '1' ? ' checked' : '') + disRun + '/> 屏蔽 UDP/443，HTTP/3 回退 TCP</label></td></tr>';
 	html += '<tr><th>受全局黑白名单影响</th><td><label><input type="checkbox" id="mode_dlg_apply_blackwhite"' + (data.apply_blackwhite == '1' ? ' checked' : '') + disRun + '/> 应用 ss_wan_white_domain / ss_wan_black_domain</label></td></tr>';
-	html += '<tr><th>DNS 模式</th><td><select id="mode_dlg_dns_mode"' + disRun + '><option value="split"' + (data.dns_mode === 'split' ? ' selected' : '') + '>split (智能分流, chinadns-ng)</option><option value="global"' + (data.dns_mode === 'global' ? ' selected' : '') + '>global (单一海外 upstream)</option></select></td></tr>';
+	html += '<tr><th>DNS 模式</th><td><select id="mode_dlg_dns_mode"' + disRun + '><option value="split"' + (data.dns_mode === 'split' ? ' selected' : '') + '>split (智能分流, chinadns-ng)</option><option value="global"' + (data.dns_mode === 'global' ? ' selected' : '') + '>global (海外 upstream，所有域名经代理)</option></select></td></tr>';
 	html += '<tr><th>兜底动作 default_action</th><td>' + split_v2_build_action_html('mode_dlg_default_action', data.default_action, false) + '<div style="color:#888;font-size:11px;padding-top:2px;">不能是「屏蔽」(避免所有流量被屏蔽的死锁)</div></td></tr>';
 	html += '<tr><th>规则列表<br><span style="color:#888;font-size:11px;font-weight:normal;">按顺序逐条匹配<br>首条命中决定动作</span></th><td><div id="mode_dlg_rules_list"></div>' + (_modeDlgState.builtin ? '' : '<input type="button" class="ss_btn" style="margin-top:6px;cursor:pointer;" onclick="split_v2_mode_dlg_rule_add();" value="+ 添加规则" />') + '</td></tr>';
 	html += '</table>';
@@ -16783,8 +16783,8 @@ function toggleKeyMask(o, show){
 				<tbody>
 					<tr><th width="30%">国内 DNS upstream</th><td><textarea id="ss_split_dns_china_upstream" style="display:none;"></textarea><div id="rows_ss_split_dns_china_upstream" class="dns-up-rows"></div><a class="ss_btn dns-up-add" style="cursor:pointer;" onclick="add_dns_upstream_row('ss_split_dns_china_upstream','',true)">+ 添加</a></td></tr>
 					<tr><th>国外 / 可信 DNS upstream</th><td><textarea id="ss_split_dns_overseas_upstream" style="display:none;"></textarea><div id="rows_ss_split_dns_overseas_upstream" class="dns-up-rows"></div><a class="ss_btn dns-up-add" style="cursor:pointer;" onclick="add_dns_upstream_row('ss_split_dns_overseas_upstream','',true)">+ 添加</a></td></tr>
-					<tr><th>全局模式 DNS upstream（单一海外）</th><td><input type="hidden" id="ss_split_dns_global_upstream" /><div id="grow_ss_split_dns_global_upstream" class="dns-up-rows"></div></td></tr>
-					<tr><td colspan="2" style="font-size:11px;color:#9fb0c6;padding:6px 2px;line-height:1.6;">分流实例：国内域名走「国内 upstream」、国外域名走「国外 / 可信 upstream」（经代理）；全局实例：所有域名走「全局 upstream」（经代理）。每个 Mode 通过 dns_mode 字段选择走哪一轨。<br>⚠️ 国外 / 可信与全局模式 DNS 经代理，仅支持 TCP 与 DoT 加密（UDP 在代理下不可靠，已移除该选项；老配置自动按 TCP 处理）。国内 DNS 直连，支持 UDP / TCP / DoT。</td></tr>
+					<tr><th>全局模式 DNS upstream</th><td><textarea id="ss_split_dns_global_upstream" style="display:none;"></textarea><div id="rows_ss_split_dns_global_upstream" class="dns-up-rows"></div><a class="ss_btn dns-up-add" style="cursor:pointer;" onclick="add_dns_upstream_row('ss_split_dns_global_upstream','',true)">+ 添加</a></td></tr>
+					<tr><td colspan="2" style="font-size:11px;color:#9fb0c6;padding:6px 2px;line-height:1.6;">分流实例：国内域名走「国内 upstream」、国外域名走「国外 / 可信 upstream」（经代理）；全局实例：所有域名走「全局 upstream」（经代理）。每个 Mode 通过 dns_mode 字段选择走哪一轨。全局模式可配置多个上游（并发查询取最快），建议至少 2 个以防单个上游不可达。<br>⚠️ 国外 / 可信与全局模式 DNS 经代理，仅支持 TCP 与 DoT 加密（UDP 在代理下不可靠，已移除该选项；老配置自动按 TCP 处理）。国内 DNS 直连，支持 UDP / TCP / DoT。</td></tr>
 				</tbody>
 			</table>
 		</div>
@@ -16978,39 +16978,10 @@ function render_one_dns_upstream(key) {
   }
   if (added === 0) add_dns_upstream_row(key, "", false);
 }
-function sync_dns_global_upstream() {
-  var box = document.getElementById("grow_ss_split_dns_global_upstream");
-  var ta = document.getElementById("ss_split_dns_global_upstream");
-  if (!box || !ta) return;
-  var sel = box.getElementsByClassName("dns-up-proto")[0];
-  var inp = box.getElementsByClassName("dns-up-inp")[0];
-  if (!sel || !inp) return;
-  ta.value = dns_addr_is_valid(sel.value, inp.value) ? dns_join_proto(sel.value, inp.value) : "";
-}
-function render_dns_global_upstream() {
-  var ta = document.getElementById("ss_split_dns_global_upstream");
-  var box = document.getElementById("grow_ss_split_dns_global_upstream");
-  if (!ta || !box) return;
-  box.innerHTML = "";
-  var parsed = dns_split_proto((ta.value || "").split("\n")[0] || "");
-  if (parsed.proto === "udp") parsed.proto = "tcp";                    // 全局模式经代理：只 TCP/DoT，老 udp 值显示为 TCP
-  var row = document.createElement("div");
-  row.className = "dns-up-row";
-  var sel = dns_make_proto_select(parsed.proto, false);
-  var inp = document.createElement("input");
-  inp.type = "text"; inp.className = "dns-up-inp"; inp.value = parsed.addr;
-  inp.placeholder = DNS_ADDR_PH[parsed.proto] || "";
-  inp.oninput = function () { sync_dns_global_upstream(); };
-  sel.onchange = function () { inp.placeholder = DNS_ADDR_PH[sel.value] || ""; sync_dns_global_upstream(); };
-  var pick = dns_make_pick_select("trust");
-  dns_attach_pick(pick, sel, inp, sync_dns_global_upstream);
-  row.appendChild(sel); row.appendChild(inp); row.appendChild(pick);
-  box.appendChild(row);
-}
 function render_dns_upstream_rows() {
   render_one_dns_upstream("ss_split_dns_china_upstream");
   render_one_dns_upstream("ss_split_dns_overseas_upstream");
-  render_dns_global_upstream();
+  render_one_dns_upstream("ss_split_dns_global_upstream");
 }
 </script>
 			<table id="table_dns_legacy" style="display:none;">

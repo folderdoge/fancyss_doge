@@ -837,6 +837,30 @@ migrate_split_routing_v3() {
 
 **状态**：✅ 随 doge.14-beta.21 发版。CLAUDE.md #35。⚠️ 前端是 dnsmasq，受固件 `killall dnsmasq` 影响——任何新增 `restart_dnsmasq` 调用点后须确保 `start_dns_redirect_fronts` 被幂等重confirm。
 
+#### D42: 全局模式 DNS 单点上游不可达 → 整盘解析失败（"海外单一DNS全部无法解析"）——全局改多上游 + 自动备用（doge.14-beta.22）
+
+2026-06-21 用户报"装 beta.21 后分流 DNS 正常了，但全局模式（海外单一 DNS）配置全部无法解析"，截图为 `nslookup` 对 `8.8.8.8` 全部 **超时**（不是 SERVFAIL）。**与 D40/D41 不同根因**：D40/D41 是 chinadns 自身的监听/冷连接问题（影响所有实例）；本条是**全局实例的结构性脆弱**——全局模式把*所有*域名都发给那唯一一个海外上游、全程经代理，既无国内直连兜底、也无第二个上游做备用。
+
+**根因（结构性，非代码 bug 的触发 + 缺乏冗余）**：
+- 全局实例 `default-tag gfw` → 所有域名 → trust-dns（单一上游）→ socks5 经代理。分流实例则有两层冗余：国内域名走 china-dns **直连**（与代理无关）、国外域名走 trust 的**多个**上游（`8.8.8.8,1.1.1.1` 轮询取最快）。
+- 用户节点（出口）**连得上 `1.1.1.1`、连不上 `8.8.8.8`**（节点出口屏蔽 Google DNS 很常见）→ 分流国外靠 `1.1.1.1` 兜底仍正常（故"分流看起来好的"）；全局只有 `8.8.8.8` 一个、无备用 → 全部解析失败。
+- **为什么是"超时"不是"Server failed"**：设备 `nslookup` 默认 2s 放弃，chinadns 上游响应超时 5s，2s < 5s → 设备先超时（与 D41 的"秒回 SERVFAIL"症状正好相反，是另一类故障的判别特征）。
+
+**真机定位（armv7l 测试路由器）**：
+- 健康节点上 `8.8.8.8` / `1.1.1.1` / 两者 作全局上游均能解析 → **8.8.8.8 本身没问题**，问题是"用户节点到 8.8.8.8 的可达性"+"全局无备用"。
+- 把全局上游改成不可路由地址（`tcp://192.0.2.53`）模拟"节点连不上该上游"→ **完整复现**：全局对所有域名超时（google/youtube 3s 超时、命中缓存的 baidu 例外），分流照常 → 与用户症状一致。
+
+**修复（[ssconfig.sh](../../fancyss/ss/ssconfig.sh) + [Module_shadowsocks.asp](../../fancyss/webs/Module_shadowsocks.asp)）**：
+- ① 后端 `generate_chinadns_global_conf`：去掉 `head -1`，改 `__join_split_dns_lines` 支持**多上游**（与"国外/可信"对称，chinadns 同组并发取最快）；空默认从 `tcp://1.1.1.1` 升级为 `tcp://8.8.8.8,tcp://1.1.1.1`。
+- ② 后端安全网 `__ensure_global_dns_fallback()`：当全局只配 1 个上游时，自动追加一个**不同的**公共备用（`8.8.8.8`↔`1.1.1.1`，DoT/其它也兼容），保证全局始终 ≥2 个上游 → 单点不可达不再全盘失效。**存量用户升级即生效，无需迁移**（运行时补，不写回 dbus；用户在 UI 里仍看到自己填的那一个 + 可自行增删）。日志会提示已自动补备用。
+- ③ UI：全局上游从专属"单行输入"（`render_dns_global_upstream`/`sync_dns_global_upstream`，已删）改为复用"国内/国外"的通用多行渲染器 `render_one_dns_upstream('ss_split_dns_global_upstream')`，带"+添加"/删除/预设；协议只给 TCP/DoT（经代理）。`ss_split_dns_global_upstream` 早已在 `_base64` / `params_base64` 存取数组里，多行 base64 存取与"国外"完全一致。
+
+**链式代理（前置节点）验证（用户特别问到）**：经代理的 DNS 走的是 `out_main` 出站，而链式代理恰好把前置节点注入到 `out_main`（[ssconfig.sh](../../fancyss/ss/ssconfig.sh) `fss_chain_apply` 设 `.outbounds[0].streamSettings.sockopt.dialerProxy=proxy_front`）→ **DNS 与其它流量一样走完整条链**。D42 只改"用哪些上游"、不碰代理路径，对链式透明。测试路由器在链式开启（日本前置 433 → 英国落地 447）状态下实测：全局 DNS 经链路解析正常；把全局设为单一不可达上游后，**自动补的 `1.1.1.1` 备用仍经日本→英国链路解析成功**；LAN 设备出口=英国落地 IP（经日本前置），github 经链路解析+访问正常、国内直连。**链式下能否解析取决于"落地节点能否连上该上游"（前置只是隧道），与非链式同一条件，未引入新限制。**
+
+**验证（测试路由器全程真机）**：helper 单元测试 6 组输入均产出 ≥2 个不同上游；单一不可达上游 → 自动补备用后全局正常解析（直连节点 + 链式两种都过）；多行 UI 渲染/增删/保存 base64 round-trip 无 control char（不触发 skipd）；语法 `dash -n`/`sh -n` 通过；asp BOM+CRLF 保留。
+
+**状态**：✅ 随 doge.14-beta.22 发版。CLAUDE.md #36。
+
 ### 6.4 实施期约定的回溯修订
 
 **alpha 阶段（doge.12.alpha-1 → alpha.18）**：

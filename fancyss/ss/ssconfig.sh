@@ -1677,6 +1677,21 @@ __force_tcp_proxied_dns_lines() {
 	unset IFS
 }
 
+# FORK doge.14.x (D42): 全局模式至少保证 2 个海外上游。chinadns-ng 对同组多上游并发查询、
+# 取最快有效响应，任一上游可达即可解析。全局模式无国内直连兜底、所有域名都走这一组上游，
+# 若只配 1 个且该上游被墙/不可达 → 全局模式 DNS 全盘失效（根因见 split-routing-implementation.md D42）。
+# 这里在只有 1 个上游时自动补一个不同的公共备用，杜绝“单点上游挂了全局模式没 DNS”。
+__ensure_global_dns_fallback() {
+	local cur="$1"
+	case "${cur}" in
+		*,*) printf '%s' "${cur}"; return 0 ;;
+	esac
+	case "${cur}" in
+		*1.1.1.1*) printf '%s,tcp://8.8.8.8' "${cur}" ;;
+		*) printf '%s,tcp://1.1.1.1' "${cur}" ;;
+	esac
+}
+
 generate_chinadns_split_conf() {
 	local conf="/tmp/chinadns_ng_split.conf"
 	local CDNS_LINE=""
@@ -1840,10 +1855,16 @@ generate_chinadns_global_conf() {
 	[ -n "${_new_global_lines}" ] && [ "${_global_ok}" != "${_new_global_lines}" ] && echo_date "⚠️全局模式 DNS 含 chinadns-ng 不支持的上游（仅支持 TCP/DoT，经代理；UDP 会自动转 TCP，不支持 DoH），已自动忽略无效项。"
 	# 全局模式经代理：强制 TCP/DoT（同 split，UDP 自动转 TCP；详见 D40）
 	_global_ok=$(__force_tcp_proxied_dns_lines "${_global_ok}")
-	[ -n "${_global_ok}" ] && FDNS_LINE=$(echo "${_global_ok}" | head -1 | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+	# doge.14.x (D42): 全局模式支持多个海外上游（与「国外/可信」对称）。chinadns-ng 对同组多上游
+	# 并发查询取最快有效响应，任一可达即可解析；单个上游被墙/不可达不再让全局模式整盘 DNS 失效。
+	[ -n "${_global_ok}" ] && FDNS_LINE=$(__join_split_dns_lines "${_global_ok}")
 	if [ -z "${FDNS_LINE}" ]; then
-		FDNS_LINE="tcp://1.1.1.1"
-		echo_date "⚠️全局模式 DNS 没有可用上游，已临时使用默认：tcp://1.1.1.1（经代理仅支持 TCP/DoT；请到「DNS 设定」检查全局模式 DNS）"
+		FDNS_LINE="tcp://8.8.8.8,tcp://1.1.1.1"
+		echo_date "⚠️全局模式 DNS 没有可用上游，已临时使用默认组合：tcp://8.8.8.8 + tcp://1.1.1.1（经代理仅支持 TCP/DoT；请到「DNS 设定」检查全局模式 DNS）"
+	else
+		local _gfb_before="${FDNS_LINE}"
+		FDNS_LINE=$(__ensure_global_dns_fallback "${FDNS_LINE}")
+		[ "${FDNS_LINE}" != "${_gfb_before}" ] && echo_date "ℹ️全局模式只配置了 1 个海外 DNS 上游，已自动追加备用上游（最终：${FDNS_LINE}），避免该上游不可达时全局模式 DNS 全部失败。可到「DNS 设定」自行增删。"
 	fi
 
 	rm -f "${conf}" >/dev/null 2>&1
