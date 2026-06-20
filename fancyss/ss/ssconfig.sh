@@ -1664,7 +1664,7 @@ generate_chinadns_split_conf() {
 	local _china_ok=$(__filter_valid_split_dns_lines "${_new_china_lines}")
 	local _oversea_ok=$(__filter_valid_split_dns_lines "${_new_oversea_lines}")
 	[ -n "${_new_china_lines}" ] && [ "${_china_ok}" != "${_new_china_lines}" ] && echo_date "⚠️国内 DNS 含 chinadns-ng 不支持的上游（仅支持 普通UDP/TCP/DoT，不支持 DoH），已自动忽略无效项。"
-	[ -n "${_new_oversea_lines}" ] && [ "${_oversea_ok}" != "${_new_oversea_lines}" ] && echo_date "⚠️国外/可信 DNS 含 chinadns-ng 不支持的上游（仅支持 TCP/DoT），已自动忽略无效项。"
+	[ -n "${_new_oversea_lines}" ] && [ "${_oversea_ok}" != "${_new_oversea_lines}" ] && echo_date "⚠️国外/可信 DNS 含 chinadns-ng 不支持的上游（仅支持 普通UDP/TCP/DoT，不支持 DoH），已自动忽略无效项。"
 
 	[ -n "${_china_ok}" ] && CDNS_LINE=$(__join_split_dns_lines "${_china_ok}")
 	[ -n "${_oversea_ok}" ] && FDNS_LINE=$(__join_split_dns_lines "${_oversea_ok}")
@@ -1676,7 +1676,7 @@ generate_chinadns_split_conf() {
 	fi
 	if [ -z "${FDNS_LINE}" ]; then
 		FDNS_LINE="tcp://8.8.8.8,tcp://1.1.1.1"
-		echo_date "⚠️国外/可信 DNS 没有可用上游，已临时使用默认组合：tcp://8.8.8.8 + tcp://1.1.1.1（经代理需 TCP/DoT，故用 TCP；请到「DNS 设定」检查）"
+		echo_date "⚠️国外/可信 DNS 没有可用上游，已临时使用默认组合：tcp://8.8.8.8 + tcp://1.1.1.1（经代理默认用 TCP，也支持 UDP/DoT；请到「DNS 设定」检查）"
 	fi
 
 	rm -f "${conf}" >/dev/null 2>&1
@@ -1689,7 +1689,7 @@ generate_chinadns_split_conf() {
 		proxy-server socks5://127.0.0.1:23456
 		# 只让 gfw 一档走代理（split 路径下未定义 black/router 这俩 user group）
 		proxy-group gfw
-		proxy-protocol tcp,tls
+		proxy-protocol tcp,tls,udp
 
 		# 国内上游
 		china-dns ${CDNS_LINE}
@@ -1804,11 +1804,11 @@ generate_chinadns_global_conf() {
 	local _new_global_b64=$(dbus get ss_split_dns_global_upstream 2>/dev/null)
 	local _new_global_lines=$(__get_split_dns_lines "${_new_global_b64}")
 	local _global_ok=$(__filter_valid_split_dns_lines "${_new_global_lines}")
-	[ -n "${_new_global_lines}" ] && [ "${_global_ok}" != "${_new_global_lines}" ] && echo_date "⚠️全局模式 DNS 含 chinadns-ng 不支持的上游（仅支持 TCP/DoT），已自动忽略无效项。"
+	[ -n "${_new_global_lines}" ] && [ "${_global_ok}" != "${_new_global_lines}" ] && echo_date "⚠️全局模式 DNS 含 chinadns-ng 不支持的上游（仅支持 普通UDP/TCP/DoT，不支持 DoH），已自动忽略无效项。"
 	[ -n "${_global_ok}" ] && FDNS_LINE=$(echo "${_global_ok}" | head -1 | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
 	if [ -z "${FDNS_LINE}" ]; then
 		FDNS_LINE="tcp://1.1.1.1"
-		echo_date "⚠️全局模式 DNS 没有可用上游，已临时使用默认：tcp://1.1.1.1（经代理需 TCP/DoT，故用 TCP；请到「DNS 设定」检查全局模式 DNS）"
+		echo_date "⚠️全局模式 DNS 没有可用上游，已临时使用默认：tcp://1.1.1.1（经代理默认用 TCP，也支持 UDP/DoT；请到「DNS 设定」检查全局模式 DNS）"
 	fi
 
 	rm -f "${conf}" >/dev/null 2>&1
@@ -1822,7 +1822,7 @@ generate_chinadns_global_conf() {
 		# global 模式：所有未匹配域名 → tag=gfw → trust-dns（走代理）
 		# 不能写 proxy-group trust——chinadns-ng 里没有 trust 这个 tag/group
 		proxy-group gfw
-		proxy-protocol tcp,tls
+		proxy-protocol tcp,tls,udp
 
 		# 单一海外可信上游（通过代理走）
 		trust-dns ${FDNS_LINE}

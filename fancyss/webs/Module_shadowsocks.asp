@@ -16784,7 +16784,7 @@ function toggleKeyMask(o, show){
 					<tr><th width="30%">国内 DNS upstream</th><td><textarea id="ss_split_dns_china_upstream" style="display:none;"></textarea><div id="rows_ss_split_dns_china_upstream" class="dns-up-rows"></div><a class="ss_btn dns-up-add" style="cursor:pointer;" onclick="add_dns_upstream_row('ss_split_dns_china_upstream','',true)">+ 添加</a></td></tr>
 					<tr><th>国外 / 可信 DNS upstream</th><td><textarea id="ss_split_dns_overseas_upstream" style="display:none;"></textarea><div id="rows_ss_split_dns_overseas_upstream" class="dns-up-rows"></div><a class="ss_btn dns-up-add" style="cursor:pointer;" onclick="add_dns_upstream_row('ss_split_dns_overseas_upstream','',true)">+ 添加</a></td></tr>
 					<tr><th>全局模式 DNS upstream（单一海外）</th><td><input type="hidden" id="ss_split_dns_global_upstream" /><div id="grow_ss_split_dns_global_upstream" class="dns-up-rows"></div></td></tr>
-					<tr><td colspan="2" style="font-size:11px;color:#9fb0c6;padding:6px 2px;line-height:1.6;">分流实例：国内域名走「国内 upstream」、国外域名走「国外 / 可信 upstream」（经代理）；全局实例：所有域名走「全局 upstream」（经代理）。每个 Mode 通过 dns_mode 字段选择走哪一轨。</td></tr>
+					<tr><td colspan="2" style="font-size:11px;color:#9fb0c6;padding:6px 2px;line-height:1.6;">分流实例：国内域名走「国内 upstream」、国外域名走「国外 / 可信 upstream」（经代理）；全局实例：所有域名走「全局 upstream」（经代理）。每个 Mode 通过 dns_mode 字段选择走哪一轨。<br>⚠️ 国外 / 全局 DNS 选「普通 UDP」需代理节点支持 UDP 转发；节点若不支持 UDP，请改用 TCP 或 DoT，否则国外 / 全局域名会解析超时（国内 DNS 不受影响，始终直连）。</td></tr>
 				</tbody>
 			</table>
 		</div>
