@@ -35,6 +35,8 @@ remove_fancyss_cron(){
 	cru d fancyss_subscribe >/dev/null 2>&1
 	# FORK doge.12 alpha：分流 Rule 自动更新 cron
 	cru d fancyss_rules_update >/dev/null 2>&1
+	# FORK doge.14.x (D43): DNS 前端/卫星自愈 watchdog cron
+	cru d fancyss_dns_front_wd >/dev/null 2>&1
 	sed -i '/ssconfig\.sh/d;/ss_rule_update\.sh/d;/ss_node_subscribe\.sh/d;/ss_webtest\.sh/d;/fss_rules_update\.sh/d;/fancyss/d' /var/spool/cron/crontabs/* >/dev/null 2>&1
 }
 

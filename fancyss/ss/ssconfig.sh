@@ -2032,7 +2032,8 @@ __start_one_dns_front() {
 		return 0
 	fi
 	if [ -f "${pidf}" ]; then
-		kill -9 "$(cat "${pidf}" 2>/dev/null)" 2>/dev/null
+		local _op="$(cat "${pidf}" 2>/dev/null)"
+		[ -n "${_op}" ] && kill -9 "${_op}" 2>/dev/null
 		rm -f "${pidf}"
 	fi
 	dnsmasq --conf-file=/dev/null --port="${port}" \
@@ -2066,9 +2067,11 @@ start_dns_redirect_fronts() {
 }
 
 stop_dns_redirect_fronts() {
+	local _pf _op
 	for _pf in /tmp/fss_dns_front_split.pid /tmp/fss_dns_front_global.pid; do
 		if [ -f "${_pf}" ]; then
-			kill -9 "$(cat "${_pf}" 2>/dev/null)" 2>/dev/null
+			_op="$(cat "${_pf}" 2>/dev/null)"
+			[ -n "${_op}" ] && kill -9 "${_op}" 2>/dev/null
 			rm -f "${_pf}"
 		fi
 	done
@@ -4941,6 +4944,12 @@ write_cron_job() {
 	else
 		echo_date "❎️fancyss节点web落地延迟检测任务未启用！"
 	fi
+
+	# FORK doge.14.x (D43): DNS 重试前端 + 卫星 dnsmasq 自愈 watchdog（每分钟）。固件
+	# out-of-band restart_dnsmasq 的 killall dnsmasq 会杀掉这些非固件管理的独立实例、
+	# 不自愈；watchdog 周期重起。脚本按 enable/dns_hijack 自判，关掉即空退出。
+	sed -i '/fancyss_dns_front_wd/d' /var/spool/cron/crontabs/* >/dev/null 2>&1
+	cru a fancyss_dns_front_wd "*/1 * * * * /bin/sh /koolshare/scripts/fss_dns_front_watchdog.sh"
 }
 
 kill_cron_job() {
@@ -4955,6 +4964,10 @@ kill_cron_job() {
 	if [ -n "$(cru l | grep sslatencyjob)" ]; then
 		echo_date 删除SSR定时订阅任务...
 		sed -i '/sslatencyjob/d' /var/spool/cron/crontabs/* >/dev/null 2>&1
+	fi
+	if [ -n "$(cru l | grep fancyss_dns_front_wd)" ]; then
+		echo_date "删除 DNS 前端自愈 watchdog 任务..."
+		sed -i '/fancyss_dns_front_wd/d' /var/spool/cron/crontabs/* >/dev/null 2>&1
 	fi
 }
 #--------------------------------------nat part begin------------------------------------------------
@@ -7186,6 +7199,11 @@ disable_ss() {
 	flush_iptables
 	flush_ipset
 	kill_cron_job
+	# FORK doge.14.x (D43): 清理 DNS 重试前端 + 卫星 dnsmasq（fancyss 自起的独立 dnsmasq
+	# 实例，不在固件管理内）。kill_cron_job 已移除 watchdog cron，这里清残留进程/pidfile，
+	# 避免关插件后端口/pid 残留或被 watchdog 重起。
+	stop_dns_redirect_fronts
+	stop_dnsmasq_lan_listener
 	rm -rf /tmp/upload/fancyss_node_name.txt
 	dbus remove ss_basic_tri_reboot_time
 	dbus remove ss_basic_server_resolv
@@ -7510,6 +7528,13 @@ restart_chinadns_ng)
 	# doge.14: 分流架构唯一路径
 	stop_chinadns_ng_split
 	start_chinadns_ng_split
+	;;
+heal_dns_fronts)
+	# FORK doge.14.x (D43): DNS 前端/卫星自愈（watchdog 调用）。各 start 函数幂等
+	# （先 netstat 再 spawn），只补缺失的；不重启 chinadns、不碰主 dnsmasq、无递归。
+	echo_date "🩺 DNS 前端/卫星 watchdog：检测到缺失，幂等重起 dnsmasq_lan(65355)/重试前端(65356·65357)..."
+	start_dnsmasq_lan_listener
+	start_dns_redirect_fronts
 	;;
 refresh_node_direct_dns)
 	set_lock

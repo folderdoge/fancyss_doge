@@ -861,6 +861,25 @@ migrate_split_routing_v3() {
 
 **状态**：✅ 随 doge.14-beta.22 发版。CLAUDE.md #36。
 
+#### D43: DNS「重试前端」+ 卫星 dnsmasq 被固件 out-of-band `restart_dnsmasq` 杀掉后不自愈 —— 加 watchdog（doge.14-beta.23）
+
+**背景**：D41（beta.21）给 DNS 重定向加了两个「重试前端」dnsmasq（65356/65357），D37 有卫星 dnsmasq（65355）。这三个都是 fancyss 自起的**独立 dnsmasq 实例，不在固件管理内**。**问题**：固件 out-of-band 的 `service restart_dnsmasq`（DHCP/WAN 续约、固件「重启 dnsmasq」按钮等）会 `killall dnsmasq` 把它们一并杀掉，而固件只会把主 dnsmasq(53) 重新拉起 → 这三个不自愈、不到下次 apply_ss 不恢复。DNS 重定向开启时被 DNAT 到这些端口的设备 DNS 全断。老版本（直连 chinadns）免疫（chinadns 不是 dnsmasq、`killall dnsmasq` 不杀它）= **回归**。这是 beta.21 对抗 review 提的待办 #5。
+
+**真机复现（测试路由器 51.1）**：`service restart_dnsmasq` → 主 `:53` 重起、但 `65355/65356/65357` 全 0（被 killall 杀掉、不恢复）。
+
+**修复（watchdog cron + 幂等 heal action + 4 个 nit，[ssconfig.sh](../../fancyss/ss/ssconfig.sh) + [fss_dns_front_watchdog.sh](../../fancyss/scripts/fss_dns_front_watchdog.sh) + [uninstall.sh](../../fancyss/uninstall.sh)）**：
+- ① 新增 `fss_dns_front_watchdog.sh`：cron 每分钟，cheap `netstat` 检查（卫星 65355 插件运行即需要；前端 65356/65357 仅 DNS 重定向开启时需要），缺失即调 `ssconfig.sh heal_dns_fronts`。脚本顶部**显式 `export PATH`**——cron 的 PATH 不含 `/koolshare/bin`（dbus 在那），否则 `dbus`/`netstat` 找不到 → 判为「未启用」静默退出 → 永不自愈。
+- ② 新 ACTION `heal_dns_fronts`：`start_dnsmasq_lan_listener` + `start_dns_redirect_fronts`（都幂等：先 `netstat` 再 spawn、只补缺失的；**不重启 chinadns、不碰主 dnsmasq、无递归**）。
+- ③ cron 生命周期：`write_cron_job` 装 `fancyss_dns_front_wd`、`kill_cron_job` 删（disable_ss 调 `kill_cron_job` → 关插件即移除 watchdog，避免关后被它重起）、`uninstall.sh` 加 `cru d`。
+- ④ `disable_ss` 加 `stop_dns_redirect_fronts` + `stop_dnsmasq_lan_listener` 清残留进程/pidfile。
+- ⑤ review #5 nit：`__start_one_dns_front` / `stop_dns_redirect_fronts` 的 `kill -9 "$(cat pidf)"` 加**空 pid 守卫**（pidfile 空时不 `kill -9 ""`）；`stop_dns_redirect_fronts` 的 `_pf`/`_op` 加 `local`。
+
+**为什么用 cron 而非 `dnsmasq.postconf` hook**：postconf 有「迟到 killall」时序竞争（D37 踩过——killall 可能晚于 postconf 到达）+ 不能干净调 fancyss 的 spawn 函数（要么重复实现、要么 source ssconfig.sh 有递归风险）；cron watchdog **不管死因**（固件重启 / 裸 kill / 进程崩溃）都能在 ≤1min 恢复，简单可靠。1min 恢复窗口对间歇性固件事件可接受（远好于「到下次 apply_ss 才恢复 / 永不恢复」）。
+
+**真机验证（51.1 全程）**：① 直接 `heal_dns_fronts`：杀三实例→0、heal→3 ✓；② **真实 `service restart_dnsmasq` → 三实例全 0（复现）→ watchdog cron `02:39:00` 自动 heal → 全恢复 ✓**（启动日志留 `🩺 ... watchdog` 行）；③ 健康时 watchdog 为 cheap no-op（再跑不产生新 heal）✓；④ `dash -n` 通过。
+
+**状态**：✅ 随 doge.14-beta.23 发版。CLAUDE.md #37。
+
 ### 6.4 实施期约定的回溯修订
 
 **alpha 阶段（doge.12.alpha-1 → alpha.18）**：
