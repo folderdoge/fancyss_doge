@@ -813,6 +813,30 @@ migrate_split_routing_v3() {
 
 **状态**：✅ 已随 doge.14-beta.20 发版。CLAUDE.md #33（修正）+ #34（新）。
 
+#### D41: DNS 重定向"冷连接 SERVFAIL"（DNS_PROBE_FINISHED_BAD_CONFIG / ERR_NAME_NOT_RESOLVED）——加 dnsmasq 重试前端（doge.14-beta.21）
+
+2026-06-21 用户报"装 beta.20 后 DNS 还有意料外问题"：刚重启后任何网页都解析不到（`nslookup` 返回 `Server failed`=SERVFAIL）；节点起来后"电脑+手机一起断 30秒-1分钟 → 正常几秒 → 电脑正常、手机先拿不到 DNS 再等很久"；Chrome 报 `DNS_PROBE_FINISHED_BAD_CONFIG` / `ERR_NAME_NOT_RESOLVED`。**与 D40（TCP DNS bind-port）是不同的根因**：D40 是 chinadns 没监听 TCP，本条是 chinadns 解析路径本身的瞬时 SERVFAIL 被原样透给设备。
+
+**根因（chinadns-ng 设计 + 重定向架构错配，潜伏自 doge.14）**：chinadns-ng 源码（zfl9/chinadns-ng commit ab6c74f, `Upstream.zig::TCP.send_query`）对走代理的上游 TCP 连接，若连接尚未建立（冷启动 / 空闲关闭后），**不排队，直接回 SERVFAIL 让客户端重试**（注释原文 `let server reply SERVFAIL and rely on client retry`）；外加熔断（`--upstream-fail-threshold` 默认 3 次连续失败 → `--upstream-down-ms` 默认 10s 内全部秒回 SERVFAIL）。chinadns **设计上就坐在会重试的 dnsmasq 后面**。但 doge.14「DNS 重定向」把设备 53 端口 DNAT **直连 chinadns**（65353 分流 / 65354 全局），绕过了主 dnsmasq 的重试 → 设备拿到生 SERVFAIL。手机最重 = 休眠→上游连接空闲断开→醒来首查命中冷连接。"关 DNS 重定向就好" = 设备落回主 dnsmasq（自带重试 + 路由器自身流量一直保活 65353）。
+
+**真机实证（armv7l 测试路由器 + Ubuntu LAN 客户端 Python 裸 DNS）**：
+- 设备直连 chinadns（重定向路径）：冷缓存每轮 2 个 SERVFAIL（首个触发冷连接的查询秒回 SERVFAIL ~2ms，连接随即 ~270ms 建好、后续正常）。
+- 同样查询经主 dnsmasq（重定向关）：**0 SERVFAIL**（dnsmasq 重试吸收，失败域名 693ms 拿到答案）——印证 chinadns「靠客户端重试」+ 重定向绕过重试 = bug。
+- 启动后"30-60s 全断"= 节点未起时上游全失败 → 熔断连续触发 10s 锁定窗口叠加。
+
+**修复（方案：给重定向路径补上 chinadns 设计所依赖的"会重试的 dnsmasq"，全在 [ssconfig.sh](../../fancyss/ss/ssconfig.sh)）**：
+- ① 两个轻量 dnsmasq「重试前端」：`127.0.0.1:65356`→chinadns 65353（分流）、`127.0.0.1:65357`→chinadns 65354（全局）。`__start_one_dns_front` / `start_dns_redirect_fronts`（gate `ss_basic_dns_hijack=1`）/ `stop_dns_redirect_fronts`；端口常量 `SS_SPLIT_DNS_SPLIT_FRONT_PORT` / `SS_SPLIT_DNS_GLOBAL_FRONT_PORT`。
+- ② DNS 重定向 DNAT 目标由 chinadns 端口改前端端口：新增 `__dns_front_port()`（65353→65356 / 65354→65357），`load_iptables_split` 的 per-device `dns_port` 与 `default_dns_port` 都过它。
+- ③ 生命周期：`start_chinadns_ng_split` 末尾起前端；`stop_chinadns_ng_split` 停；`apply_ss` 末尾（所有 `restart_dnsmasq` 之后）幂等二次确认——因为固件异步 `service restart_dnsmasq` 的 `killall dnsmasq` 会连这俩前端一起杀（与卫星 dnsmasq 65355 同机制）。
+- ④ 放宽熔断（两 conf）：`upstream-fail-threshold 10` + `upstream-down-ms 1000`——让冷启动时设备的快速重试不再 3 次就触发 10s 锁定（这才是"等很久/持续失败"的真凶）。
+- ⑤ 前端 dnsmasq 关键 flag：`--conf-file=/dev/null`（**必须**——不给则读 `/etc/dnsmasq.conf` 的 `bind-dynamic` 与本前端 `--bind-interfaces` 冲突、起不来）、`--no-resolv --server=127.0.0.1#<chinadns> --no-negcache --cache-size=2000 --dns-forward-max=1500 --edns-packet-max=1232`（对齐主 dnsmasq 的 DNS 行为）。
+
+**为什么不做保活/不改 chinadns**：① 保活（周期查国外域名让连接不空闲）实测被 chinadns 缓存命中绕过、且空闲断开间隔 < 测试间隔，finicky 且加守护进程复杂度；② chinadns「首查 SERVFAIL」是硬编码、无配置可关。前端重试 + 熔断放宽已足够：真机 retry-sim（客户端遇 SF 重试，模拟真实浏览器/OS resolver）**最终 0 失败**=用户不再见 `ERR_NAME_NOT_RESOLVED`。
+
+**验证（测试路由器全程真机）**：前端 tcp+udp 都监听、重定向 DNAT 指向前端、chinadns 带熔断参数正常启动；冷 chinadns + 前端：raw 单发 0 SERVFAIL、retry-sim 0 失败；端到端路由不变（国外出口=英国节点、国内直连）。
+
+**状态**：✅ 随 doge.14-beta.21 发版。CLAUDE.md #35。⚠️ 前端是 dnsmasq，受固件 `killall dnsmasq` 影响——任何新增 `restart_dnsmasq` 调用点后须确保 `start_dns_redirect_fronts` 被幂等重confirm。
+
 ### 6.4 实施期约定的回溯修订
 
 **alpha 阶段（doge.12.alpha-1 → alpha.18）**：

@@ -49,6 +49,11 @@ SS_SPLIT_DNS_GLOBAL_PORT="65354"
 # dnsmasq 子实例 → 读 /etc/hosts 给出真实 LAN IP。
 # 启停 hook 见 start_dnsmasq_lan_listener / stop_dnsmasq_lan_listener。
 SS_SPLIT_DNS_LAN_PORT="65355"
+# FORK doge.14.x (D41): DNS 重定向"重试前端" dnsmasq 端口。chinadns-ng 冷连接/熔断时立即回
+# SERVFAIL（设计上靠前置 dnsmasq 重试）；重定向直连 chinadns 会绕过重试 → 设备拿到生 SERVFAIL。
+# 这两个轻量 dnsmasq 前端坐在 chinadns(65353/65354) 前面替它重试。详见 D41。
+SS_SPLIT_DNS_SPLIT_FRONT_PORT="65356"
+SS_SPLIT_DNS_GLOBAL_FRONT_PORT="65357"
 
 #-----------------------------------------------
 
@@ -1714,6 +1719,10 @@ generate_chinadns_split_conf() {
 		# 只让 gfw 一档走代理（split 路径下未定义 black/router 这俩 user group）
 		proxy-group gfw
 		proxy-protocol tcp,tls
+		# D41: 放宽熔断——上游瞬时失败(冷连接/节点重启)别轻易锁 10s，缩短锁定窗口，
+		# 配合"重试前端"进一步减少瞬时 SERVFAIL 暴露（boot 后恢复更快）。
+		upstream-fail-threshold 10
+		upstream-down-ms 1000
 
 		# 国内上游
 		china-dns ${CDNS_LINE}
@@ -1849,6 +1858,10 @@ generate_chinadns_global_conf() {
 		# 不能写 proxy-group trust——chinadns-ng 里没有 trust 这个 tag/group
 		proxy-group gfw
 		proxy-protocol tcp,tls
+		# D41: 放宽熔断——上游瞬时失败(冷连接/节点重启)别轻易锁 10s，缩短锁定窗口，
+		# 配合"重试前端"进一步减少瞬时 SERVFAIL 暴露（boot 后恢复更快）。
+		upstream-fail-threshold 10
+		upstream-down-ms 1000
 
 		# 单一海外可信上游（通过代理走）
 		trust-dns ${FDNS_LINE}
@@ -1988,6 +2001,58 @@ stop_dnsmasq_lan_listener() {
 	dbus set ss_split_dnsmasq_lan_status="down"
 }
 
+# FORK doge.14.x (D41): DNS 重定向"重试前端" dnsmasq。起两个轻量 dnsmasq：
+# 65356→chinadns 65353(分流)、65357→chinadns 65354(全局)。DNS 重定向把设备 DNS DNAT 到
+# 这两个端口，dnsmasq 重试转发到 chinadns，吸收 chinadns 冷连接/熔断时的瞬时 SERVFAIL
+# （chinadns-ng 设计上就坐在会重试的 dnsmasq 后面；直连会让设备拿到生 SERVFAIL）。详见 D41。
+__start_one_dns_front() {
+	local port="$1" up="$2" pidf="$3" name="$4"
+	if netstat -lnup 2>/dev/null | grep -q ":${port}\b"; then
+		return 0
+	fi
+	if [ -f "${pidf}" ]; then
+		kill -9 "$(cat "${pidf}" 2>/dev/null)" 2>/dev/null
+		rm -f "${pidf}"
+	fi
+	dnsmasq --conf-file=/dev/null --port="${port}" \
+		--listen-address=127.0.0.1 \
+		--bind-interfaces \
+		--no-resolv --no-poll --no-hosts --no-negcache \
+		--server=127.0.0.1#${up} \
+		--cache-size=2000 --dns-forward-max=1500 --edns-packet-max=1232 \
+		--pid-file="${pidf}" \
+		--user=nobody --group=nobody >/dev/null 2>&1 &
+	local _i=0
+	while [ ${_i} -lt 5 ]; do
+		netstat -lnup 2>/dev/null | grep -q ":${port}\b" && break
+		sleep 1
+		_i=$((_i + 1))
+	done
+	if netstat -lnup 2>/dev/null | grep -q ":${port}\b"; then
+		echo_date "DNS 重试前端 ${name}: 启动成功 (127.0.0.1:${port} → chinadns ${up})"
+		return 0
+	else
+		echo_date "DNS 重试前端 ${name}: 启动失败 (port=${port})"
+		return 1
+	fi
+}
+
+# 只在 DNS 重定向开启时需要（重定向才会把设备 DNAT 到前端）；关闭时设备走主 dnsmasq(自带重试)。
+start_dns_redirect_fronts() {
+	[ "${ss_basic_dns_hijack}" = "1" ] || return 0
+	__start_one_dns_front "${SS_SPLIT_DNS_SPLIT_FRONT_PORT}"  "${SS_SPLIT_DNS_SPLIT_PORT}"  /tmp/fss_dns_front_split.pid  "分流"
+	__start_one_dns_front "${SS_SPLIT_DNS_GLOBAL_FRONT_PORT}" "${SS_SPLIT_DNS_GLOBAL_PORT}" /tmp/fss_dns_front_global.pid "全局"
+}
+
+stop_dns_redirect_fronts() {
+	for _pf in /tmp/fss_dns_front_split.pid /tmp/fss_dns_front_global.pid; do
+		if [ -f "${_pf}" ]; then
+			kill -9 "$(cat "${_pf}" 2>/dev/null)" 2>/dev/null
+			rm -f "${_pf}"
+		fi
+	done
+}
+
 # 启动双轨 chinadns-ng 实例
 start_chinadns_ng_split() {
 	echo_date "---------------- start chinadns-ng (split架构 双轨) ----------------"
@@ -2037,6 +2102,8 @@ start_chinadns_ng_split() {
 			while IFS= read -r line; do echo_date "  ${line}"; done < /tmp/chinadns_global_err.log
 		fi
 	fi
+	# D41: 起 DNS 重定向"重试前端"（吸收 chinadns 冷连接/熔断瞬时 SERVFAIL）
+	start_dns_redirect_fronts
 	echo_date "------------------------------------------------------------------"
 }
 
@@ -2048,6 +2115,7 @@ stop_chinadns_ng_split() {
 	dbus set ss_split_dns_global_status="down"
 	# doge.13 beta D5: 停 chinadns 后顺手停 dnsmasq_lan 子实例（互锁启停语义）
 	stop_dnsmasq_lan_listener
+	stop_dns_redirect_fronts
 }
 
 is_domain(){
@@ -5802,6 +5870,14 @@ __split_mode_dns_port_by_id() {
 	return 1
 }
 
+# FORK doge.14.x (D41): chinadns 实例端口 → 对应"重试前端"dnsmasq 端口。
+__dns_front_port() {
+	case "$1" in
+		${SS_SPLIT_DNS_GLOBAL_PORT}) echo "${SS_SPLIT_DNS_GLOBAL_FRONT_PORT}" ;;
+		*) echo "${SS_SPLIT_DNS_SPLIT_FRONT_PORT}" ;;
+	esac
+}
+
 # alpha.16: 根据 mode_id 返回 block_quic（0/1），未设置默认 0
 # Mode 管理 UI 里"屏蔽 QUIC"复选框 → ss_split_mode_<m>_block_quic dbus key
 __split_mode_block_quic_by_id() {
@@ -5873,7 +5949,7 @@ load_iptables_split() {
 	local default_mid=$(dbus get ss_split_default_mode_id 2>/dev/null)
 	[ -z "${default_mid}" ] && default_mid=2
 	local default_port=$(__split_mode_port_by_id "${default_mid}")
-	local default_dns_port=$(__split_mode_dns_port_by_id "${default_mid}")
+	local default_dns_port=$(__dns_front_port "$(__split_mode_dns_port_by_id "${default_mid}")")
 
 	# 建立 ip rule / ip route（TPROXY 必须）
 	if [ -z "$(ip rule show table 310 2>/dev/null)" ]; then
@@ -6017,7 +6093,7 @@ load_iptables_split() {
 			[ "${user_mode}" = "0" ] && continue
 			local source_rule=$(get_acl_source_rule4 "${a}")
 			[ -z "${source_rule}" ] && continue
-			local dns_port=$(__split_mode_dns_port_by_id "${user_mode}")
+			local dns_port=$(__dns_front_port "$(__split_mode_dns_port_by_id "${user_mode}")")
 			append_if_not_exists nat -A SHADOWSOCKS_DNS_0 -i br0 -p udp --dport 53 ${source_rule} -j DNAT --to-destination 127.0.0.1:${dns_port}
 			append_if_not_exists nat -A SHADOWSOCKS_DNS_0 -i br0 -p tcp --dport 53 ${source_rule} -j DNAT --to-destination 127.0.0.1:${dns_port}
 		done
@@ -7174,6 +7250,7 @@ apply_ss() {
 	# service restart_dnsmasq 其 killall dnsmasq 可能晚一步把卫星误杀（chinadns group lan/
 	# custom 上游随之失效）。此处所有 dnsmasq 重启都已结束，幂等地确认/拉起卫星（活着即跳过）。
 	start_dnsmasq_lan_listener
+	start_dns_redirect_fronts
 	#restart_dnsmasq
 	auto_start
 	write_cron_job
@@ -7198,12 +7275,12 @@ apply_ss() {
 	fi
 	# FORK doge.14.x: DNS 链路诊断——卫星 dnsmasq(65355) + chinadns 双实例(65353/65354) 是否在 listen，
 	# 并做一次本地解析自检。客户报“启动正常但连不上”时，这段能一眼定位是 DNS 哪一层挂了。
-	local _dns_listen=$(netstat -lnup 2>/dev/null | grep -E "[: ](65353|65354|65355)\b")
+	local _dns_listen=$(netstat -lnup 2>/dev/null | grep -E "[: ](6535[3-7])\b")
 	if [ -n "${_dns_listen}" ]; then
 		echo_date "🔎 split 诊断: DNS 监听端口 ↓"
 		echo "${_dns_listen}" | while IFS= read -r _line; do echo_date "    ${_line}"; done
 	else
-		echo_date "⚠️ split 诊断: 未探测到 chinadns/卫星 dnsmasq 在 65353~65355 上 listen"
+		echo_date "⚠️ split 诊断: 未探测到 chinadns/卫星 dnsmasq 在 65353~65357 上 listen"
 	fi
 	echo_date "🔎 split 诊断: 卫星 dnsmasq 状态=$(dbus get ss_split_dnsmasq_lan_status 2>/dev/null || echo unknown)"
 	echo_date "🔎 split 诊断: 系统时钟=$(date 2>/dev/null) ntp_ready=$(nvram get ntp_ready 2>/dev/null)"
