@@ -775,6 +775,19 @@ migrate_split_routing_v3() {
 - **验证**（51.1 armv7l 整机重启，gold-standard）：启动日志 `⏰ 校时成功…2026`、出口检测 `86.53.160.85` 通过（修复前同场景死锁卡死）；DNS / 代理 / 自定义规则全恢复。代码纯 shell、与架构无关，hnd_v8(aarch64) 同适用。
 - **状态**：✅ 已随 doge.14-beta.18 发版（commit b4a41d2）。CLAUDE.md #32。
 
+#### D39: 国外/全局 DNS 支持 UDP 也经代理——`proxy-protocol tcp,tls` → `tcp,tls,udp`（doge.14-beta.19）
+
+2026-06-20 用户需求：国内 DNS 不论协议都直连、国外/全局 DNS 不论协议（含 UDP）都经代理。探索结论 = 可行且改动极小（核心 2 行）。
+
+- **现状根因**：两实例（split 65353 / global 65354）都用 `proxy-server socks5://127.0.0.1:23456` + `proxy-group gfw` + `proxy-protocol tcp,tls` 把可信上游（trust-dns，tag=gfw）经代理走。`proxy-protocol` 只列 tcp,tls → **UDP 上游不经代理、直接发出 → 直连泄露/被墙投毒**（用户在 DNS 设定页下拉能选「普通 UDP」却静默走直连，UI 与后端不一致）。
+- **国内 DNS 本就直连**：chinadns-ng 帮助文本 `proxy-server` = "socks5 proxy for trust upstream dns"——proxy 只作用于 trust/gfw 组，china-dns（tag=chn，不在 proxy-group）**永远直连、与 proxy-protocol 无关**。故"国内不论协议都直连"是结构性保证，无需改。
+- **可行性三前提（全满足，二进制实证）**：① chinadns-ng 2026.01.29 `--proxy-protocol <list>` 合法值 = `tcp,tls,udp`（帮助文本原文 "proxy only these upstream protos: tcp,tls,udp"）；② 二进制含 `socks5.request_udp_associate` / `build_udp_datagram` → 实现 SOCKS5 UDP ASSOCIATE；③ xray socks 入站(23456) 所有 `creat_*_json` 均 `"udp": true`，`generate_xray_json_split` 重写时保留该入站。
+- **修复**：两处 `proxy-protocol tcp,tls` → `tcp,tls,udp`（[ssconfig.sh:1692](../../fancyss/ss/ssconfig.sh#L1692) split + [:1825](../../fancyss/ss/ssconfig.sh#L1825) global）。`__filter_valid_split_dns_lines`（:1636）本就放行 `udp://` 与裸 IP（case `udp://*` 在 `*://*` 丢弃前命中），无需改。文案：「仅支持 TCP/DoT」→「仅支持 普通UDP/TCP/DoT，不支持 DoH」（:1667/:1807）；兜底提示「经代理需 TCP/DoT，故用 TCP」→「经代理默认用 TCP，也支持 UDP/DoT」（:1679/:1811，默认值仍保留 TCP）。
+- **新增 UI 提醒**（[Module_shadowsocks.asp:16787](../../fancyss/webs/Module_shadowsocks.asp#L16787)）：国外/全局 DNS 选「普通 UDP」**需节点支持 UDP 转发**，否则解析超时——split 模式 = 国外域名解析失败、国内正常；global 模式 = 全 DNS 失败近乎断网；chinadns 不会自动回退 TCP，需手改。
+- **风险**：纯增强，原 TCP/DoT 用户零影响（`tcp,tls ⊂ tcp,tls,udp`），顺带修了「选 UDP 静默直连泄露」。UDP 大响应理论上有分片顾虑，故默认仍 TCP。
+- **验证**：自审 `bash -n` + git diff 越界检查 + asp BOM/CRLF 字节核对（EF BB BF / CR==LF==17408）；独立 reviewer subagent 判 SHIP 零 BLOCKER（重点复核 `__filter_valid_split_dns_lines` 不丢 udp、conf 语法不 exit(1)）。**未真机测**（用户无"不支持 UDP 的节点"环境，改动小风险低，用户授权静态检查通过即发版）。
+- **状态**：✅ 已随 doge.14-beta.19 发版（commit 785e4ca）。CLAUDE.md #33。
+
 ### 6.4 实施期约定的回溯修订
 
 **alpha 阶段（doge.12.alpha-1 → alpha.18）**：
