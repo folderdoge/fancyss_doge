@@ -788,6 +788,31 @@ migrate_split_routing_v3() {
 - **验证**：自审 `bash -n` + git diff 越界检查 + asp BOM/CRLF 字节核对（EF BB BF / CR==LF==17408）；独立 reviewer subagent 判 SHIP 零 BLOCKER（重点复核 `__filter_valid_split_dns_lines` 不丢 udp、conf 语法不 exit(1)）。**未真机测**（用户无"不支持 UDP 的节点"环境，改动小风险低，用户授权静态检查通过即发版）。
 - **状态**：✅ 已随 doge.14-beta.19 发版（commit 785e4ca）。CLAUDE.md #33。
 
+#### D40: 修 TCP DNS 在重定向下失败（chinadns `bind-port @udp`）+ 国外/全局 DNS 改只支持 TCP/DoT（doge.14-beta.20）
+
+2026-06-21 用户报"开代理后经常 `ERR_NAME_NOT_RESOLVED`，所有设备都可能、手机概率高，关 DNS 重定向就好"。同会话先排查 D39 的 UDP 上游经代理为何不通，再揪出本 TCP DNS bug。两个独立根因，合并 beta.20 修复。
+
+**根因 1（D39 续）：UDP 上游经代理在 chinadns-ng + xray 组合下根本不通——是 chinadns 客户端 bug，非节点、非 xray。** 真机三段实证：
+- socat MITM 抓 SOCKS5 控制连接：握手完全成功（xray 回 `05 00 00 01 7f000001 5ba0` = REP 0 + BND 127.0.0.1:23456）。
+- 手工用 socat 发标准 SOCKS5 UDP 数据报（**全程保持 TCP 控制连接打开**）：xray 完美中继、经 vless 节点拿回真实 google.com 应答（证 xray socks UDP 中继 + 节点 UDP 都好）。
+- socat `-d -d` 时间戳坐实 **chinadns 收到 BND 回复的同一毫秒就关闭 TCP 控制连接**（`socket fd is at EOF`），而非等 5s 超时。按 RFC 1928 §6「UDP 关联随承载 ASSOCIATE 的 TCP 连接终止而销毁」，xray 严格遵守 → 关联即销毁 → chinadns 随后发的 UDP 落到死关联被丢（xray 从无 `client UDP connection` 日志）。chinadns 假设 socks 服务端"宽松"（TCP 断后 UDP 中继仍在，如作者自家 ss-local/ipt2socks），与 xray 不兼容。**fancyss/xray 任何配置改不动 chinadns 二进制。**
+- 决策（用户）：UDP-via-proxy 不值得为它重编 chinadns（DNS over TCP/DoT 功能等价、DoT 更安全）。**国外/可信 + 全局 DNS 只支持 TCP/DoT，删 UDP 选项**；D39 的 `proxy-protocol +udp` 回退。
+
+**根因 2（本次主修，潜伏自 doge.14）：DNS 重定向把设备 TCP DNS 也 DNAT 到 chinadns，但 chinadns `bind-port @udp` 只监听 UDP → TCP 查询撞 RST。**
+- live iptables：`SHADOWSOCKS_DNS_0` 链对 `-i br0` 的 **udp 与 tcp** dport 53 都 DNAT 到 `127.0.0.1:65353/65354`（PREROUTING 跳转 `-j SHADOWSOCKS_DNS_0` 无协议过滤 → 链内两条规则都生效）。
+- chinadns `bind-port 65353@udp` → 只 UDP listener（netstat 无 tcp 65353/65354）。
+- 故设备 **TCP DNS** → DNAT 到 chinadns 的 TCP 端口 → 无监听 → 内核 RST（`Connection refused`）→ 解析失败 → `ERR_NAME_NOT_RESOLVED`。
+- 间歇性 = 多数 DNS 走 UDP（正常），只有用到 TCP 的查询失败（UDP 响应超 512B 按 RFC 必须 TCP 重试 / 部分客户端偏好 TCP）；手机概率高 = 更易触发 DNS-over-TCP；关重定向就好 = 走主 dnsmasq（tcp+udp 都监听）。**与 D39 的 UDP-via-proxy 无关**（那是 chinadns 当客户端、本条是 chinadns 当服务端）。
+- 真机复现（Ubuntu LAN 客户端，Python 构造 UDP/TCP DNS 打路由器:53）：UDP 全通、TCP 全 `Connection refused`；改 bind-port 去 `@udp` 后 TCP 全返回真实 IP。
+
+**修复（2 文件）**：
+- [ssconfig.sh](../../fancyss/ss/ssconfig.sh)：① 两实例 `bind-port …@udp` → 去 `@udp`（= tcp+udp 双协议，:1687 split / :1843 global）——**不动任何 iptables**（TCP DNAT 规则本就在，只是之前撞死端口）；② 新增 `__force_tcp_proxied_dns_lines()` helper（:1656），把国外/全局上游的 `udp://` 与裸地址一律改 `tcp://`（tcp://、tls:// 原样），在 `__filter_valid_split_dns_lines` 之后、建 FDNS_LINE 之前对 `_oversea_ok`/`_global_ok` 调用——兜底老用户存量 udp 值；③ `proxy-protocol tcp,tls,udp` → 回退 `tcp,tls`（两实例）；④ 文案对齐。**国内（直连）DNS 不调 force-tcp、保留 UDP**。
+- [Module_shadowsocks.asp](../../fancyss/webs/Module_shadowsocks.asp)：`dns_make_proto_select(proto, allowUdp)` 对 trust（国外/全局）跳过 UDP option；`add_dns_upstream_row` 按 `dns_pick_which(key)` 传 allowUdp（仅 `'cn'` 为 true）并把老 udp 显示为 tcp；`render_dns_global_upstream` 同理（全局恒 trust）；卡片提醒改「仅支持 TCP/DoT，已移除 UDP 选项」。
+
+**验证**：① bind-port 修复——Ubuntu 真机 TCP DNS 修前全 refused、修后 google/baidu/youtube/github 全返回真实 IP（经 `restart_chinadns_ng` 真实代码路径）；② force-tcp helper 隔离单测（`udp://`→`tcp://`、裸→`tcp://`、tls/tcp 原样、多行）全对；③ 重生成 conf = `bind-port 65353/65354`(无 `@udp`) + `proxy-protocol tcp,tls` + trust 全 `tcp://`；④ 双协议监听 tcp+udp 都在；⑤ Chrome 真机：国内下拉 udp/tcp/tls、国外/全局 tcp/tls（无 UDP）、老 udp 值渲染为 TCP、无 JS 报错。
+
+**状态**：✅ 已随 doge.14-beta.20 发版。CLAUDE.md #33（修正）+ #34（新）。
+
 ### 6.4 实施期约定的回溯修订
 
 **alpha 阶段（doge.12.alpha-1 → alpha.18）**：

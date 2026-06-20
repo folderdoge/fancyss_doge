@@ -16784,7 +16784,7 @@ function toggleKeyMask(o, show){
 					<tr><th width="30%">国内 DNS upstream</th><td><textarea id="ss_split_dns_china_upstream" style="display:none;"></textarea><div id="rows_ss_split_dns_china_upstream" class="dns-up-rows"></div><a class="ss_btn dns-up-add" style="cursor:pointer;" onclick="add_dns_upstream_row('ss_split_dns_china_upstream','',true)">+ 添加</a></td></tr>
 					<tr><th>国外 / 可信 DNS upstream</th><td><textarea id="ss_split_dns_overseas_upstream" style="display:none;"></textarea><div id="rows_ss_split_dns_overseas_upstream" class="dns-up-rows"></div><a class="ss_btn dns-up-add" style="cursor:pointer;" onclick="add_dns_upstream_row('ss_split_dns_overseas_upstream','',true)">+ 添加</a></td></tr>
 					<tr><th>全局模式 DNS upstream（单一海外）</th><td><input type="hidden" id="ss_split_dns_global_upstream" /><div id="grow_ss_split_dns_global_upstream" class="dns-up-rows"></div></td></tr>
-					<tr><td colspan="2" style="font-size:11px;color:#9fb0c6;padding:6px 2px;line-height:1.6;">分流实例：国内域名走「国内 upstream」、国外域名走「国外 / 可信 upstream」（经代理）；全局实例：所有域名走「全局 upstream」（经代理）。每个 Mode 通过 dns_mode 字段选择走哪一轨。<br>⚠️ 国外 / 全局 DNS 选「普通 UDP」需代理节点支持 UDP 转发；节点若不支持 UDP，请改用 TCP 或 DoT，否则国外 / 全局域名会解析超时（国内 DNS 不受影响，始终直连）。</td></tr>
+					<tr><td colspan="2" style="font-size:11px;color:#9fb0c6;padding:6px 2px;line-height:1.6;">分流实例：国内域名走「国内 upstream」、国外域名走「国外 / 可信 upstream」（经代理）；全局实例：所有域名走「全局 upstream」（经代理）。每个 Mode 通过 dns_mode 字段选择走哪一轨。<br>⚠️ 国外 / 可信与全局模式 DNS 经代理，仅支持 TCP 与 DoT 加密（UDP 在代理下不可靠，已移除该选项；老配置自动按 TCP 处理）。国内 DNS 直连，支持 UDP / TCP / DoT。</td></tr>
 				</tbody>
 			</table>
 		</div>
@@ -16851,10 +16851,11 @@ function dns_addr_is_valid(proto, addr) {
   if (host.indexOf(":") >= 0 && /^[0-9a-fA-F:]+$/.test(host)) return true; // IPv6
   return false;
 }
-function dns_make_proto_select(proto) {
+function dns_make_proto_select(proto, allowUdp) {
   var sel = document.createElement("select");
   sel.className = "dns-up-proto";
   for (var i = 0; i < DNS_PROTOS.length; i++) {
+    if (DNS_PROTOS[i][0] === "udp" && allowUdp === false) continue;   // 国外/全局：经代理只支持 TCP/DoT，不提供 UDP
     var op = document.createElement("option");
     op.value = DNS_PROTOS[i][0]; op.text = DNS_PROTOS[i][1];
     if (DNS_PROTOS[i][0] === proto) op.selected = true;
@@ -16939,9 +16940,11 @@ function add_dns_upstream_row(key, val, focus) {
   var box = document.getElementById("rows_" + key);
   if (!box) return;
   var parsed = dns_split_proto(val || "");
+  var allowUdp = (dns_pick_which(key) === "cn");                       // 仅国内 DNS 提供 UDP；国外/可信经代理只 TCP/DoT
+  if (!allowUdp && parsed.proto === "udp") parsed.proto = "tcp";       // 老的 udp:// / 裸地址值显示为 TCP（后端也会兜底转）
   var row = document.createElement("div");
   row.className = "dns-up-row";
-  var sel = dns_make_proto_select(parsed.proto);
+  var sel = dns_make_proto_select(parsed.proto, allowUdp);
   var inp = document.createElement("input");
   inp.type = "text"; inp.className = "dns-up-inp"; inp.value = parsed.addr;
   inp.placeholder = DNS_ADDR_PH[parsed.proto] || "";
@@ -16990,9 +16993,10 @@ function render_dns_global_upstream() {
   if (!ta || !box) return;
   box.innerHTML = "";
   var parsed = dns_split_proto((ta.value || "").split("\n")[0] || "");
+  if (parsed.proto === "udp") parsed.proto = "tcp";                    // 全局模式经代理：只 TCP/DoT，老 udp 值显示为 TCP
   var row = document.createElement("div");
   row.className = "dns-up-row";
-  var sel = dns_make_proto_select(parsed.proto);
+  var sel = dns_make_proto_select(parsed.proto, false);
   var inp = document.createElement("input");
   inp.type = "text"; inp.className = "dns-up-inp"; inp.value = parsed.addr;
   inp.placeholder = DNS_ADDR_PH[parsed.proto] || "";

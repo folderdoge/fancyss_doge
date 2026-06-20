@@ -1650,6 +1650,28 @@ __filter_valid_split_dns_lines() {
 	unset IFS
 }
 
+# doge.14.x: 国外/全局（经代理）DNS 只允许 TCP/DoT。UDP 经 socks5 代理在 chinadns-ng +
+# xray 组合下不通（chinadns 收到 BND 即关 TCP 控制连接 → xray 按 RFC1928 销毁 UDP 关联 →
+# 后续 UDP 数据报丢弃），故把 udp:// 与裸地址（默认 UDP）一律改 tcp://（同服务器、TCP 传输，
+# 经代理可靠且不泄露）；tcp:// / tls:// 原样保留。仅用于 trust/global，国内（直连）DNS 不调用。
+# 详见 split-routing-implementation.md D40。
+__force_tcp_proxied_dns_lines() {
+	local lines="$1"
+	local line=""
+	IFS='
+'
+	for line in ${lines}; do
+		case "${line}" in
+			tls://*|tcp://*) printf '%s\n' "${line}" ;;
+			udp://*) printf 'tcp://%s\n' "${line#udp://}" ;;
+			'') : ;;
+			'#'*) : ;;
+			*) printf 'tcp://%s\n' "${line}" ;;
+		esac
+	done
+	unset IFS
+}
+
 generate_chinadns_split_conf() {
 	local conf="/tmp/chinadns_ng_split.conf"
 	local CDNS_LINE=""
@@ -1664,9 +1686,11 @@ generate_chinadns_split_conf() {
 	local _china_ok=$(__filter_valid_split_dns_lines "${_new_china_lines}")
 	local _oversea_ok=$(__filter_valid_split_dns_lines "${_new_oversea_lines}")
 	[ -n "${_new_china_lines}" ] && [ "${_china_ok}" != "${_new_china_lines}" ] && echo_date "⚠️国内 DNS 含 chinadns-ng 不支持的上游（仅支持 普通UDP/TCP/DoT，不支持 DoH），已自动忽略无效项。"
-	[ -n "${_new_oversea_lines}" ] && [ "${_oversea_ok}" != "${_new_oversea_lines}" ] && echo_date "⚠️国外/可信 DNS 含 chinadns-ng 不支持的上游（仅支持 普通UDP/TCP/DoT，不支持 DoH），已自动忽略无效项。"
+	[ -n "${_new_oversea_lines}" ] && [ "${_oversea_ok}" != "${_new_oversea_lines}" ] && echo_date "⚠️国外/可信 DNS 含 chinadns-ng 不支持的上游（仅支持 TCP/DoT，经代理；UDP 会自动转 TCP，不支持 DoH），已自动忽略无效项。"
 
 	[ -n "${_china_ok}" ] && CDNS_LINE=$(__join_split_dns_lines "${_china_ok}")
+	# 国外/可信经代理：强制 TCP/DoT（UDP 经 socks5 代理不通，自动转 TCP；详见 D40）
+	_oversea_ok=$(__force_tcp_proxied_dns_lines "${_oversea_ok}")
 	[ -n "${_oversea_ok}" ] && FDNS_LINE=$(__join_split_dns_lines "${_oversea_ok}")
 
 	# 兜底：某组上游为空时用内置默认组合，并在启动日志提醒（不写回 dbus，仅本次运行生效）
@@ -1676,20 +1700,20 @@ generate_chinadns_split_conf() {
 	fi
 	if [ -z "${FDNS_LINE}" ]; then
 		FDNS_LINE="tcp://8.8.8.8,tcp://1.1.1.1"
-		echo_date "⚠️国外/可信 DNS 没有可用上游，已临时使用默认组合：tcp://8.8.8.8 + tcp://1.1.1.1（经代理默认用 TCP，也支持 UDP/DoT；请到「DNS 设定」检查）"
+		echo_date "⚠️国外/可信 DNS 没有可用上游，已临时使用默认组合：tcp://8.8.8.8 + tcp://1.1.1.1（经代理仅支持 TCP/DoT；请到「DNS 设定」检查）"
 	fi
 
 	rm -f "${conf}" >/dev/null 2>&1
 	cat > "${conf}" <<-EOF
 		# fancyss_doge doge.12 alpha - chinadns-ng split instance
-		# 监听: 127.0.0.1:${SS_SPLIT_DNS_SPLIT_PORT}
+		# 监听: 127.0.0.1:${SS_SPLIT_DNS_SPLIT_PORT}（tcp+udp 双协议；勿加 @udp——DNS 重定向把设备 TCP DNS 也 DNAT 到此，只听 UDP 会让 TCP 查询撞 RST → ERR_NAME_NOT_RESOLVED，详见 split-routing-implementation.md D40）
 		bind-addr 127.0.0.1
-		bind-port ${SS_SPLIT_DNS_SPLIT_PORT}@udp
+		bind-port ${SS_SPLIT_DNS_SPLIT_PORT}
 
 		proxy-server socks5://127.0.0.1:23456
 		# 只让 gfw 一档走代理（split 路径下未定义 black/router 这俩 user group）
 		proxy-group gfw
-		proxy-protocol tcp,tls,udp
+		proxy-protocol tcp,tls
 
 		# 国内上游
 		china-dns ${CDNS_LINE}
@@ -1804,25 +1828,27 @@ generate_chinadns_global_conf() {
 	local _new_global_b64=$(dbus get ss_split_dns_global_upstream 2>/dev/null)
 	local _new_global_lines=$(__get_split_dns_lines "${_new_global_b64}")
 	local _global_ok=$(__filter_valid_split_dns_lines "${_new_global_lines}")
-	[ -n "${_new_global_lines}" ] && [ "${_global_ok}" != "${_new_global_lines}" ] && echo_date "⚠️全局模式 DNS 含 chinadns-ng 不支持的上游（仅支持 普通UDP/TCP/DoT，不支持 DoH），已自动忽略无效项。"
+	[ -n "${_new_global_lines}" ] && [ "${_global_ok}" != "${_new_global_lines}" ] && echo_date "⚠️全局模式 DNS 含 chinadns-ng 不支持的上游（仅支持 TCP/DoT，经代理；UDP 会自动转 TCP，不支持 DoH），已自动忽略无效项。"
+	# 全局模式经代理：强制 TCP/DoT（同 split，UDP 自动转 TCP；详见 D40）
+	_global_ok=$(__force_tcp_proxied_dns_lines "${_global_ok}")
 	[ -n "${_global_ok}" ] && FDNS_LINE=$(echo "${_global_ok}" | head -1 | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
 	if [ -z "${FDNS_LINE}" ]; then
 		FDNS_LINE="tcp://1.1.1.1"
-		echo_date "⚠️全局模式 DNS 没有可用上游，已临时使用默认：tcp://1.1.1.1（经代理默认用 TCP，也支持 UDP/DoT；请到「DNS 设定」检查全局模式 DNS）"
+		echo_date "⚠️全局模式 DNS 没有可用上游，已临时使用默认：tcp://1.1.1.1（经代理仅支持 TCP/DoT；请到「DNS 设定」检查全局模式 DNS）"
 	fi
 
 	rm -f "${conf}" >/dev/null 2>&1
 	cat > "${conf}" <<-EOF
 		# fancyss_doge doge.12 alpha - chinadns-ng global instance
-		# 监听: 127.0.0.1:${SS_SPLIT_DNS_GLOBAL_PORT}
+		# 监听: 127.0.0.1:${SS_SPLIT_DNS_GLOBAL_PORT}（tcp+udp 双协议；勿加 @udp——同 split 实例，DNS 重定向 DNAT 设备 TCP DNS 到此，只听 UDP 会 RST，详见 split-routing-implementation.md D40）
 		bind-addr 127.0.0.1
-		bind-port ${SS_SPLIT_DNS_GLOBAL_PORT}@udp
+		bind-port ${SS_SPLIT_DNS_GLOBAL_PORT}
 
 		proxy-server socks5://127.0.0.1:23456
 		# global 模式：所有未匹配域名 → tag=gfw → trust-dns（走代理）
 		# 不能写 proxy-group trust——chinadns-ng 里没有 trust 这个 tag/group
 		proxy-group gfw
-		proxy-protocol tcp,tls,udp
+		proxy-protocol tcp,tls
 
 		# 单一海外可信上游（通过代理走）
 		trust-dns ${FDNS_LINE}
