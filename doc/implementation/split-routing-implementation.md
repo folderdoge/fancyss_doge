@@ -732,6 +732,25 @@ migrate_split_routing_v3() {
 - **真机验证（2026-06-20，51.1，套国内 IP / 英国节点 3.9.92.164）**：`whoami.akamai.net` 经 split 路径 `123.156.198.67`(联通) → 修后 `172.69.79.104`(Cloudflare)；经 dnsmasq(53) 同样 Cloudflare；`baidu.com` 两路仍国内 IP；`google.com` 两路都海外。
 - **CLAUDE.md 硬规则 #30**。
 
+#### D36: 自定义 dnsmasq（address=/server=）在 DNS 重定向开启时也生效——chinadns `group custom` 转发到 65355 卫星 dnsmasq（doge.14.x，已真机全验证 / 未发版）
+
+2026-06-20 用户需求：DNS 重定向开启时（per-device DNS 分流所必需，见 D35），LAN 设备 53 端口查询被 nat DNAT 直送 chinadns-ng(65353/65354)、**绕过主 dnsmasq** → 用户在【自定义 dnsmasq】(dbus `ss_dnsmasq`) 写的 `address=`/`server=`（屏蔽广告、改写 KMS/autodesk 到指定 IP 等）全部失效（D35 架构事实的副作用）。
+
+- **方案**：复用现有 chinadns `group` 机制（与 `group lan`/`group node` 同款）。把自定义 dnsmasq 涉及的域名做成 group-dnl，两个 chinadns 实例（split 65353 + global 65354）一看到这些域名就转给 65355 卫星 dnsmasq（卫星已加载这些 `address=`/`server=` 规则）→ 命中拿用户指定结果（`0.0.0.0`/`127.0.0.1`/指定 IP）返回，未命中域名照常走分流。**不动 DNS 重定向、不碰 iptables。**
+- **关键前提（真机 A/B 实证，CLAUDE #31）**：本版 chinadns-ng(2026.01.29) **用户 group 优先级最高、覆盖 chnlist + gfwlist**（dnl 加载序 custom→gfw→chn，先加载抢域名）。所以 group custom 里即便是 chnlist/gfwlist 内的域名（adobe 在 gfwlist、xmind.cn 可能在 chnlist）也被 custom 抢走 → 走卫星 → 用户规则生效。是 D35「gfwlist-first 覆盖 chnlist」同源机制延伸到 user group 层。
+- **实现**（`ssconfig.sh`，1 新函数 + 3 处改）：
+  1. `__build_custom_dns_rules()`（新）：`dbus get ss_dnsmasq | base64_decode | awk` 抽 `^[[:space:]]*(address|server)=` 行 → `/tmp/fss_custom_dns_rules.conf`（**catch-all `/#/` 跳过**，免污染卫星 LAN 解析），涉及域名（支持多域名行 `address=/a/b/ip`）→ `/tmp/fss_custom_dns_domains.txt`。**fail-safe**：规则整体 `dnsmasq --test` 不过 → 清空两表（功能静默关、不连累其它解析）。空 `ss_dnsmasq` → 两表空 → 行为同旧版。
+  2. `start_dnsmasq_lan_listener()`：开头调 `__build_custom_dns_rules`；65355 卫星 `--conf-file=/dev/null` → `--conf-file=/tmp/fss_custom_dns_rules.conf`（卫星保持 `--no-resolv`：无规则域名 REFUSED、**fail-closed 不成环不外泄**；只过滤后 address=/server= 进卫星，`--port`/`--listen-address` 不被用户配置覆盖）。
+  3. `generate_chinadns_split_conf` + `generate_chinadns_global_conf`：group lan/node 之后追加 `if [ -s /tmp/fss_custom_dns_domains.txt ]; then cat>>conf <<EOF / group custom / group-dnl ... / group-upstream 127.0.0.1#65355 / EOF; fi`（域名表非空才发，两实例都发）。
+- **为何卫星 fail-closed 而非指向主 dnsmasq#53**：主 dnsmasq 默认上游=65353，若 group custom→#53 则未精确命中的域名会被主 dnsmasq 回转 65353 → 成环 DNS 风暴；65355 卫星 `--no-resolv` 对未命中域名 REFUSED，安全。
+- **真机验证（2026-06-20，51.1=TUF-AX3000_V2 armv7l，热部署 ssconfig.sh + `restart_chinadns_ng`，`ss_dnsmasq`=baidu[chnlist]+google[gfwlist]+xmind[neither]→0.0.0.0）**：
+  - **优先级 A/B 铁证**：无 group custom → gfw `added:6451`；有 group custom → custom `added:3`、gfw `added:6450`(−1=google 进 custom)、chn `−1`(baidu 进 custom)。
+  - **生成产物**：rules.conf/domains.txt 内容对、group custom 块在 split+global 两 conf、dnl_init `tag:custom loaded:3`。
+  - **端到端（PC 经路由器，DNS 重定向开）**：`nslookup baidu.com/google.com/xmind.com 192.168.51.1` 全 `0.0.0.0`（覆盖 chnlist+gfwlist）、`example.org`=真实 IP（非自定义不受影响）。链路：PC→router:53→DNAT→65353→group custom→65355 卫星→0.0.0.0。
+  - busybox 限制：测试机**无 `nc`/`od`/`printf`(独立)/`socat`**、`nslookup` 无端口 → 验证靠 chinadns dnl_init `added` 计数差 + 经主 dnsmasq 链的 PC 查询（无法直查 65353/65398 端口）。
+- **同会话清理**：删 smartdns 时代死 DNS 代码 **~323 行**（12 函数 `gen_xray_dns_inbound`/`append_xray_dns_relay_inbounds`/`get_dns`/`get_dns_para`/`format_dns_endpoint`/`parse_dns_addr_port`/`get_proxy_type`/`detect_domain`/`get_dns_selected_net`/`get_dns_effective_net`/`iter_dns_udp_relay_targets`/`has_dns_udp_relay_targets` + 5 空转调用 + 2 append-if 块；保留 `is_domain`/`append_xray_ipv6_tproxy_inbound`/`proxy_core_supports_udp`）。`iter_dns_udp_relay_targets` doge.14 删 smartdns 后即 `return 0`，整条 UDP-DNS-relay inbound 链已死。`dash -n`/`sh -n` 过、零残留引用。
+- **状态**：源码改完 + 真机全验证，**未 commit、未发版**（用户先处理其它问题再发）。CLAUDE.md #31。
+
 ### 6.4 实施期约定的回溯修订
 
 **alpha 阶段（doge.12.alpha-1 → alpha.18）**：
