@@ -1916,9 +1916,15 @@ __build_custom_dns_rules() {
 start_dnsmasq_lan_listener() {
 	# FORK doge.14.x: 先生成自定义 dnsmasq 规则 + 域名表（卫星 dnsmasq 与 chinadns group custom 共用）
 	__build_custom_dns_rules
+	# 幂等：已在监听就直接视为 ok（供 apply_ss 末尾二次确认复用，不重复 spawn）
 	if netstat -lnup 2>/dev/null | grep -q ":${SS_SPLIT_DNS_LAN_PORT}\b"; then
-		echo_date "dnsmasq_lan: port ${SS_SPLIT_DNS_LAN_PORT} 已被占用，跳过"
+		dbus set ss_split_dnsmasq_lan_status="ok"
 		return 0
+	fi
+	# 清掉可能残留的半死实例，避免端口抢占 / 重复 spawn
+	if [ -f /tmp/dnsmasq_lan.pid ]; then
+		kill -9 "$(cat /tmp/dnsmasq_lan.pid 2>/dev/null)" 2>/dev/null
+		rm -f /tmp/dnsmasq_lan.pid
 	fi
 	dnsmasq --port=${SS_SPLIT_DNS_LAN_PORT} \
 		--listen-address=127.0.0.1 \
@@ -1928,8 +1934,14 @@ start_dnsmasq_lan_listener() {
 		--domain-needed --bogus-priv \
 		--conf-file=/tmp/fss_custom_dns_rules.conf \
 		--pid-file=/tmp/dnsmasq_lan.pid \
-		--user=nobody --group=nobody &
-	sleep 1
+		--user=nobody --group=nobody >/dev/null 2>&1 &
+	# 健壮等待：重负载 / 64位机上绑定常超过 1 秒，单次 sleep 1 会误判失败。轮询最多 ~5 秒。
+	local _i=0
+	while [ ${_i} -lt 5 ]; do
+		netstat -lnup 2>/dev/null | grep -q ":${SS_SPLIT_DNS_LAN_PORT}\b" && break
+		sleep 1
+		_i=$((_i + 1))
+	done
 	if netstat -lnup 2>/dev/null | grep -q ":${SS_SPLIT_DNS_LAN_PORT}\b"; then
 		echo_date "dnsmasq_lan: 启动成功 (port=${SS_SPLIT_DNS_LAN_PORT})"
 		dbus set ss_split_dnsmasq_lan_status="ok"
@@ -6647,6 +6659,42 @@ _start_ipv6_iptables() {
 	return 0
 }
 
+# FORK doge.14.x: 开机时钟纠偏（打破“时钟死锁”）。NTP 未同步时系统时钟可能停在 2024-01-01，
+# 导致节点 TLS 证书校验失败(证书未到生效日)→xray 连不上节点→代理失效→国外域名(含 NTP
+# 服务器域名)走 trust-dns 经代理无法解析→NTP 永远同步不了(死锁，永久卡死、表现为“启动正常
+# 但连不上”)。启动前若发现年份明显错误(<2025)，用硬编码可直连的国内 NTP 服务器 IP 强制
+# 校时一次(纯直连、不依赖 DNS/代理)，打破死锁。校时失败不阻塞启动(继续，等固件 NTP 后续同步)。
+fss_fix_bogus_clock() {
+	local _yr=$(date +%Y 2>/dev/null)
+	case "${_yr}" in
+	''|*[!0-9]*) return 0 ;;
+	esac
+	[ "${_yr}" -lt 2025 ] || return 0
+	echo_date "⏰ 系统时钟异常(${_yr}年)、NTP 未同步——直连国内 NTP 校时，避免节点 TLS 证书因时钟错误被拒(否则代理无法连接、出口检测失败)..."
+	local _ip _p _w
+	for _ip in 203.107.6.88 120.25.115.20 119.28.183.184; do
+		ntpd -n -q -p "${_ip}" >/dev/null 2>&1 &
+		_p=$!
+		_w=0
+		while [ ${_w} -lt 5 ]; do
+			kill -0 ${_p} 2>/dev/null || break
+			sleep 1
+			_w=$((_w + 1))
+		done
+		kill -9 ${_p} 2>/dev/null
+		_yr=$(date +%Y 2>/dev/null)
+		case "${_yr}" in
+		''|*[!0-9]*) continue ;;
+		esac
+		if [ "${_yr}" -ge 2025 ]; then
+			echo_date "⏰ 校时成功，当前时间：$(date)"
+			return 0
+		fi
+	done
+	echo_date "⚠️ 直连 NTP 校时未成功；若节点为 TLS，可能需等固件 NTP 同步后自动恢复，或手动重启路由器。"
+	return 0
+}
+
 restart_dnsmasq() {
 	# 如果是梅林固件，需要将 【Tool - Other Settings  - Advanced Tweaks and Hacks - Wan: Use local caching DNS server as system resolver (default: No)】此处设置为【是】
 	# 这将确保固件自身的DNS解析使用127.0.0.1，而不是上游的DNS。否则插件的状态检测将无法解析谷歌，导致状态检测失败。
@@ -6665,6 +6713,11 @@ restart_dnsmasq() {
 	# Restart dnsmasq
 	echo_date "重启dnsmasq服务..."
 	service restart_dnsmasq >/dev/null 2>&1 &
+	# FORK doge.14.x: service restart_dnsmasq 是异步的，其 killall dnsmasq 可能晚到；
+	# 若此处立刻 detect 到 killall 之前的旧 dnsmasq 就返回，随后启动的卫星
+	# dnsmasq(65355) 会被这个迟到的 killall 误杀。先给 killall 一点时间触发，
+	# 再等待“重启后”的新 dnsmasq 就绪。
+	sleep 2
 	detect_running_status dnsmasq
 }
 
@@ -7042,6 +7095,8 @@ apply_ss() {
 	# start
 	FSS_SKIP_XRAY_PORT_CLEANUP=""
 	prepare_system
+	# FORK doge.14.x: 启动前纠正异常时钟，避免节点 TLS 证书因时钟错误被拒导致代理死锁（见 fss_fix_bogus_clock）
+	fss_fix_bogus_clock
 	resolv_server_ip
 	load_module
 	# doge.14: 分流唯一路径；不再创建旧版 ipset 大全（chnlist/chnroute/...），
@@ -7089,6 +7144,10 @@ apply_ss() {
 
 	get_proxy_server_ip
 	load_iptables
+	# FORK doge.14.x: 二次确认卫星 dnsmasq(65355)。上面 start_dns_x 起卫星时，固件异步的
+	# service restart_dnsmasq 其 killall dnsmasq 可能晚一步把卫星误杀（chinadns group lan/
+	# custom 上游随之失效）。此处所有 dnsmasq 重启都已结束，幂等地确认/拉起卫星（活着即跳过）。
+	start_dnsmasq_lan_listener
 	#restart_dnsmasq
 	auto_start
 	write_cron_job
@@ -7110,6 +7169,24 @@ apply_ss() {
 			echo_date "    /tmp/upload/xray.log 尾部 ↓"
 			tail -8 /tmp/upload/xray.log 2>/dev/null | while IFS= read -r _line; do echo_date "    ${_line}"; done
 		fi
+	fi
+	# FORK doge.14.x: DNS 链路诊断——卫星 dnsmasq(65355) + chinadns 双实例(65353/65354) 是否在 listen，
+	# 并做一次本地解析自检。客户报“启动正常但连不上”时，这段能一眼定位是 DNS 哪一层挂了。
+	local _dns_listen=$(netstat -lnup 2>/dev/null | grep -E "[: ](65353|65354|65355)\b")
+	if [ -n "${_dns_listen}" ]; then
+		echo_date "🔎 split 诊断: DNS 监听端口 ↓"
+		echo "${_dns_listen}" | while IFS= read -r _line; do echo_date "    ${_line}"; done
+	else
+		echo_date "⚠️ split 诊断: 未探测到 chinadns/卫星 dnsmasq 在 65353~65355 上 listen"
+	fi
+	echo_date "🔎 split 诊断: 卫星 dnsmasq 状态=$(dbus get ss_split_dnsmasq_lan_status 2>/dev/null || echo unknown)"
+	echo_date "🔎 split 诊断: 系统时钟=$(date 2>/dev/null) ntp_ready=$(nvram get ntp_ready 2>/dev/null)"
+	local _dns_probe=$(run dnsclient -46 -p 53 -t 2 -i 1 @127.0.0.1 www.baidu.com 2>/dev/null | head -n1)
+	__valid_ip46 "${_dns_probe}" >/dev/null 2>&1
+	if [ "$?" = "0" -o "$?" = "1" ]; then
+		echo_date "🔎 split 诊断: 本地解析自检 www.baidu.com -> ${_dns_probe}（DNS 正常）"
+	else
+		echo_date "⚠️ split 诊断: 本地解析自检 www.baidu.com 失败（DNS 链路异常）"
 	fi
 	# store current status
 	dbus set ss_basic_status="1"
