@@ -1744,6 +1744,19 @@ generate_chinadns_split_conf() {
 		EOF
 	fi
 
+	# FORK doge.14.x: 自定义 dnsmasq 域名组。DNS 重定向开启时设备查询直达本实例、绕过主
+	# dnsmasq → 用户【自定义 dnsmasq】里的 address=/server= 失效。把涉及域名转给 65355 卫星
+	# dnsmasq（已加载这些规则）→ 命中即拿用户指定结果(0.0.0.0/127.0.0.1/指定IP)，未命中域名
+	# 照常走分流逻辑。group 优先级高于 chnlist/gfwlist（与 group lan / group node 同机制）。
+	if [ -s /tmp/fss_custom_dns_domains.txt ]; then
+		cat >> "${conf}" <<-EOF
+			group custom
+			group-dnl /tmp/fss_custom_dns_domains.txt
+			group-upstream 127.0.0.1#${SS_SPLIT_DNS_LAN_PORT}
+
+		EOF
+	fi
+
 	# reject 语义由 xray blackhole outbound 完成（详见 generate_xray_json_split
 	# 注册的 out_reject outbound + routing.rules 中 action=reject → outboundTag=out_reject）。
 	# DNS 层不参与 reject——alpha.15 移除原 group reject 配置块（chinadns-ng 不识别
@@ -1825,6 +1838,19 @@ generate_chinadns_global_conf() {
 
 	EOF
 
+	# FORK doge.14.x: 自定义 dnsmasq 域名组。DNS 重定向开启时设备查询直达本实例、绕过主
+	# dnsmasq → 用户【自定义 dnsmasq】里的 address=/server= 失效。把涉及域名转给 65355 卫星
+	# dnsmasq（已加载这些规则）→ 命中即拿用户指定结果(0.0.0.0/127.0.0.1/指定IP)，未命中域名
+	# 照常走分流逻辑。group 优先级高于 chnlist/gfwlist（与 group lan / group node 同机制）。
+	if [ -s /tmp/fss_custom_dns_domains.txt ]; then
+		cat >> "${conf}" <<-EOF
+			group custom
+			group-dnl /tmp/fss_custom_dns_domains.txt
+			group-upstream 127.0.0.1#${SS_SPLIT_DNS_LAN_PORT}
+
+		EOF
+	fi
+
 	# FORK doge.14.x: 全局实例同样应用 IPv6 过滤（与分流实例对称，修复"全局模式设备 DNS 泄露"）。
 	# 全局模式下所有域名都是 gfw tag，drop_proxy=1 时 no-ipv6 tag:gfw 剥掉所有 AAAA →
 	# 全局模式设备只拿 IPv4 地址 → 走代理+劫持的 IPv4 DNS，不会拿到 IPv6 地址后绕过代理直连/查 IPv6 DNS。
@@ -1844,12 +1870,52 @@ generate_chinadns_global_conf() {
 	EOF
 }
 
+# FORK doge.14.x: 自定义 dnsmasq 域名组 — 数据准备（卫星 dnsmasq + chinadns group custom 共用）。
+# 背景：DNS 重定向开启时 LAN 设备 53 端口查询被 DNAT 直送 chinadns-ng，绕过主 dnsmasq →
+# 用户在【自定义 dnsmasq】(dbus ss_dnsmasq) 写的 address=/server= 规则全部失效。解决：把这些
+# 规则喂给 65355 卫星 dnsmasq，并把涉及的域名做成清单交给 chinadns group custom 转发解析。
+# 产物（总是存在，可能为空）：
+#   /tmp/fss_custom_dns_rules.conf   仅 address=/server= 行 → 喂给 65355
+#   /tmp/fss_custom_dns_domains.txt  去重域名清单 → 喂给 chinadns group-dnl
+# catch-all (/#/...) 跳过（无法精确成组且会污染卫星对 LAN 域名解析）。规则整体 dnsmasq
+# --test 不过则清空两表（功能静默关闭，不影响其它解析、不让 group custom 域名 REFUSED）。
+__build_custom_dns_rules() {
+	local rules="/tmp/fss_custom_dns_rules.conf"
+	local domains="/tmp/fss_custom_dns_domains.txt"
+	: > "${rules}"
+	: > "${domains}"
+	local raw="$(dbus get ss_dnsmasq 2>/dev/null)"
+	[ -n "${raw}" ] || return 0
+	echo "${raw}" | base64_decode 2>/dev/null | awk -v rules="${rules}" -v domains="${domains}" '
+		/^[[:space:]]*(address|server)=/ {
+			line = $0
+			sub(/^[[:space:]]*(address|server)=/, "", line)
+			n = split(line, a, "/")
+			has = 0
+			for (i = 2; i < n; i++) {
+				if (a[i] != "" && a[i] != "#") { print a[i] >> domains; has = 1 }
+			}
+			if (has) print $0 >> rules
+		}
+	'
+	if [ -s "${rules}" ] && ! dnsmasq --test --conf-file="${rules}" >/dev/null 2>&1; then
+		echo_date "⚠️ 自定义 dnsmasq 规则校验失败，本次忽略（不影响其它 DNS 解析）"
+		: > "${rules}"
+		: > "${domains}"
+		return 0
+	fi
+	[ -s "${domains}" ] && sort -u "${domains}" -o "${domains}"
+	return 0
+}
+
 # doge.13 beta D5 兑现（方案 C-2）：起独立 dnsmasq 子实例占 65355，
 # 只服务 chinadns 反查的 LAN 域名 (*.lan / *.local / asuscomm.com / lan_domain)。
 # 主 dnsmasq (port=53) 不动；双实例完全隔离。
 # chinadns split/global 两实例的 group lan 把查询投递到 127.0.0.1:${SS_SPLIT_DNS_LAN_PORT}，
 # 由该子实例读 /etc/hosts 给出真实 LAN IP。
 start_dnsmasq_lan_listener() {
+	# FORK doge.14.x: 先生成自定义 dnsmasq 规则 + 域名表（卫星 dnsmasq 与 chinadns group custom 共用）
+	__build_custom_dns_rules
 	if netstat -lnup 2>/dev/null | grep -q ":${SS_SPLIT_DNS_LAN_PORT}\b"; then
 		echo_date "dnsmasq_lan: port ${SS_SPLIT_DNS_LAN_PORT} 已被占用，跳过"
 		return 0
@@ -1860,7 +1926,7 @@ start_dnsmasq_lan_listener() {
 		--no-resolv --no-poll \
 		--addn-hosts=/etc/hosts \
 		--domain-needed --bogus-priv \
-		--conf-file=/dev/null \
+		--conf-file=/tmp/fss_custom_dns_rules.conf \
 		--pid-file=/tmp/dnsmasq_lan.pid \
 		--user=nobody --group=nobody &
 	sleep 1
@@ -1946,80 +2012,6 @@ stop_chinadns_ng_split() {
 	stop_dnsmasq_lan_listener
 }
 
-parse_dns_addr_port(){
-	local dns_raw="$1"
-	local default_port="${2:-53}"
-	local addr=""
-	local port="${default_port}"
-	local explicit_port="0"
-
-	case "${dns_raw}" in
-	*#*)
-		addr="${dns_raw%#*}"
-		port="${dns_raw##*#}"
-		explicit_port="1"
-		;;
-	\[*\]:*)
-		addr="${dns_raw%\]:*}"
-		addr="${addr#\[}"
-		port="${dns_raw##*\]:}"
-		explicit_port="1"
-		;;
-	*)
-		if echo "${dns_raw}" | grep -Eq '^([0-9]{1,3}[.]){3}[0-9]{1,3}:[0-9]+$'; then
-			addr="${dns_raw%:*}"
-			port="${dns_raw##*:}"
-			explicit_port="1"
-		else
-			addr="${dns_raw}"
-		fi
-		;;
-	esac
-
-	addr="${addr#\[}"
-	addr="${addr%\]}"
-	printf '%s\n%s\n%s\n' "${addr}" "${port}" "${explicit_port}"
-}
-
-format_dns_endpoint(){
-	local dns_raw="$1"
-	local default_port="${2:-53}"
-	local addr port explicit_port
-
-	{
-		read -r addr
-		read -r port
-		read -r explicit_port
-	} <<-EOF
-	$(parse_dns_addr_port "${dns_raw}" "${default_port}")
-	EOF
-
-	__valid_ip46 "${addr}"
-	case "$?" in
-	0)
-		[ "${explicit_port}" = "1" ] && echo "${addr}#${port}" || echo "${addr}"
-		;;
-	1)
-		[ "${explicit_port}" = "1" ] && echo "${addr}#${port}" || echo "${addr}"
-		;;
-	*)
-		echo "${dns_raw}"
-		;;
-	esac
-}
-
-detect_domain() {
-	domain1=$(echo $1 | grep -E "^https://|^http://|/")
-	domain2=$(echo $1 | grep -E "\.")
-	if [ -n "${domain1}" -o -z "${domain2}" ]; then
-		# url
-		return 1
-	else
-		# domain
-		return 0
-	fi
-}
-
 is_domain(){
 	[ -n "$1" ] || return 1
 	__valid_ip46 "$1" >/dev/null 2>&1
@@ -2029,181 +2021,6 @@ is_domain(){
 		;;
 	esac
 	echo $1 | awk 'BEGIN {regex = "^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?(\\.[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$"} $0 ~ regex { print }'
-}
-
-get_proxy_type(){
-	case "$1" in
-	udp)
-		echo "udp-relay"
-		;;
-	tcp|dot)
-		echo "socks5"
-		;;
-	esac
-}
-
-get_dns_selected_net(){
-	local type="$1"
-	local numb="$2"
-	eval echo \$ss_basic_chng_${type}_net_${numb}_typ
-}
-
-get_dns_effective_net(){
-	local type="$1"
-	local numb="$2"
-	local net="$(get_dns_selected_net "${type}" "${numb}")"
-	echo "${net}"
-}
-
-get_dns_para(){
-	local type=$1
-	local numb=$2
-	local para=$3
-	local addr="8.8.8.8"
-	local port="53"
-	local explicit_port=""
-
-	# udp, tcp, dot
-	local net="$(get_dns_selected_net "${type}" "${numb}")"
-	
-	local dns_opt=$(eval echo \$ss_basic_chng_${type}_${net}_${numb}_opt)
-	local dns_usr=$(eval echo \$ss_basic_chng_${type}_${net}_${numb}_usr)
-	
-	if [ "${dns_opt}" == "99" ];then
-		{
-			read -r addr
-			read -r port
-			read -r explicit_port
-		} <<-EOF
-		$(parse_dns_addr_port "${dns_usr}")
-		EOF
-		[ -n "${addr}" ] || addr="8.8.8.8"
-	else
-		local addr="${dns_opt}"
-	fi
-
-	if [ "${para}" == "addr" ];then
-		echo ${addr}
-	elif [ "${para}" == "port" ];then
-		echo ${port}
-	fi
-	
-}
-
-iter_dns_udp_relay_targets(){
-	# doge.14: smartdns 已移除，无 UDP DNS 中继目标
-	return 0
-}
-
-has_dns_udp_relay_targets(){
-	[ -n "$(iter_dns_udp_relay_targets | sed -n '1p')" ]
-}
-
-gen_xray_dns_inbound(){
-	local config_file="$1"
-	local sep="$(printf '\037')"
-	local relay_port addr port provider description
-
-	[ -n "${config_file}" ] || return 1
-	has_dns_udp_relay_targets || return 0
-
-	while IFS="${sep}" read -r relay_port addr port provider description
-	do
-		[ -n "${relay_port}" ] || continue
-		cat >>"${config_file}" <<-EOF
-			{
-				"tag": "dns_udp_${relay_port}",
-				"listen": "127.0.0.1",
-				"port": ${relay_port},
-				"protocol": "dokodemo-door",
-				"settings": {
-					"address": "${addr}",
-					"port": ${port},
-					"network": "udp",
-					"timeout": 0,
-					"followRedirect": false
-				}
-			},
-		EOF
-	done <<-EOF
-$(iter_dns_udp_relay_targets)
-EOF
-	return 0
-}
-
-append_xray_dns_relay_inbounds(){
-	local config_file="$1"
-	local tmp_file="${config_file}.dnsrelay"
-	local add_file="${config_file}.dnsrelay.add"
-	local sep="$(printf '\037')"
-	local relay_port addr port provider description
-	local entry_count=0
-
-	[ -f "${config_file}" ] || return 1
-	has_dns_udp_relay_targets || return 0
-
-	cat > "${add_file}" <<-'EOF'
-[]
-EOF
-	while IFS="${sep}" read -r relay_port addr port provider description
-	do
-		[ -n "${relay_port}" ] || continue
-		if cat "${config_file}" | run jq -e --argjson port "${relay_port}" '.inbounds[]? | select(.protocol == "dokodemo-door" and .port == $port)' >/dev/null 2>&1; then
-			continue
-		fi
-		if [ "${entry_count}" -eq 0 ];then
-			cat > "${add_file}" <<-EOF
-[
-  {
-    "tag": "dns_udp_${relay_port}",
-    "listen": "127.0.0.1",
-    "port": ${relay_port},
-    "protocol": "dokodemo-door",
-    "settings": {
-      "address": "${addr}",
-      "port": ${port},
-      "network": "udp",
-      "timeout": 0,
-      "followRedirect": false
-    }
-  }
-]
-EOF
-		else
-			if ! cat "${add_file}" | run jq '. += [{
-				"tag": "dns_udp_'"${relay_port}"'",
-				"listen": "127.0.0.1",
-				"port": '"${relay_port}"',
-				"protocol": "dokodemo-door",
-				"settings": {
-					"address": "'"${addr}"'",
-					"port": '"${port}"',
-					"network": "udp",
-					"timeout": 0,
-					"followRedirect": false
-				}
-			}]' > "${add_file}.tmp"; then
-				rm -rf "${add_file}" "${add_file}.tmp" >/dev/null 2>&1
-				return 1
-			fi
-			mv -f "${add_file}.tmp" "${add_file}"
-		fi
-		entry_count=$((entry_count + 1))
-	done <<-EOF
-$(iter_dns_udp_relay_targets)
-EOF
-
-	if [ "${entry_count}" -eq 0 ];then
-		rm -rf "${add_file}" >/dev/null 2>&1
-		return 0
-	fi
-	if ! cat "${config_file}" | run jq --slurpfile relays "${add_file}" '.inbounds += $relays[0]' > "${tmp_file}"; then
-		rm -rf "${tmp_file}" "${add_file}" >/dev/null 2>&1
-		return 1
-	fi
-	mv -f "${tmp_file}" "${config_file}"
-	rm -rf "${add_file}" >/dev/null 2>&1
-	return 0
 }
 
 append_xray_ipv6_tproxy_inbound() {
@@ -2220,58 +2037,6 @@ append_xray_ipv6_tproxy_inbound() {
 		return 1
 	fi
 	mv "${tmp_file}" "${config_file}"
-}
-
-get_dns(){
-	local type=$1
-	local numb=$2
-
-	# udp, tcp, dot
-	local net="$(get_dns_selected_net "${type}" "${numb}")"
-	local eff_net="$(get_dns_effective_net "${type}" "${numb}")"
-	
-	local dns_opt=$(eval echo \$ss_basic_chng_${type}_${net}_${numb}_opt)
-	local dns_usr=$(eval echo \$ss_basic_chng_${type}_${net}_${numb}_usr)
-
-	if [ "${type}" = "trust" ] && ! proxy_core_supports_udp && [ "${net}" = "udp" ];then
-		return 0
-	fi
-
-	if [ "${eff_net}" == "dot" ];then
-		eff_net=tls
-	fi
-
-	if [ "${net}_${type}_${numb}" == "udp_trust_1" ];then
-		local _port=1055
-	elif [ "${net}_${type}_${numb}" == "udp_trust_2" ];then
-		local _port=1056
-	elif [ "${net}_${type}_${numb}" == "udp_trust_3" ];then
-		local _port=1057
-	fi
-	
-	if [ "${dns_opt}" == "99" ];then
-		dns_usr=$(format_dns_endpoint "${dns_usr}")
-
-		if [ "${eff_net}" == "udp" ];then
-			if [ "${type}" == "trust" ];then
-				echo "udp://127.0.0.1#${_port}?count=0?life=0"
-			else
-				echo "udp://${dns_usr}?count=0?life=0"
-			fi
-		else
-			echo "${eff_net}://${dns_usr}"
-		fi
-	else
-		if [ "${eff_net}" == "udp" ];then
-			if [ "${type}" == "trust" ];then
-				echo "udp://127.0.0.1#${_port}?count=0?life=0"
-			else
-				echo "udp://${dns_opt}?count=0?life=0"
-			fi
-		else
-			echo "${eff_net}://${dns_opt}"
-		fi
-	fi
 }
 
 add_white_black() {
@@ -2956,9 +2721,6 @@ creat_vmess_json() {
 			"inbounds": [
 		EOF
 
-		# when user use udp trust dns in chinadns-ng
-		gen_xray_dns_inbound ${VMESS_CONFIG_TEMP}
-		
 		cat >>"$VMESS_CONFIG_TEMP" <<-EOF
 				{
 					"port": 23456,
@@ -3088,10 +2850,6 @@ creat_vmess_json() {
 		if [ -n "${ss_basic_server}" ];then
 			rewrite_xray_like_outbound_server "${VMESS_CONFIG_FILE}" "${ss_basic_server}"
 		fi
-		if ! append_xray_dns_relay_inbounds "${VMESS_CONFIG_FILE}"; then
-			echo_date "错误：追加DNS UDP relay入口到${VCORE_NAME}配置文件失败！"
-			close_in_five flag
-		fi
 		if ! append_xray_ipv6_tproxy_inbound "${VMESS_CONFIG_FILE}"; then
 			echo_date "错误：追加IPv6透明代理入口到${VCORE_NAME}配置文件失败！"
 			close_in_five flag
@@ -3170,9 +2928,6 @@ creat_xray_ss_json() {
 		"inbounds": [
 	EOF
 
-	# when user use udp trust dns in chinadns-ng
-	gen_xray_dns_inbound ${SS_CONFIG_TEMP}
-	
 	cat >>"${SS_CONFIG_TEMP}" <<-EOF
 			{
 				"port": 23456,
@@ -3509,9 +3264,6 @@ creat_vless_json() {
 			"inbounds": [
 		EOF
 
-		# when user use udp trust dns in chinadns-ng
-		gen_xray_dns_inbound ${VLESS_CONFIG_TEMP}
-
 		# continue
 		cat >>"${VLESS_CONFIG_TEMP}" <<-EOF
 				{
@@ -3664,10 +3416,6 @@ ${xray_user_json}
 		echo_date "Xray配置文件写入成功到${VLESS_CONFIG_FILE}"
 		if [ -n "${ss_basic_server}" ];then
 			rewrite_xray_like_outbound_server "${VLESS_CONFIG_FILE}" "${ss_basic_server}"
-		fi
-		if ! append_xray_dns_relay_inbounds "${VLESS_CONFIG_FILE}"; then
-			echo_date "错误：追加DNS UDP relay入口到Xray配置文件失败！"
-			close_in_five flag
 		fi
 		if ! append_xray_ipv6_tproxy_inbound "${VLESS_CONFIG_FILE}"; then
 			echo_date "错误：追加IPv6透明代理入口到Xray配置文件失败！"
@@ -4556,9 +4304,6 @@ creat_trojan_json(){
 		"inbounds": [
 	EOF
 
-	# when user use udp trust dns in chinadns-ng
-	gen_xray_dns_inbound ${TROJAN_CONFIG_TEMP}
-	
 	cat >>"$TROJAN_CONFIG_TEMP" <<-EOF
 			{
 				"port": 23456,
@@ -4690,8 +4435,6 @@ creat_hy2_json(){
 		"inbounds": [
 	EOF
 
-	# when user use udp trust dns in chinadns-ng
-	gen_xray_dns_inbound ${HY2_CONFIG_TEMP}
 	
 	# continue
 	cat >>"$HY2_CONFIG_TEMP" <<-EOF
