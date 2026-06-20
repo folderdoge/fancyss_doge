@@ -732,7 +732,7 @@ migrate_split_routing_v3() {
 - **真机验证（2026-06-20，51.1，套国内 IP / 英国节点 3.9.92.164）**：`whoami.akamai.net` 经 split 路径 `123.156.198.67`(联通) → 修后 `172.69.79.104`(Cloudflare)；经 dnsmasq(53) 同样 Cloudflare；`baidu.com` 两路仍国内 IP；`google.com` 两路都海外。
 - **CLAUDE.md 硬规则 #30**。
 
-#### D36: 自定义 dnsmasq（address=/server=）在 DNS 重定向开启时也生效——chinadns `group custom` 转发到 65355 卫星 dnsmasq（doge.14.x，已真机全验证 / 未发版）
+#### D36: 自定义 dnsmasq（address=/server=）在 DNS 重定向开启时也生效——chinadns `group custom` 转发到 65355 卫星 dnsmasq（doge.14-beta.17）
 
 2026-06-20 用户需求：DNS 重定向开启时（per-device DNS 分流所必需，见 D35），LAN 设备 53 端口查询被 nat DNAT 直送 chinadns-ng(65353/65354)、**绕过主 dnsmasq** → 用户在【自定义 dnsmasq】(dbus `ss_dnsmasq`) 写的 `address=`/`server=`（屏蔽广告、改写 KMS/autodesk 到指定 IP 等）全部失效（D35 架构事实的副作用）。
 
@@ -749,7 +749,31 @@ migrate_split_routing_v3() {
   - **端到端（PC 经路由器，DNS 重定向开）**：`nslookup baidu.com/google.com/xmind.com 192.168.51.1` 全 `0.0.0.0`（覆盖 chnlist+gfwlist）、`example.org`=真实 IP（非自定义不受影响）。链路：PC→router:53→DNAT→65353→group custom→65355 卫星→0.0.0.0。
   - busybox 限制：测试机**无 `nc`/`od`/`printf`(独立)/`socat`**、`nslookup` 无端口 → 验证靠 chinadns dnl_init `added` 计数差 + 经主 dnsmasq 链的 PC 查询（无法直查 65353/65398 端口）。
 - **同会话清理**：删 smartdns 时代死 DNS 代码 **~323 行**（12 函数 `gen_xray_dns_inbound`/`append_xray_dns_relay_inbounds`/`get_dns`/`get_dns_para`/`format_dns_endpoint`/`parse_dns_addr_port`/`get_proxy_type`/`detect_domain`/`get_dns_selected_net`/`get_dns_effective_net`/`iter_dns_udp_relay_targets`/`has_dns_udp_relay_targets` + 5 空转调用 + 2 append-if 块；保留 `is_domain`/`append_xray_ipv6_tproxy_inbound`/`proxy_core_supports_udp`）。`iter_dns_udp_relay_targets` doge.14 删 smartdns 后即 `return 0`，整条 UDP-DNS-relay inbound 链已死。`dash -n`/`sh -n` 过、零残留引用。
-- **状态**：源码改完 + 真机全验证，**未 commit、未发版**（用户先处理其它问题再发）。CLAUDE.md #31。
+- **状态**：✅ 已随 doge.14-beta.17 发版（commit aeb70fe）。CLAUDE.md #31。
+
+#### D37: 卫星 dnsmasq(65355) 启动健壮性——被固件异步 `service restart_dnsmasq` 的迟到 killall 误杀（doge.14-beta.18）
+
+2026-06-20 排查 D38 时发现的次要 bug：beta.17 安装后 `ss_split_dnsmasq_lan_status=down`、65355 无进程，但手动跑同一条命令秒起。
+
+- **根因**：`restart_dnsmasq()` 用 `service restart_dnsmasq >/dev/null 2>&1 &`（**异步**），其 `killall dnsmasq` 会杀掉**所有** dnsmasq（含卫星）。`apply_ss` 两分支都是 `restart_dnsmasq → start_dns_x（起卫星）`，异步 killall 常在卫星起来**之后**才触发 → 把刚起的卫星一并杀掉。重启时碰巧 killall 早于卫星则幸存（故"安装死、重启活"时好时坏）。卫星死 = `group lan`/`group custom` 上游(65355)失效（**非致命**：常规 gfw/chn 上网不受影响，仅 LAN 域名反查 + 自定义 dnsmasq 域名失效）。
+- **修复**（`ssconfig.sh` 3 处）：
+  1. `start_dnsmasq_lan_listener()`：单次 `sleep 1` 检查 → **轮询最多 5s + 幂等（已监听即 ok 返回，供二次确认复用）+ 启动前清理半死实例（kill 旧 pid）**。
+  2. `apply_ss`：`load_iptables` 后（所有 dnsmasq 重启都结束、异步 killall 已落定）**二次确认/拉起卫星**（调 `start_dnsmasq_lan_listener`，幂等、活着即跳过）。
+  3. `restart_dnsmasq()`：异步 `service restart_dnsmasq &` 后加 `sleep 2` 再 `detect_running_status`，让迟到的 killall 先触发，避免 detect 误判到 killall 前的旧 dnsmasq 就返回。
+- **验证**（51.1 armv7l）：beta.18 install → `dnsmasq_lan 启动成功`、`卫星 dnsmasq 状态=ok`（修复前为 down）；整机重启后卫星仍 ok、pid 稳定存活。
+
+#### D38: 开机时钟死锁——TLS 节点 + 重启时钟停在 2024 → 代理永久卡死（doge.14-beta.18，本次主修复）
+
+2026-06-20 客户报「doge.16 更新到 doge.17 后重启路由器，启动日志一切正常但最后无法正常链接」（代理失效 / DNS 失效 / 出口检测失败）。在 51.1 用客户的确切自定义 dnsmasq 配置 + 整机重启**完整复现**。
+
+- **根因（死锁闭环）**：路由器重启后系统时钟在 NTP 同步前停在 `2024-01-01`（`ntp_ready=0`）→ 节点 TLS 证书（有效期 2025~2026）被 xray 判「尚未生效」、握手失败 → xray 连不上节点、代理失效 → 国外域名（含 NTP 服务器 `pool.ntp.org`）走 `trust-dns` 经代理无法解析 → NTP 永远同步不了 → 时钟一直卡 2024 → **永久死锁**。固件自身 NTP 配的是 `pool.ntp.org` 域名、自己是死锁的一环救不了自己。
+- **为何看似 doge.17 回归实则不是**：死锁的 TLS/时钟/NTP 路径在 doge.14+ 一直存在、与 beta.17 的 DNS 改动无关。触发取决于**节点证书 notBefore 相对 2024-01-01**——节点最近换了证书（2025+ 生效）后，开机的"2024"开始顶不住；客户恰在此时更新到 doge.17，两件事赶到一起。（beta.17 唯一实质改动 = 卫星 dnsmasq，已由 D37 单独修复，非主因。客户已确认：节点为 TLS、故障时确实见过路由器时间错乱。）
+- **症状迷惑性**：启动日志全绿——DNS 核心正常、节点域名能解析（`group node` 走 china-dns **直连**、不受代理死锁影响）、卫星 ok；唯独出口检测失败 + 所有 gfw 域名解析失败。
+- **铁证**：`date -s "2026-..."` 手动设对时钟 → 代理瞬间全恢复（86.x 海外出口、`curl --socks5` rc=0）。
+- **修复**（`ssconfig.sh` 新增 `fss_fix_bogus_clock()`，`apply_ss` 中 `prepare_system` 后、`start_xray` 前调用）：年份 < 2025 时用**硬编码国内 NTP IP**（`203.107.6.88` 阿里云 / `120.25.115.20` / `119.28.183.184`）`ntpd -n -q -p IP` **直连校时**（纯直连、不依赖 DNS/代理；每 IP 轮询超时 5s；成功即 return、全失败也不阻塞启动）。打破死锁：时钟回正 → TLS 通过 → xray 连上 → 代理正常。
+- **诊断增强**：`check_status` 启动尾部加 DNS 链路诊断（卫星状态 / 65353-65355 监听 / **系统时钟 + ntp_ready** / `www.baidu.com` 本地解析自检），今后"启动正常但连不上"一眼可定位。
+- **验证**（51.1 armv7l 整机重启，gold-standard）：启动日志 `⏰ 校时成功…2026`、出口检测 `86.53.160.85` 通过（修复前同场景死锁卡死）；DNS / 代理 / 自定义规则全恢复。代码纯 shell、与架构无关，hnd_v8(aarch64) 同适用。
+- **状态**：✅ 已随 doge.14-beta.18 发版（commit b4a41d2）。CLAUDE.md #32。
 
 ### 6.4 实施期约定的回溯修订
 
