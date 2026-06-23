@@ -18,7 +18,7 @@
 #   ss_split_mode_save_udp_proxy         = "0" | "1"
 #   ss_split_mode_save_block_quic        = "0" | "1"
 #   ss_split_mode_save_apply_blackwhite  = "0" | "1"
-#   ss_split_mode_save_dns_mode          = "split" | "global"
+#   ss_split_mode_save_dns_mode          = "split" | "global" | "remote"
 #   ss_split_mode_save_default_action    = "direct" | "proxy_main" | "proxy_node:<N>" | "proxy_chain:<F>:<L>"
 #                                          （注意：default_action 不允许 "reject"，详见 validate_action）
 #   ss_split_mode_save_rule_count        = <0~64>
@@ -283,8 +283,8 @@ case "${op}" in
 		validate_01 "${block_quic}" "block_quic"
 		validate_01 "${apply_blackwhite}" "apply_blackwhite"
 		case "${dns_mode}" in
-			split|global) ;;
-			*) fail "dns_mode must be 'split' or 'global' (got '${dns_mode}')" "${REQ_ID}" ;;
+			split|global|remote) ;;
+			*) fail "dns_mode must be 'split', 'global' or 'remote' (got '${dns_mode}')" "${REQ_ID}" ;;
 		esac
 		validate_action "${default_action}" "default_action" 0
 
@@ -357,8 +357,8 @@ case "${op}" in
 		validate_01 "${block_quic}" "block_quic"
 		validate_01 "${apply_blackwhite}" "apply_blackwhite"
 		case "${dns_mode}" in
-			split|global) ;;
-			*) fail "dns_mode must be 'split' or 'global' (got '${dns_mode}')" "${REQ_ID}" ;;
+			split|global|remote) ;;
+			*) fail "dns_mode must be 'split', 'global' or 'remote' (got '${dns_mode}')" "${REQ_ID}" ;;
 		esac
 		validate_action "${default_action}" "default_action" 0
 

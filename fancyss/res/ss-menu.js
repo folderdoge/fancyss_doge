@@ -1096,7 +1096,7 @@ function openssHint(itemNum, flag) {
 		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• <b>udp_proxy</b>：是否启用 UDP 代理<br />";
 		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• <b>block_quic</b>：是否屏蔽 QUIC（建议开启 udp_proxy 时勾选）<br />";
 		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• <b>apply_blackwhite</b>：是否受全局黑白名单（账号设置页文本框）影响<br />";
-		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• <b>dns_mode</b>：split=智能分流DNS / global=单一海外DNS<br />";
+		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• <b>dns_mode</b>：split=智能分流DNS / global=单一海外DNS / remote=远程DNS(落地节点解析)<br />";
 		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• <b>rules[]</b>：按顺序匹配的 (Rule → Action) 列表<br />";
 		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;• <b>default_action</b>：未命中 rules 时的兜底动作（不可为 reject）<br /><br />";
 		statusmenu += "<b><font color='#CC0066'>内置 Mode</font></b>（id 1-99 预留）：#1 全局代理 / #2 大陆白名单，用户自定义从 100 起。<br /><br />";
@@ -1125,6 +1125,9 @@ function openssHint(itemNum, flag) {
 		statusmenu += "<b><font color='#669900'>全局 DNS（单一海外 upstream）：</font></b><br />";
 		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;只用一个海外 DNS upstream（如 8.8.8.8），无智能分流。<br />";
 		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;Mode 的 <code>dns_mode=global</code> 时使用此轨，可拿到「真正的国外解析结果」（如 microsoft.com 解到英文站 IP）。<br /><br />";
+		statusmenu += "<b><font color='#669900'>远程 DNS（落地节点解析）：</font></b><br />";
+		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;国内域名仍走分流直连；国外域名不在路由器解析，由该 Mode 命中的节点在落地端解析，CDN 更就近。<br />";
+		statusmenu += "&nbsp;&nbsp;&nbsp;&nbsp;Mode 的 <code>dns_mode=remote</code> 时使用此轨（简单版：嗅探到域名才生效，纯 IP/无 SNI 流量回退原 IP）。<br /><br />";
 		statusmenu += "<b><font color='#CC0066'>upstream 格式：</font></b>一行一个，支持 <code>udp://IP:port</code> / <code>tcp://IP:port</code> / <code>tls://IP:port</code><br /><br />";
 		statusmenu += "<font color='#888888'>详见 doc/design/split-routing-architecture.md §6（chinadns tag 优先级在新架构下不再适用）</font>";
 		_caption = "双轨 DNS";

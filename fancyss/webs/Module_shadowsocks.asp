@@ -6509,7 +6509,7 @@ function render_split_mode_list() {
 		html += '</div></div>';
 		html += '<div class="split-chip-row">';
 		html += '<span class="split-chip fallback" title="兜底出站">兜底 ' + split_v2_html_escape(defAction) + '</span>';
-		html += '<span class="split-chip ' + (dnsMode == 'split' ? 'dns-split' : 'dns-global') + '">DNS ' + (dnsMode == 'split' ? '分流' : '全局') + '</span>';
+		html += '<span class="split-chip ' + (dnsMode == 'split' ? 'dns-split' : 'dns-global') + '">DNS ' + (dnsMode == 'split' ? '分流' : (dnsMode == 'remote' ? '远程' : '全局')) + '</span>';
 		html += '<span class="split-chip">规则 <b>' + split_v2_html_escape(ruleCount) + '</b></span>';
 		html += '<span class="split-chip ' + (udp ? 'on' : 'off') + '">UDP ' + (udp ? '转发' : '关') + '</span>';
 		html += '<span class="split-chip ' + (quic ? 'on' : 'off') + '">QUIC ' + (quic ? '屏蔽' : '放行') + '</span>';
@@ -7174,7 +7174,7 @@ function split_v2_open_mode_dialog(slot, data) {
 	html += '<tr><th>UDP 代理</th><td><label><input type="checkbox" id="mode_dlg_udp_proxy"' + (data.udp_proxy == '1' ? ' checked' : '') + disRun + '/> 启用 UDP 代理</label></td></tr>';
 	html += '<tr><th>屏蔽 QUIC</th><td><label><input type="checkbox" id="mode_dlg_block_quic"' + (data.block_quic == '1' ? ' checked' : '') + disRun + '/> 屏蔽 UDP/443，HTTP/3 回退 TCP</label></td></tr>';
 	html += '<tr><th>受全局黑白名单影响</th><td><label><input type="checkbox" id="mode_dlg_apply_blackwhite"' + (data.apply_blackwhite == '1' ? ' checked' : '') + disRun + '/> 应用 ss_wan_white_domain / ss_wan_black_domain</label></td></tr>';
-	html += '<tr><th>DNS 模式</th><td><select id="mode_dlg_dns_mode"' + disRun + '><option value="split"' + (data.dns_mode === 'split' ? ' selected' : '') + '>split (智能分流, chinadns-ng)</option><option value="global"' + (data.dns_mode === 'global' ? ' selected' : '') + '>global (海外 upstream，所有域名经代理)</option></select></td></tr>';
+	html += '<tr><th>DNS 模式</th><td><select id="mode_dlg_dns_mode"' + disRun + '><option value="split"' + (data.dns_mode === 'split' ? ' selected' : '') + '>split (智能分流, chinadns-ng)</option><option value="global"' + (data.dns_mode === 'global' ? ' selected' : '') + '>global (海外 upstream，所有域名经代理)</option><option value="remote"' + (data.dns_mode === 'remote' ? ' selected' : '') + '>remote (远程DNS, 在落地节点解析)</option></select></td></tr>';
 	html += '<tr><th>兜底动作 default_action</th><td>' + split_v2_build_action_html('mode_dlg_default_action', data.default_action, false) + '<div style="color:#888;font-size:11px;padding-top:2px;">不能是「屏蔽」(避免所有流量被屏蔽的死锁)</div></td></tr>';
 	html += '<tr><th>规则列表<br><span style="color:#888;font-size:11px;font-weight:normal;">按顺序逐条匹配<br>首条命中决定动作</span></th><td><div id="mode_dlg_rules_list"></div>' + (_modeDlgState.builtin ? '' : '<input type="button" class="ss_btn" style="margin-top:6px;cursor:pointer;" onclick="split_v2_mode_dlg_rule_add();" value="+ 添加规则" />') + '</td></tr>';
 	html += '</table>';

@@ -3933,6 +3933,10 @@ generate_xray_json_split() {
 		local port=$((SS_SPLIT_PORT_BASE + m_index))
 		local mid=$(dbus get ss_split_mode_${mi}_id 2>/dev/null)
 		local block_quic=$(dbus get ss_split_mode_${mi}_block_quic 2>/dev/null)
+		local m_dns_mode=$(dbus get ss_split_mode_${mi}_dns_mode 2>/dev/null)
+		# FORK doge.14.x 远程DNS: dns_mode=remote 时 routeOnly=false，让落地节点解析域名(简单版远程DNS)
+		local m_route_only="true"
+		[ "${m_dns_mode}" = "remote" ] && m_route_only="false"
 		local network="tcp,udp"
 		# block_quic 不在 inbound 控制；走 iptables 层屏蔽 udp/443
 		if [ "${sniff_first}" = "1" ]; then sniff_first=0; else sniff_blocks="${sniff_blocks},"; fi
@@ -3947,7 +3951,7 @@ generate_xray_json_split() {
     "enabled": true,
     "destOverride": ["http", "tls", "quic"],
     "metadataOnly": false,
-    "routeOnly": true
+    "routeOnly": ${m_route_only}
   },
   "streamSettings": { "sockopt": { "tproxy": "tproxy" } }
 }
