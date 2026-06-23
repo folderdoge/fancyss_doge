@@ -880,6 +880,34 @@ migrate_split_routing_v3() {
 
 **状态**：✅ 随 doge.14-beta.23 发版。CLAUDE.md #37。
 
+#### D44: 分流 Mode 新增「远程DNS」DNS 模式——`dns_mode=remote` → xray inbound `routeOnly:false`（doge.14-beta.24）
+
+**背景**：用户希望每个 Mode 的 DNS 策略除 `split`/`global` 外，再加一种「远程 DNS 解析」——国外域名不在路由器解析，交给该 Mode 命中的**落地节点**在远端解析（拿到离落地更近的 CDN、解析点随节点走）。本版先做**简单版**（不引入 xray FakeDNS 子系统）。
+
+**机制**：xray sniffing 当前对所有 Mode inbound 发 `routeOnly:true`——嗅探出的域名**只用于 routing 匹配**，实际拨号仍用设备解析出的原 IP（[架构 split-routing-architecture.md:284](../design/split-routing-architecture.md) 明确："避免破坏 SNI/Host"）。`dns_mode=remote` 的 Mode 改发 **`routeOnly:false`** → 嗅探出的域名**覆盖目的地址** → proxy outbound 把**域名**发给落地节点 → 落地节点解析 = 远程 DNS。`split`/`global` 仍 `routeOnly:true` 不变。**因 xray routing 仍按嗅探域名匹配（routeOnly 只改最终拨号地址、不改路由决策），D27/D29 domain/ip 分条逻辑不受影响。**
+
+**实现（4 文件，~20 行）**：
+- [ssconfig.sh `generate_xray_json_split`](../../fancyss/ss/ssconfig.sh)：per-Mode inbound 生成循环读 `ss_split_mode_<mi>_dns_mode`，`=remote` → `m_route_only=false`，heredoc `"routeOnly": ${m_route_only}`（其余 Mode 仍 true）。**设备侧 DNS 端口不变**：`__split_mode_dns_port_by_id` 的 `remote` 落 else 分支 = split 实例 65353，"远程"行为纯在 xray sniffing 开关上。
+- [ss_split_mode_save.sh](../../fancyss/scripts/ss_split_mode_save.sh)：两处 `dns_mode` 校验白名单 `split|global` → `split|global|remote`（+ 头部注释）。
+- [Module_shadowsocks.asp](../../fancyss/webs/Module_shadowsocks.asp)：编辑 Mode 弹窗 DNS 下拉框加 `<option value="remote">`；Mode 卡片 chip 显示分支加 `remote→远程`（原"非 split 即全局"会把 remote 误标全局）。
+- [ss-menu.js](../../fancyss/res/ss-menu.js)：dns_mode 摘要 + 双轨 DNS 帮助弹窗补「远程 DNS」说明。
+- **无新增 builtin / 无迁移**：remote 为按需手动 opt-in，存量 Mode 默认仍 split。
+
+**边界（简单版，已写进 release notes + ss-menu 帮助）**：
+- 只对「能嗅探到域名」的流量生效（TLS/SNI、HTTP、QUIC）；纯 IP / 无 SNI 流量无域名可覆盖 → 回退原 IP（同非 remote），不破坏但也非"远程"。
+- 设备侧仍做一次国外 DNS 查询（用于发起连接）；真正决定 CDN 的是落地节点解析，未摆脱现有国外 DNS 可靠性依赖。
+- remote Mode 下 direct 流量也因 `routeOnly:false` 被 freedom(UseIP) 本地重解析一次（结果相同、多一次解析）。
+- 纯净版「设备永不解析国外域名」需 xray FakeDNS（新 DNS 子系统），**本期不做**（风险高、动 DNS 雷区）。
+
+**风险点**：`routeOnly:true→false` 反转一个**有意为之**的安全设定（避免破坏 SNI/Host），影响面 = 该 Mode 所有可嗅探流量 → 必须真机广测站点。
+
+**真机验证（测试机 51.1 / armv7l，热替换 4 文件 + restart）**：
+- 配置层：内置「测试」Mode（id=100）翻 remote → 重启 RC=0、`split_xray_warn` 空（xray -test 过、未回退）；xray.json `mode_100` inbound `routeOnly=false`、`mode_1`/`mode_2` 仍 `true`（逐行确认、互不串味）。
+- 端到端：测试机（无 ACL → 走默认 Mode 100=remote → 节点 448 英国出口 3.9.92.164）curl Google/YouTube/Cloudflare 全 200（**SNI 未破坏**）、百度 200（国内直连正常）。
+- 前端：下拉框 `[split,global,remote]`、"测试"选中 remote、三卡片 chip「DNS 全局/分流/远程」、保存经 save.sh 校验持久化 `remote`、无 console 错。
+
+**状态**：✅ 随 doge.14-beta.24 发版。CLAUDE.md #38。
+
 ### 6.4 实施期约定的回溯修订
 
 **alpha 阶段（doge.12.alpha-1 → alpha.18）**：
